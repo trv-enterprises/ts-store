@@ -311,6 +311,80 @@ X-API-Key: <api-key>
 ```
 Returns handles for objects within the time range.
 
+### JSON API (No Base64 Encoding)
+
+The JSON API provides a convenient interface for storing and retrieving JSON objects without base64 encoding.
+
+#### Store JSON Object (requires auth)
+```
+POST /api/stores/:store/json
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "timestamp": 1704067200000000000,
+  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
+}
+```
+Timestamp is optional (defaults to current time). Data is stored as-is (no base64).
+
+#### Get JSON by Timestamp (requires auth)
+```
+GET /api/stores/:store/json/time/:timestamp
+X-API-Key: <api-key>
+```
+Returns:
+```json
+{
+  "timestamp": 1704067200000000000,
+  "primary_block_num": 5,
+  "total_size": 64,
+  "block_count": 1,
+  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
+}
+```
+
+#### Get JSON by Block Number (requires auth)
+```
+GET /api/stores/:store/json/block/:blocknum
+X-API-Key: <api-key>
+```
+
+#### List Oldest JSON Objects (requires auth)
+```
+GET /api/stores/:store/json/oldest?limit=10
+X-API-Key: <api-key>
+```
+Returns the N oldest JSON objects with their data.
+
+#### List Newest JSON Objects (requires auth)
+```
+GET /api/stores/:store/json/newest?limit=10
+X-API-Key: <api-key>
+```
+Returns the N newest JSON objects with their data.
+
+### CLI Store Management
+
+Create stores from the command line:
+
+```bash
+# Create a store with defaults (1024 blocks, 4KB data/index)
+./tsstore create my-store
+
+# Create with custom settings
+./tsstore create sensors --blocks 10000 --data-size 8192
+
+# Create in a specific directory
+./tsstore create logs --path /var/tsstore
+```
+
+Options:
+- `--blocks <n>` - Number of primary blocks (default: 1024)
+- `--data-size <n>` - Data block size in bytes, must be power of 2 (default: 4096)
+- `--index-size <n>` - Index block size in bytes, must be power of 2 (default: 4096)
+- `--path <dir>` - Base directory for stores (default: ./data or TSSTORE_DATA_PATH)
+
 ### API Key Management
 
 API keys can only be managed via CLI (requires device access):
@@ -460,6 +534,37 @@ type ObjectHandle struct {
     TotalSize       uint32 // Total size in bytes
     BlockCount      uint32 // Number of blocks used
 }
+```
+
+### JSON API (Go Library)
+
+For convenient JSON storage without manual marshaling:
+
+```go
+// Store JSON objects directly
+type SensorReading struct {
+    Temperature float64 `json:"temperature"`
+    Humidity    float64 `json:"humidity"`
+    Sensor      string  `json:"sensor"`
+}
+
+reading := SensorReading{Temperature: 72.5, Humidity: 45, Sensor: "living-room"}
+handle, err := s.PutJSON(timestamp, reading)
+handle, err := s.PutJSONNow(reading)  // Use current time
+
+// Retrieve and unmarshal
+var result SensorReading
+handle, err := s.GetJSONByTime(timestamp, &result)
+handle, err := s.GetJSONByBlock(blockNum, &result)
+
+// Get raw JSON (when structure is unknown)
+raw, err := s.GetJSONRaw(handle)  // Returns json.RawMessage
+raw, handle, err := s.GetJSONRawByTime(timestamp)
+raw, handle, err := s.GetJSONRawByBlock(blockNum)
+
+// List JSON objects (returns raw JSON with handles)
+rawMsgs, handles, err := s.GetOldestJSON(10)
+rawMsgs, handles, err := s.GetNewestJSON(10)
 ```
 
 ### Opening an Existing Store

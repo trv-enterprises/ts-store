@@ -4,7 +4,7 @@
 *.dll
 *.so
 *.dylib
-tsstore
+/tsstore
 
 # Test binary, built with `go test -c`
 *.test
