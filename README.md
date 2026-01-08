@@ -72,6 +72,51 @@ go get github.com/tviviano/ts-store
 go build -o tsstore ./cmd/tsstore
 ```
 
+### Docker
+
+Build and run with Docker:
+
+```bash
+# Build the image
+docker build -t tsstore .
+
+# Run the container
+docker run -d -v tsstore-data:/data -p 8080:8080 --name tsstore tsstore
+```
+
+Or use Docker Compose:
+
+```bash
+docker compose up -d
+```
+
+**Managing stores in Docker:**
+
+The CLI commands run inside the container via `docker exec`:
+
+```bash
+# Create a new store
+docker exec tsstore tsstore create my-store
+# Output shows API key (save it!)
+
+# List API keys for a store
+docker exec tsstore tsstore key list my-store
+
+# Regenerate API key (revokes existing keys)
+docker exec tsstore tsstore key regenerate my-store
+```
+
+This design maintains security - key management requires container access, while all data operations use the REST API with authentication.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TSSTORE_DATA_PATH` | `/data` | Base path for stores |
+| `TSSTORE_HOST` | `0.0.0.0` | Server bind address |
+| `TSSTORE_PORT` | `8080` | Server port |
+| `TSSTORE_MODE` | `release` | Gin mode (debug/release) |
+
 ## REST API Server
 
 ts-store includes a lightweight REST API server designed for edge devices.

@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+tsstore
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test/temp data
+testdata/
+tmp/
+data/
+*.tsdb
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+LICENSE
