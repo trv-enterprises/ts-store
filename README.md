@@ -239,6 +239,78 @@ Or by time range:
 }
 ```
 
+### Object API (High-Level)
+
+The Object API provides a higher-level interface for storing data that may span multiple blocks. Objects are automatically split across blocks on write and reassembled on read.
+
+#### Store Object (requires auth)
+```
+POST /api/stores/:store/objects
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "timestamp": 1704067200000000000,
+  "data": "base64-encoded-data-of-any-size"
+}
+```
+Returns:
+```json
+{
+  "timestamp": 1704067200000000000,
+  "primary_block_num": 5,
+  "total_size": 50000,
+  "block_count": 13
+}
+```
+
+#### Get Object by Timestamp (requires auth)
+```
+GET /api/stores/:store/objects/time/:timestamp
+X-API-Key: <api-key>
+```
+Returns the full object data (reassembled from all blocks).
+
+#### Get Object by Block Number (requires auth)
+```
+GET /api/stores/:store/objects/block/:blocknum
+X-API-Key: <api-key>
+```
+
+#### Delete Object by Timestamp (requires auth)
+```
+DELETE /api/stores/:store/objects/time/:timestamp
+X-API-Key: <api-key>
+```
+Deletes the object and all its associated blocks.
+
+#### Delete Object by Block Number (requires auth)
+```
+DELETE /api/stores/:store/objects/block/:blocknum
+X-API-Key: <api-key>
+```
+
+#### List Oldest Objects (requires auth)
+```
+GET /api/stores/:store/objects/oldest?limit=10
+X-API-Key: <api-key>
+```
+Returns handles for the N oldest objects (default 10). Does not include data.
+
+#### List Newest Objects (requires auth)
+```
+GET /api/stores/:store/objects/newest?limit=10
+X-API-Key: <api-key>
+```
+Returns handles for the N newest objects (default 10).
+
+#### List Objects in Time Range (requires auth)
+```
+GET /api/stores/:store/objects/range?start_time=X&end_time=Y&limit=100
+X-API-Key: <api-key>
+```
+Returns handles for objects within the time range.
+
 ### API Key Management
 
 API keys can only be managed via CLI (requires device access):
@@ -354,6 +426,40 @@ s.AddRangeToFreeList(startBlock, endBlock)
 
 // Reclaim by time range (finds closest matches)
 s.AddRangeToFreeListByTime(startTime, endTime)
+```
+
+### Object API (High-Level)
+
+For data that may exceed a single block, use the Object API which automatically handles splitting and reassembly:
+
+```go
+// Store an object (any size, automatically split across blocks)
+handle, err := s.PutObject(timestamp, largeData)
+handle, err := s.PutObjectNow(largeData) // Use current time
+
+// Retrieve an object (automatically reassembled)
+data, err := s.GetObject(handle)
+data, handle, err := s.GetObjectByTime(timestamp)
+data, handle, err := s.GetObjectByBlock(blockNum)
+
+// List objects (returns handles only, not data)
+handles, err := s.GetOldestObjects(10)  // First 10 (from tail)
+handles, err := s.GetNewestObjects(10)  // Last 10 (from head)
+handles, err := s.GetObjectsInRange(startTime, endTime, limit)
+
+// Delete an object and all its blocks
+err := s.DeleteObject(handle)
+err := s.DeleteObjectByTime(timestamp)
+```
+
+The ObjectHandle contains metadata about the stored object:
+```go
+type ObjectHandle struct {
+    Timestamp       int64  // When the object was stored
+    PrimaryBlockNum uint32 // First block of the object
+    TotalSize       uint32 // Total size in bytes
+    BlockCount      uint32 // Number of blocks used
+}
 ```
 
 ### Opening an Existing Store
