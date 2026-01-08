@@ -57,6 +57,8 @@ When the circular buffer is full, the oldest primary block (and its attached blo
 - **Range queries** - Efficiently find all blocks within a time range
 - **Time-based or block-based reclaim** - Free specific ranges of data
 - **Crash recovery** - Metadata is persisted after each operation
+- **REST API server** - HTTP API with per-store API key authentication
+- **Edge-friendly** - Small footprint, no external database dependencies
 
 ## Installation
 
@@ -64,7 +66,197 @@ When the circular buffer is full, the oldest primary block (and its attached blo
 go get github.com/tviviano/ts-store
 ```
 
-## Usage
+### Build the Server
+
+```bash
+go build -o tsstore ./cmd/tsstore
+```
+
+## REST API Server
+
+ts-store includes a lightweight REST API server designed for edge devices.
+
+### Starting the Server
+
+```bash
+./tsstore serve
+```
+
+The server reads configuration from `config.json` (or `TSSTORE_CONFIG` env var).
+
+### Configuration
+
+Create `config.json`:
+
+```json
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "mode": "release"
+  },
+  "store": {
+    "base_path": "./data",
+    "data_block_size": 4096,
+    "index_block_size": 4096,
+    "num_blocks": 1024
+  }
+}
+```
+
+Environment variables:
+- `TSSTORE_HOST` - Server host
+- `TSSTORE_PORT` - Server port
+- `TSSTORE_MODE` - "debug" or "release"
+- `TSSTORE_DATA_PATH` - Base path for stores
+- `TSSTORE_CONFIG` - Config file path
+
+### Authentication
+
+Each store has its own API key. The key is generated when the store is created and shown only once. Store it securely.
+
+Pass the API key via:
+- Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+- Query param: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+
+### API Endpoints
+
+#### Health Check
+```
+GET /health
+```
+Returns server health status. No authentication required.
+
+#### Create Store
+```
+POST /api/stores
+Content-Type: application/json
+
+{
+  "name": "my-store",
+  "num_blocks": 1000,
+  "data_block_size": 4096,
+  "index_block_size": 4096
+}
+```
+Returns the API key (shown only once):
+```json
+{
+  "name": "my-store",
+  "api_key": "tsstore_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "key_id": "a1b2c3d4"
+}
+```
+
+#### List Open Stores
+```
+GET /api/stores
+```
+
+#### Delete Store (requires auth)
+```
+DELETE /api/stores/:store
+X-API-Key: <api-key>
+```
+
+#### Get Store Stats (requires auth)
+```
+GET /api/stores/:store/stats
+X-API-Key: <api-key>
+```
+
+#### Insert Data (requires auth)
+```
+POST /api/stores/:store/data
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "timestamp": 1704067200000000000,
+  "data": "base64-encoded-data"
+}
+```
+Timestamp is optional (defaults to current time). Data must be base64 encoded.
+
+#### Get Data by Timestamp (requires auth)
+```
+GET /api/stores/:store/data/time/:timestamp
+X-API-Key: <api-key>
+```
+
+#### Get Data by Block Number (requires auth)
+```
+GET /api/stores/:store/data/block/:blocknum
+X-API-Key: <api-key>
+```
+
+#### Query Time Range (requires auth)
+```
+GET /api/stores/:store/data/range?start_time=X&end_time=Y
+X-API-Key: <api-key>
+```
+
+#### Get Oldest/Newest Timestamps (requires auth)
+```
+GET /api/stores/:store/data/oldest
+GET /api/stores/:store/data/newest
+X-API-Key: <api-key>
+```
+
+#### Attach Block (requires auth)
+```
+POST /api/stores/:store/data/block/:blocknum/attach
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "data": "base64-encoded-data"
+}
+```
+
+#### Get Attached Blocks (requires auth)
+```
+GET /api/stores/:store/data/block/:blocknum/attached
+X-API-Key: <api-key>
+```
+
+#### Reclaim Blocks (requires auth)
+```
+POST /api/stores/:store/data/reclaim
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "start_block": 0,
+  "end_block": 10
+}
+```
+Or by time range:
+```json
+{
+  "start_time": 1704067200000000000,
+  "end_time": 1704153600000000000
+}
+```
+
+### API Key Management
+
+API keys can only be managed via CLI (requires device access):
+
+```bash
+# Regenerate key (revokes all existing keys)
+./tsstore key regenerate my-store
+
+# List keys (shows IDs only, not actual keys)
+./tsstore key list my-store
+
+# Revoke a specific key
+./tsstore key revoke my-store a1b2c3d4
+```
+
+## Go Library
+
+The store can also be used directly as a Go library without the API server.
 
 ### Creating a Store
 
@@ -216,13 +408,14 @@ newest, _ := s.GetNewestTimestamp()
 
 ## File Format
 
-Each store creates a directory with three files:
+Each store creates a directory with the following files:
 
 ```
 sensor-data/
 ├── data.tsdb    # Data blocks (primary + attached)
 ├── index.tsdb   # Time index entries
-└── meta.tsdb    # Store metadata (64 bytes)
+├── meta.tsdb    # Store metadata (64 bytes)
+└── keys.json    # API key hashes (only when using API server)
 ```
 
 **Block sizes must be powers of 2** (64, 128, 256, 512, 1024, 2048, 4096, 8192, etc.)
