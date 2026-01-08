@@ -345,16 +345,25 @@ Returns handles for the N oldest objects (default 10). Does not include data.
 #### List Newest Objects (requires auth)
 ```
 GET /api/stores/:store/objects/newest?limit=10
+GET /api/stores/:store/objects/newest?since=2h&limit=100
 X-API-Key: <api-key>
 ```
-Returns handles for the N newest objects (default 10).
+Returns handles for the N newest objects (default 10). Use `since` parameter for relative time queries.
 
 #### List Objects in Time Range (requires auth)
 ```
 GET /api/stores/:store/objects/range?start_time=X&end_time=Y&limit=100
+GET /api/stores/:store/objects/range?since=24h&limit=100
 X-API-Key: <api-key>
 ```
-Returns handles for objects within the time range.
+Returns handles for objects within the time range. Use `since` as an alternative to `start_time`/`end_time`.
+
+**Supported duration formats:**
+- `30s` - 30 seconds
+- `15m` - 15 minutes
+- `2h` - 2 hours
+- `7d` - 7 days
+- `1w` - 1 week
 
 ### JSON API (No Base64 Encoding)
 
@@ -405,9 +414,18 @@ Returns the N oldest JSON objects with their data.
 #### List Newest JSON Objects (requires auth)
 ```
 GET /api/stores/:store/json/newest?limit=10
+GET /api/stores/:store/json/newest?since=30m&limit=50
 X-API-Key: <api-key>
 ```
-Returns the N newest JSON objects with their data.
+Returns the N newest JSON objects with their data. Use `since` for relative time queries.
+
+#### List JSON Objects in Time Range (requires auth)
+```
+GET /api/stores/:store/json/range?start_time=X&end_time=Y&limit=100
+GET /api/stores/:store/json/range?since=1h&limit=100
+X-API-Key: <api-key>
+```
+Returns JSON objects within the time range. Use `since` as an alternative to `start_time`/`end_time`.
 
 ### CLI Store Management
 
@@ -565,6 +583,7 @@ data, handle, err := s.GetObjectByBlock(blockNum)
 handles, err := s.GetOldestObjects(10)  // First 10 (from tail)
 handles, err := s.GetNewestObjects(10)  // Last 10 (from head)
 handles, err := s.GetObjectsInRange(startTime, endTime, limit)
+handles, err := s.GetObjectsSince(2*time.Hour, limit)  // Last 2 hours
 
 // Delete an object and all its blocks
 err := s.DeleteObject(handle)
@@ -610,6 +629,8 @@ raw, handle, err := s.GetJSONRawByBlock(blockNum)
 // List JSON objects (returns raw JSON with handles)
 rawMsgs, handles, err := s.GetOldestJSON(10)
 rawMsgs, handles, err := s.GetNewestJSON(10)
+rawMsgs, handles, err := s.GetJSONSince(time.Hour, limit)  // Last hour
+rawMsgs, handles, err := s.GetJSONInRange(startTime, endTime, limit)
 ```
 
 ### Opening an Existing Store

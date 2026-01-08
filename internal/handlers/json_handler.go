@@ -216,6 +216,7 @@ func (h *JSONHandler) ListOldest(c *gin.Context) {
 }
 
 // ListNewest handles GET /api/stores/:store/json/newest
+// Supports optional ?since=<duration> parameter (e.g., since=2h, since=30m, since=7d)
 func (h *JSONHandler) ListNewest(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -231,10 +232,107 @@ func (h *JSONHandler) ListNewest(c *gin.Context) {
 		return
 	}
 
-	rawMsgs, handles, err := st.GetNewestJSON(limit)
+	var rawMsgs []json.RawMessage
+	var handles []*store.ObjectHandle
+
+	// Check for since parameter
+	sinceStr := c.Query("since")
+	if sinceStr != "" {
+		duration, err := ParseDuration(sinceStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
+			return
+		}
+		rawMsgs, handles, err = st.GetJSONSince(duration, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		rawMsgs, handles, err = st.GetNewestJSON(limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	objects := make([]JSONResponse, len(rawMsgs))
+	for i, raw := range rawMsgs {
+		objects[i] = JSONResponse{
+			Timestamp:       handles[i].Timestamp,
+			PrimaryBlockNum: handles[i].PrimaryBlockNum,
+			TotalSize:       handles[i].TotalSize,
+			BlockCount:      handles[i].BlockCount,
+			Data:            raw,
+		}
+	}
+
+	c.JSON(http.StatusOK, JSONListResponse{
+		Objects: objects,
+		Count:   len(objects),
+	})
+}
+
+// ListRange handles GET /api/stores/:store/json/range
+// Supports ?start_time=X&end_time=Y or ?since=<duration>
+func (h *JSONHandler) ListRange(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	limitStr := c.DefaultQuery("limit", "100")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 100
+	}
+
+	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	var rawMsgs []json.RawMessage
+	var handles []*store.ObjectHandle
+
+	// Check for since parameter first
+	sinceStr := c.Query("since")
+	if sinceStr != "" {
+		duration, err := ParseDuration(sinceStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
+			return
+		}
+		rawMsgs, handles, err = st.GetJSONSince(duration, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		// Use start_time/end_time
+		startTimeStr := c.Query("start_time")
+		endTimeStr := c.Query("end_time")
+
+		if startTimeStr == "" || endTimeStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "start_time and end_time required (or use since parameter)"})
+			return
+		}
+
+		startTime, err := strconv.ParseInt(startTimeStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
+			return
+		}
+
+		endTime, err := strconv.ParseInt(endTimeStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+			return
+		}
+
+		rawMsgs, handles, err = st.GetJSONInRange(startTime, endTime, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	objects := make([]JSONResponse, len(rawMsgs))

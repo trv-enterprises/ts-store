@@ -205,7 +205,8 @@ func runServer() {
 				jsonRoutes.GET("/time/:timestamp", jsonHandler.GetByTime)
 				jsonRoutes.GET("/block/:blocknum", jsonHandler.GetByBlock)
 				jsonRoutes.GET("/oldest", jsonHandler.ListOldest)
-				jsonRoutes.GET("/newest", jsonHandler.ListNewest)
+				jsonRoutes.GET("/newest", jsonHandler.ListNewest)  // Supports ?since=2h
+				jsonRoutes.GET("/range", jsonHandler.ListRange)    // Supports ?since=2h or ?start_time=X&end_time=Y
 			}
 		}
 	}

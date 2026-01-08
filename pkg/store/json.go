@@ -155,3 +155,58 @@ func (s *Store) GetNewestJSON(limit int) ([]json.RawMessage, []*ObjectHandle, er
 
 	return results, validHandles, nil
 }
+
+// GetJSONSince retrieves JSON objects from the last duration.
+// For example, GetJSONSince(time.Hour, 100) returns up to 100 objects from the last hour.
+func (s *Store) GetJSONSince(d time.Duration, limit int) ([]json.RawMessage, []*ObjectHandle, error) {
+	handles, err := s.GetObjectsSince(d, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	results := make([]json.RawMessage, 0, len(handles))
+	validHandles := make([]*ObjectHandle, 0, len(handles))
+
+	for _, h := range handles {
+		data, err := s.GetObject(h)
+		if err != nil {
+			continue
+		}
+		var raw json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			// Skip non-JSON entries
+			continue
+		}
+		results = append(results, raw)
+		validHandles = append(validHandles, h)
+	}
+
+	return results, validHandles, nil
+}
+
+// GetJSONInRange retrieves JSON objects within a time range.
+func (s *Store) GetJSONInRange(startTime, endTime int64, limit int) ([]json.RawMessage, []*ObjectHandle, error) {
+	handles, err := s.GetObjectsInRange(startTime, endTime, limit)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	results := make([]json.RawMessage, 0, len(handles))
+	validHandles := make([]*ObjectHandle, 0, len(handles))
+
+	for _, h := range handles {
+		data, err := s.GetObject(h)
+		if err != nil {
+			continue
+		}
+		var raw json.RawMessage
+		if err := json.Unmarshal(data, &raw); err != nil {
+			// Skip non-JSON entries
+			continue
+		}
+		results = append(results, raw)
+		validHandles = append(validHandles, h)
+	}
+
+	return results, validHandles, nil
+}

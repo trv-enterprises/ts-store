@@ -347,6 +347,15 @@ func (s *Store) GetNewestObjects(limit int) ([]*ObjectHandle, error) {
 	return handles, nil
 }
 
+// GetObjectsSince returns objects from the last duration.
+// For example, GetObjectsSince(time.Hour) returns objects from the last hour.
+// Returns handles only, not data.
+func (s *Store) GetObjectsSince(d time.Duration, limit int) ([]*ObjectHandle, error) {
+	endTime := time.Now().UnixNano()
+	startTime := endTime - d.Nanoseconds()
+	return s.GetObjectsInRange(startTime, endTime, limit)
+}
+
 // GetObjectsInRange returns objects with timestamps in [startTime, endTime].
 // Returns handles only, not data.
 func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*ObjectHandle, error) {
