@@ -5,7 +5,6 @@
 package store
 
 import (
-	"encoding/binary"
 	"errors"
 	"time"
 
@@ -13,37 +12,24 @@ import (
 )
 
 var (
-	ErrObjectNotFound   = errors.New("object not found")
-	ErrObjectCorrupted  = errors.New("object data corrupted")
-	ErrObjectTooLarge   = errors.New("object exceeds maximum size")
+	ErrObjectNotFound  = errors.New("object not found")
+	ErrObjectTooLarge  = errors.New("object exceeds maximum block size")
 )
 
 // ObjectHandle identifies a stored object.
 type ObjectHandle struct {
-	Timestamp       int64  `json:"timestamp"`
-	PrimaryBlockNum uint32 `json:"primary_block_num"`
-	TotalSize       uint32 `json:"total_size"`
-	BlockCount      uint32 `json:"block_count"` // Primary + attached
+	Timestamp int64  `json:"timestamp"`
+	BlockNum  uint32 `json:"block_num"`
+	Size      uint32 `json:"size"`
 }
 
-// objectHeader is stored at the beginning of the primary block's data.
-// It describes the full object spanning multiple blocks.
-// Size: 16 bytes
-type objectHeader struct {
-	Magic      uint32 // 0x4F424A31 = "OBJ1"
-	TotalSize  uint32 // Total size of object data (excluding headers)
-	BlockCount uint32 // Total number of blocks (primary + attached)
-	Checksum   uint32 // Simple checksum of object data
+// MaxObjectSize returns the maximum object size for this store.
+func (s *Store) MaxObjectSize() uint32 {
+	return s.config.DataBlockSize - block.BlockHeaderSize
 }
 
-const (
-	objectMagic      = 0x4F424A31 // "OBJ1"
-	objectHeaderSize = 16
-)
-
-// PutObject stores an arbitrary-sized object at the given timestamp.
-// The object is automatically split across multiple blocks if needed.
-// Returns a handle that can be used to retrieve or delete the object.
+// PutObject stores an object at the given timestamp.
+// Returns ErrObjectTooLarge if data exceeds block size.
 func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -56,85 +42,24 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 		return nil, ErrInvalidTimestamp
 	}
 
-	// Calculate usable space per block
-	usablePerBlock := s.config.DataBlockSize - block.BlockHeaderSize
-	usableInPrimary := usablePerBlock - objectHeaderSize // Primary has object header
-
-	// Calculate blocks needed
-	dataLen := uint32(len(data))
-	blocksNeeded := uint32(1) // At least primary
-
-	if dataLen > usableInPrimary {
-		remaining := dataLen - usableInPrimary
-		additionalBlocks := (remaining + usablePerBlock - 1) / usablePerBlock
-		blocksNeeded += additionalBlocks
+	maxSize := s.config.DataBlockSize - block.BlockHeaderSize
+	if uint32(len(data)) > maxSize {
+		return nil, ErrObjectTooLarge
 	}
 
-	// Calculate checksum
-	checksum := calculateChecksum(data)
-
-	// Create object header
-	header := objectHeader{
-		Magic:      objectMagic,
-		TotalSize:  dataLen,
-		BlockCount: blocksNeeded,
-		Checksum:   checksum,
-	}
-
-	// Prepare primary block data (header + first chunk)
-	primaryData := make([]byte, objectHeaderSize)
-	encodeObjectHeader(&header, primaryData)
-
-	firstChunkSize := usableInPrimary
-	if dataLen < usableInPrimary {
-		firstChunkSize = dataLen
-	}
-	primaryData = append(primaryData, data[:firstChunkSize]...)
-
-	// Insert primary block
-	primaryBlockNum, err := s.insertLocked(timestamp, primaryData)
+	blockNum, err := s.insertLocked(timestamp, data)
 	if err != nil {
 		return nil, err
 	}
 
-	// Store remaining data in attached blocks
-	offset := firstChunkSize
-	for i := uint32(1); i < blocksNeeded; i++ {
-		// Calculate chunk size for this block
-		remaining := dataLen - offset
-		chunkSize := usablePerBlock
-		if remaining < usablePerBlock {
-			chunkSize = remaining
-		}
-
-		// Get chunk data
-		chunk := data[offset : offset+chunkSize]
-
-		// Attach and write block
-		attachedBlockNum, err := s.attachBlockLocked(primaryBlockNum)
-		if err != nil {
-			// Rollback: try to reclaim what we've allocated
-			// In a production system, this would need better handling
-			return nil, err
-		}
-
-		if err := s.writeBlockDataLocked(attachedBlockNum, chunk); err != nil {
-			return nil, err
-		}
-
-		offset += chunkSize
-	}
-
-	// Persist metadata
 	if err := s.writeMetaLocked(); err != nil {
 		return nil, err
 	}
 
 	return &ObjectHandle{
-		Timestamp:       timestamp,
-		PrimaryBlockNum: primaryBlockNum,
-		TotalSize:       dataLen,
-		BlockCount:      blocksNeeded,
+		Timestamp: timestamp,
+		BlockNum:  blockNum,
+		Size:      uint32(len(data)),
 	}, nil
 }
 
@@ -143,8 +68,7 @@ func (s *Store) PutObjectNow(data []byte) (*ObjectHandle, error) {
 	return s.PutObject(time.Now().UnixNano(), data)
 }
 
-// GetObject retrieves a complete object by its handle.
-// The data is reassembled from all blocks.
+// GetObject retrieves an object by its handle.
 func (s *Store) GetObject(handle *ObjectHandle) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -153,7 +77,7 @@ func (s *Store) GetObject(handle *ObjectHandle) ([]byte, error) {
 		return nil, ErrStoreClosed
 	}
 
-	return s.getObjectLocked(handle.PrimaryBlockNum)
+	return s.readBlockDataLocked(handle.BlockNum)
 }
 
 // GetObjectByTime retrieves an object by its timestamp.
@@ -180,29 +104,20 @@ func (s *Store) GetObjectByTime(timestamp int64) ([]byte, *ObjectHandle, error) 
 		return nil, nil, ErrTimestampNotFound
 	}
 
-	data, err := s.getObjectLocked(blockNum)
+	data, err := s.readBlockDataLocked(blockNum)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Build handle from block data
-	header, err := s.readBlockHeader(blockNum)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	handle := &ObjectHandle{
-		Timestamp:       timestamp,
-		PrimaryBlockNum: blockNum,
-		TotalSize:       uint32(len(data)),
-		BlockCount:      1 + header.AttachedCount,
-	}
-
-	return data, handle, nil
+	return data, &ObjectHandle{
+		Timestamp: timestamp,
+		BlockNum:  blockNum,
+		Size:      uint32(len(data)),
+	}, nil
 }
 
-// GetObjectByBlock retrieves an object by its primary block number.
-func (s *Store) GetObjectByBlock(primaryBlockNum uint32) ([]byte, *ObjectHandle, error) {
+// GetObjectByBlock retrieves an object by its block number.
+func (s *Store) GetObjectByBlock(blockNum uint32) ([]byte, *ObjectHandle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -210,34 +125,25 @@ func (s *Store) GetObjectByBlock(primaryBlockNum uint32) ([]byte, *ObjectHandle,
 		return nil, nil, ErrStoreClosed
 	}
 
-	if primaryBlockNum >= s.meta.NumBlocks {
+	if blockNum >= s.meta.NumBlocks {
 		return nil, nil, ErrBlockOutOfRange
 	}
 
-	data, err := s.getObjectLocked(primaryBlockNum)
+	data, err := s.readBlockDataLocked(blockNum)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Build handle
-	header, err := s.readBlockHeader(primaryBlockNum)
+	header, err := s.readBlockHeader(blockNum)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	handle := &ObjectHandle{
-		Timestamp:       header.Timestamp,
-		PrimaryBlockNum: primaryBlockNum,
-		TotalSize:       uint32(len(data)),
-		BlockCount:      1 + header.AttachedCount,
-	}
-
-	return data, handle, nil
-}
-
-// ListObjectResult contains an object handle without the data.
-type ListObjectResult struct {
-	Handle *ObjectHandle
+	return data, &ObjectHandle{
+		Timestamp: header.Timestamp,
+		BlockNum:  blockNum,
+		Size:      uint32(len(data)),
+	}, nil
 }
 
 // GetOldestObjects returns the N oldest objects (from tail).
@@ -281,10 +187,9 @@ func (s *Store) GetOldestObjects(limit int) ([]*ObjectHandle, error) {
 		}
 
 		handles = append(handles, &ObjectHandle{
-			Timestamp:       entry.Timestamp,
-			PrimaryBlockNum: blockNum,
-			TotalSize:       header.DataLen, // Note: this is block data len, not total object size
-			BlockCount:      1 + header.AttachedCount,
+			Timestamp: entry.Timestamp,
+			BlockNum:  blockNum,
+			Size:      header.DataLen,
 		})
 	}
 
@@ -337,10 +242,9 @@ func (s *Store) GetNewestObjects(limit int) ([]*ObjectHandle, error) {
 		}
 
 		handles = append(handles, &ObjectHandle{
-			Timestamp:       entry.Timestamp,
-			PrimaryBlockNum: blockNum,
-			TotalSize:       header.DataLen,
-			BlockCount:      1 + header.AttachedCount,
+			Timestamp: entry.Timestamp,
+			BlockNum:  blockNum,
+			Size:      header.DataLen,
 		})
 	}
 
@@ -412,17 +316,16 @@ func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*Objec
 		}
 
 		handles = append(handles, &ObjectHandle{
-			Timestamp:       entry.Timestamp,
-			PrimaryBlockNum: blockNum,
-			TotalSize:       header.DataLen,
-			BlockCount:      1 + header.AttachedCount,
+			Timestamp: entry.Timestamp,
+			BlockNum:  blockNum,
+			Size:      header.DataLen,
 		})
 	}
 
 	return handles, nil
 }
 
-// DeleteObject removes an object and all its blocks.
+// DeleteObject removes an object.
 func (s *Store) DeleteObject(handle *ObjectHandle) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -431,7 +334,12 @@ func (s *Store) DeleteObject(handle *ObjectHandle) error {
 		return ErrStoreClosed
 	}
 
-	return s.deleteObjectLocked(handle.PrimaryBlockNum)
+	if err := s.reclaimBlock(handle.BlockNum); err != nil {
+		return err
+	}
+
+	s.adjustTailAfterReclaim()
+	return s.writeMetaLocked()
 }
 
 // DeleteObjectByTime removes an object by its timestamp.
@@ -458,80 +366,7 @@ func (s *Store) DeleteObjectByTime(timestamp int64) error {
 		return ErrTimestampNotFound
 	}
 
-	return s.deleteObjectLocked(blockNum)
-}
-
-// getObjectLocked reads and reassembles an object from blocks.
-// Lock must be held.
-func (s *Store) getObjectLocked(primaryBlockNum uint32) ([]byte, error) {
-	// Read primary block
-	primaryData, err := s.readBlockDataLocked(primaryBlockNum)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(primaryData) < objectHeaderSize {
-		return nil, ErrObjectCorrupted
-	}
-
-	// Parse object header
-	var header objectHeader
-	decodeObjectHeader(primaryData[:objectHeaderSize], &header)
-
-	if header.Magic != objectMagic {
-		// Not an object-format block, return raw data
-		return primaryData, nil
-	}
-
-	// Allocate buffer for full object
-	result := make([]byte, 0, header.TotalSize)
-
-	// Add data from primary block (after header)
-	result = append(result, primaryData[objectHeaderSize:]...)
-
-	// Read attached blocks if needed
-	if header.BlockCount > 1 {
-		blockHeader, err := s.readBlockHeader(primaryBlockNum)
-		if err != nil {
-			return nil, err
-		}
-
-		// Walk the attached block chain
-		currentBlock := blockHeader.FirstAttached
-		for i := uint32(1); i < header.BlockCount; i++ {
-			attachedData, err := s.readBlockDataLocked(currentBlock)
-			if err != nil {
-				return nil, err
-			}
-			result = append(result, attachedData...)
-
-			// Get next attached block
-			attachedHeader, err := s.readBlockHeader(currentBlock)
-			if err != nil {
-				return nil, err
-			}
-			currentBlock = attachedHeader.NextFree // NextFree used as next-attached link
-		}
-	}
-
-	// Trim to actual size (in case blocks had padding)
-	if uint32(len(result)) > header.TotalSize {
-		result = result[:header.TotalSize]
-	}
-
-	// Verify checksum
-	if calculateChecksum(result) != header.Checksum {
-		return nil, ErrObjectCorrupted
-	}
-
-	return result, nil
-}
-
-// deleteObjectLocked removes an object and reclaims its blocks.
-// Lock must be held.
-func (s *Store) deleteObjectLocked(primaryBlockNum uint32) error {
-	// Use the existing reclaim mechanism which handles attached blocks
-	if err := s.reclaimBlock(primaryBlockNum); err != nil {
+	if err := s.reclaimBlock(blockNum); err != nil {
 		return err
 	}
 
@@ -547,7 +382,7 @@ func (s *Store) insertLocked(timestamp int64, data []byte) (uint32, error) {
 
 	maxData := s.config.DataBlockSize - block.BlockHeaderSize
 	if uint32(len(data)) > maxData {
-		return 0, ErrBlockOutOfRange
+		return 0, ErrObjectTooLarge
 	}
 
 	var blockNum uint32
@@ -572,14 +407,10 @@ func (s *Store) insertLocked(timestamp int64, data []byte) (uint32, error) {
 	}
 
 	header := &block.BlockHeader{
-		Timestamp:     timestamp,
-		BlockNum:      blockNum,
-		AttachedCount: 0,
-		FirstAttached: 0,
-		LastAttached:  0,
-		DataLen:       uint32(len(data)),
-		Flags:         block.FlagPrimary,
-		NextFree:      0,
+		Timestamp: timestamp,
+		BlockNum:  blockNum,
+		DataLen:   uint32(len(data)),
+		Flags:     block.FlagPrimary,
 	}
 
 	if err := s.writeBlockHeader(blockNum, header); err != nil {
@@ -594,10 +425,8 @@ func (s *Store) insertLocked(timestamp int64, data []byte) (uint32, error) {
 	}
 
 	entry := &block.IndexEntry{
-		Timestamp:     timestamp,
-		BlockNum:      blockNum,
-		AttachedCount: 0,
-		FirstAttached: 0,
+		Timestamp: timestamp,
+		BlockNum:  blockNum,
 	}
 	if err := s.writeIndexEntry(blockNum, entry); err != nil {
 		return 0, err
@@ -606,93 +435,20 @@ func (s *Store) insertLocked(timestamp int64, data []byte) (uint32, error) {
 	return blockNum, nil
 }
 
-// attachBlockLocked attaches a block without lock acquisition.
-func (s *Store) attachBlockLocked(primaryBlockNum uint32) (uint32, error) {
-	if primaryBlockNum >= s.meta.NumBlocks {
-		return 0, ErrBlockOutOfRange
+// ReadBlockData reads the data from a block.
+func (s *Store) ReadBlockData(blockNum uint32) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.closed {
+		return nil, ErrStoreClosed
 	}
 
-	primaryHeader, err := s.readBlockHeader(primaryBlockNum)
-	if err != nil {
-		return 0, err
+	if blockNum >= s.meta.NumBlocks {
+		return nil, ErrBlockOutOfRange
 	}
 
-	attachedBlockNum, err := s.allocateAttachedBlock()
-	if err != nil {
-		return 0, err
-	}
-
-	attachedHeader := &block.BlockHeader{
-		Timestamp:     primaryHeader.Timestamp,
-		BlockNum:      attachedBlockNum,
-		AttachedCount: 0,
-		FirstAttached: 0,
-		LastAttached:  0,
-		DataLen:       0,
-		Flags:         block.FlagAttached,
-		NextFree:      0,
-	}
-
-	if primaryHeader.AttachedCount == 0 {
-		primaryHeader.FirstAttached = attachedBlockNum
-		primaryHeader.LastAttached = attachedBlockNum
-	} else {
-		lastAttached, err := s.readBlockHeader(primaryHeader.LastAttached)
-		if err != nil {
-			return 0, err
-		}
-		lastAttached.NextFree = attachedBlockNum
-		if err := s.writeBlockHeader(primaryHeader.LastAttached, lastAttached); err != nil {
-			return 0, err
-		}
-		primaryHeader.LastAttached = attachedBlockNum
-	}
-
-	primaryHeader.AttachedCount++
-
-	if err := s.writeBlockHeader(attachedBlockNum, attachedHeader); err != nil {
-		return 0, err
-	}
-	if err := s.writeBlockHeader(primaryBlockNum, primaryHeader); err != nil {
-		return 0, err
-	}
-
-	entry, err := s.readIndexEntry(primaryBlockNum)
-	if err != nil {
-		return 0, err
-	}
-	entry.AttachedCount = primaryHeader.AttachedCount
-	if entry.FirstAttached == 0 {
-		entry.FirstAttached = attachedBlockNum
-	}
-	if err := s.writeIndexEntry(primaryBlockNum, entry); err != nil {
-		return 0, err
-	}
-
-	s.meta.TotalAttached++
-
-	return attachedBlockNum, nil
-}
-
-// writeBlockDataLocked writes data to a block without lock acquisition.
-func (s *Store) writeBlockDataLocked(blockNum uint32, data []byte) error {
-	maxData := s.config.DataBlockSize - block.BlockHeaderSize
-	if uint32(len(data)) > maxData {
-		return ErrBlockOutOfRange
-	}
-
-	header, err := s.readBlockHeader(blockNum)
-	if err != nil {
-		return err
-	}
-	header.DataLen = uint32(len(data))
-	if err := s.writeBlockHeader(blockNum, header); err != nil {
-		return err
-	}
-
-	offset := s.blockOffset(blockNum) + block.BlockHeaderSize
-	_, err = s.dataFile.WriteAt(data, offset)
-	return err
+	return s.readBlockDataLocked(blockNum)
 }
 
 // readBlockDataLocked reads block data without lock acquisition.
@@ -714,29 +470,4 @@ func (s *Store) readBlockDataLocked(blockNum uint32) ([]byte, error) {
 	}
 
 	return data, nil
-}
-
-// encodeObjectHeader serializes an object header.
-func encodeObjectHeader(h *objectHeader, buf []byte) {
-	binary.LittleEndian.PutUint32(buf[0:4], h.Magic)
-	binary.LittleEndian.PutUint32(buf[4:8], h.TotalSize)
-	binary.LittleEndian.PutUint32(buf[8:12], h.BlockCount)
-	binary.LittleEndian.PutUint32(buf[12:16], h.Checksum)
-}
-
-// decodeObjectHeader deserializes an object header.
-func decodeObjectHeader(buf []byte, h *objectHeader) {
-	h.Magic = binary.LittleEndian.Uint32(buf[0:4])
-	h.TotalSize = binary.LittleEndian.Uint32(buf[4:8])
-	h.BlockCount = binary.LittleEndian.Uint32(buf[8:12])
-	h.Checksum = binary.LittleEndian.Uint32(buf[12:16])
-}
-
-// calculateChecksum computes a simple checksum of data.
-func calculateChecksum(data []byte) uint32 {
-	var sum uint32
-	for _, b := range data {
-		sum = sum*31 + uint32(b)
-	}
-	return sum
 }

@@ -36,11 +36,10 @@ type PutJSONRequest struct {
 
 // JSONResponse represents a JSON object response.
 type JSONResponse struct {
-	Timestamp       int64           `json:"timestamp"`
-	PrimaryBlockNum uint32          `json:"primary_block_num"`
-	TotalSize       uint32          `json:"total_size"`
-	BlockCount      uint32          `json:"block_count"`
-	Data            json.RawMessage `json:"data"`
+	Timestamp int64           `json:"timestamp"`
+	BlockNum  uint32          `json:"block_num"`
+	Size      uint32          `json:"size"`
+	Data      json.RawMessage `json:"data"`
 }
 
 // Put handles POST /api/stores/:store/json
@@ -86,10 +85,9 @@ func (h *JSONHandler) Put(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, ObjectHandleResponse{
-		Timestamp:       handle.Timestamp,
-		PrimaryBlockNum: handle.PrimaryBlockNum,
-		TotalSize:       handle.TotalSize,
-		BlockCount:      handle.BlockCount,
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
 	})
 }
 
@@ -123,11 +121,10 @@ func (h *JSONHandler) GetByTime(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, JSONResponse{
-		Timestamp:       handle.Timestamp,
-		PrimaryBlockNum: handle.PrimaryBlockNum,
-		TotalSize:       handle.TotalSize,
-		BlockCount:      handle.BlockCount,
-		Data:            raw,
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
+		Data:      raw,
 	})
 }
 
@@ -162,11 +159,10 @@ func (h *JSONHandler) GetByBlock(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, JSONResponse{
-		Timestamp:       handle.Timestamp,
-		PrimaryBlockNum: handle.PrimaryBlockNum,
-		TotalSize:       handle.TotalSize,
-		BlockCount:      handle.BlockCount,
-		Data:            raw,
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
+		Data:      raw,
 	})
 }
 
@@ -201,11 +197,10 @@ func (h *JSONHandler) ListOldest(c *gin.Context) {
 	objects := make([]JSONResponse, len(rawMsgs))
 	for i, raw := range rawMsgs {
 		objects[i] = JSONResponse{
-			Timestamp:       handles[i].Timestamp,
-			PrimaryBlockNum: handles[i].PrimaryBlockNum,
-			TotalSize:       handles[i].TotalSize,
-			BlockCount:      handles[i].BlockCount,
-			Data:            raw,
+			Timestamp: handles[i].Timestamp,
+			BlockNum:  handles[i].BlockNum,
+			Size:      handles[i].Size,
+			Data:      raw,
 		}
 	}
 
@@ -259,11 +254,10 @@ func (h *JSONHandler) ListNewest(c *gin.Context) {
 	objects := make([]JSONResponse, len(rawMsgs))
 	for i, raw := range rawMsgs {
 		objects[i] = JSONResponse{
-			Timestamp:       handles[i].Timestamp,
-			PrimaryBlockNum: handles[i].PrimaryBlockNum,
-			TotalSize:       handles[i].TotalSize,
-			BlockCount:      handles[i].BlockCount,
-			Data:            raw,
+			Timestamp: handles[i].Timestamp,
+			BlockNum:  handles[i].BlockNum,
+			Size:      handles[i].Size,
+			Data:      raw,
 		}
 	}
 
@@ -338,11 +332,10 @@ func (h *JSONHandler) ListRange(c *gin.Context) {
 	objects := make([]JSONResponse, len(rawMsgs))
 	for i, raw := range rawMsgs {
 		objects[i] = JSONResponse{
-			Timestamp:       handles[i].Timestamp,
-			PrimaryBlockNum: handles[i].PrimaryBlockNum,
-			TotalSize:       handles[i].TotalSize,
-			BlockCount:      handles[i].BlockCount,
-			Data:            raw,
+			Timestamp: handles[i].Timestamp,
+			BlockNum:  handles[i].BlockNum,
+			Size:      handles[i].Size,
+			Data:      raw,
 		}
 	}
 

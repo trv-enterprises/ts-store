@@ -63,9 +63,6 @@ func (s *Store) pushFreeList(blockNum uint32) error {
 	header.NextFree = s.meta.FreeListHead
 	header.BlockNum = blockNum
 	header.Timestamp = 0
-	header.AttachedCount = 0
-	header.FirstAttached = 0
-	header.LastAttached = 0
 	header.DataLen = 0
 
 	if err := s.writeBlockHeader(blockNum, header); err != nil {
@@ -79,23 +76,10 @@ func (s *Store) pushFreeList(blockNum uint32) error {
 	return nil
 }
 
-// reclaimOldestBlock reclaims the oldest primary block (at tail) and all its attached blocks.
+// reclaimOldestBlock reclaims the oldest primary block (at tail).
 // Lock must be held.
 func (s *Store) reclaimOldestBlock() (uint32, error) {
 	tailBlock := s.meta.TailBlock
-
-	// Read the tail block header
-	header, err := s.readBlockHeader(tailBlock)
-	if err != nil {
-		return 0, err
-	}
-
-	// Reclaim all attached blocks first (add to free list)
-	if header.AttachedCount > 0 {
-		if err := s.reclaimAttachedBlocks(header); err != nil {
-			return 0, err
-		}
-	}
 
 	// Clear the index entry for this block
 	if err := s.clearIndexEntry(tailBlock); err != nil {
@@ -107,13 +91,10 @@ func (s *Store) reclaimOldestBlock() (uint32, error) {
 
 	// The reclaimed primary block is now available for use
 	// We return it directly instead of putting it on the free list
-	header.Flags = 0 // Clear all flags
-	header.Timestamp = 0
-	header.AttachedCount = 0
-	header.FirstAttached = 0
-	header.LastAttached = 0
-	header.DataLen = 0
-	header.NextFree = 0
+	header := &block.BlockHeader{
+		BlockNum: tailBlock,
+		Flags:    0,
+	}
 
 	if err := s.writeBlockHeader(tailBlock, header); err != nil {
 		return 0, err
@@ -122,46 +103,17 @@ func (s *Store) reclaimOldestBlock() (uint32, error) {
 	return tailBlock, nil
 }
 
-// reclaimAttachedBlocks adds all attached blocks to the free list.
-// Lock must be held.
-func (s *Store) reclaimAttachedBlocks(primaryHeader *block.BlockHeader) error {
-	attachedNum := primaryHeader.FirstAttached
-
-	for i := uint32(0); i < primaryHeader.AttachedCount; i++ {
-		// Read attached block header to get next attached
-		attachedHeader, err := s.readBlockHeader(attachedNum)
-		if err != nil {
-			return err
-		}
-
-		nextAttached := attachedHeader.NextFree // NextFree used as next-attached link
-
-		// Add to free list
-		if err := s.pushFreeList(attachedNum); err != nil {
-			return err
-		}
-
-		s.meta.TotalAttached--
-		attachedNum = nextAttached
-	}
-
-	return nil
-}
-
-// clearIndexEntry clears the index entry for a given primary block.
+// clearIndexEntry clears the index entry for a given block.
 // Lock must be held.
 func (s *Store) clearIndexEntry(blockNum uint32) error {
 	entry := &block.IndexEntry{
-		Timestamp:     0,
-		BlockNum:      blockNum,
-		AttachedCount: 0,
-		FirstAttached: 0,
+		Timestamp: 0,
+		BlockNum:  blockNum,
 	}
 	return s.writeIndexEntry(blockNum, entry)
 }
 
-// addRangeToFreeList adds a range of primary blocks (by block number) to the free list.
-// This reclaims each block and its attached blocks.
+// AddRangeToFreeList adds a range of blocks (by block number) to the free list.
 func (s *Store) AddRangeToFreeList(startBlock, endBlock uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -198,7 +150,7 @@ func (s *Store) AddRangeToFreeList(startBlock, endBlock uint32) error {
 	return s.writeMetaLocked()
 }
 
-// reclaimBlock reclaims a single primary block and its attached blocks.
+// reclaimBlock reclaims a single block.
 // Lock must be held.
 func (s *Store) reclaimBlock(blockNum uint32) error {
 	header, err := s.readBlockHeader(blockNum)
@@ -211,19 +163,12 @@ func (s *Store) reclaimBlock(blockNum uint32) error {
 		return nil
 	}
 
-	// Reclaim attached blocks
-	if header.AttachedCount > 0 {
-		if err := s.reclaimAttachedBlocks(header); err != nil {
-			return err
-		}
-	}
-
 	// Clear index entry
 	if err := s.clearIndexEntry(blockNum); err != nil {
 		return err
 	}
 
-	// Add primary block to free list
+	// Add block to free list
 	return s.pushFreeList(blockNum)
 }
 

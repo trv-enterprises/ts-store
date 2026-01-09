@@ -15,7 +15,7 @@ import (
 	"github.com/tviviano/ts-store/pkg/store"
 )
 
-// ObjectHandler handles object-level operations (large data spanning multiple blocks).
+// ObjectHandler handles object-level operations.
 type ObjectHandler struct {
 	storeService *service.StoreService
 }
@@ -35,23 +35,21 @@ type PutObjectRequest struct {
 
 // ObjectHandleResponse represents the response after storing an object.
 type ObjectHandleResponse struct {
-	Timestamp       int64  `json:"timestamp"`
-	PrimaryBlockNum uint32 `json:"primary_block_num"`
-	TotalSize       uint32 `json:"total_size"`
-	BlockCount      uint32 `json:"block_count"`
+	Timestamp int64  `json:"timestamp"`
+	BlockNum  uint32 `json:"block_num"`
+	Size      uint32 `json:"size"`
 }
 
 // ObjectDataResponse represents a response containing object data.
 type ObjectDataResponse struct {
-	Timestamp       int64  `json:"timestamp"`
-	PrimaryBlockNum uint32 `json:"primary_block_num"`
-	TotalSize       uint32 `json:"total_size"`
-	BlockCount      uint32 `json:"block_count"`
-	Data            string `json:"data"` // Base64 encoded
+	Timestamp int64  `json:"timestamp"`
+	BlockNum  uint32 `json:"block_num"`
+	Size      uint32 `json:"size"`
+	Data      string `json:"data"` // Base64 encoded
 }
 
 // Put handles POST /api/stores/:store/objects
-// Stores an object that may span multiple blocks.
+// Stores an object.
 func (h *ObjectHandler) Put(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -89,10 +87,9 @@ func (h *ObjectHandler) Put(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, ObjectHandleResponse{
-		Timestamp:       handle.Timestamp,
-		PrimaryBlockNum: handle.PrimaryBlockNum,
-		TotalSize:       handle.TotalSize,
-		BlockCount:      handle.BlockCount,
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
 	})
 }
 
@@ -125,16 +122,15 @@ func (h *ObjectHandler) GetByTime(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, ObjectDataResponse{
-		Timestamp:       handle.Timestamp,
-		PrimaryBlockNum: handle.PrimaryBlockNum,
-		TotalSize:       handle.TotalSize,
-		BlockCount:      handle.BlockCount,
-		Data:            base64.StdEncoding.EncodeToString(data),
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
+		Data:      base64.StdEncoding.EncodeToString(data),
 	})
 }
 
 // GetByBlock handles GET /api/stores/:store/objects/block/:blocknum
-// Retrieves an object by its primary block number.
+// Retrieves an object by its block number.
 func (h *ObjectHandler) GetByBlock(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -163,11 +159,10 @@ func (h *ObjectHandler) GetByBlock(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, ObjectDataResponse{
-		Timestamp:       handle.Timestamp,
-		PrimaryBlockNum: handle.PrimaryBlockNum,
-		TotalSize:       handle.TotalSize,
-		BlockCount:      handle.BlockCount,
-		Data:            base64.StdEncoding.EncodeToString(data),
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
+		Data:      base64.StdEncoding.EncodeToString(data),
 	})
 }
 
@@ -202,7 +197,7 @@ func (h *ObjectHandler) DeleteByTime(c *gin.Context) {
 }
 
 // DeleteByBlock handles DELETE /api/stores/:store/objects/block/:blocknum
-// Deletes an object by its primary block number.
+// Deletes an object by its block number.
 func (h *ObjectHandler) DeleteByBlock(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -222,7 +217,7 @@ func (h *ObjectHandler) DeleteByBlock(c *gin.Context) {
 
 	// Create handle for deletion
 	handle := &store.ObjectHandle{
-		PrimaryBlockNum: blockNum,
+		BlockNum: blockNum,
 	}
 
 	if err := st.DeleteObject(handle); err != nil {
@@ -265,10 +260,9 @@ func (h *ObjectHandler) ListOldest(c *gin.Context) {
 	objects := make([]*ObjectHandleResponse, len(handles))
 	for i, h := range handles {
 		objects[i] = &ObjectHandleResponse{
-			Timestamp:       h.Timestamp,
-			PrimaryBlockNum: h.PrimaryBlockNum,
-			TotalSize:       h.TotalSize,
-			BlockCount:      h.BlockCount,
+			Timestamp: h.Timestamp,
+			BlockNum:  h.BlockNum,
+			Size:      h.Size,
 		}
 	}
 
@@ -322,10 +316,9 @@ func (h *ObjectHandler) ListNewest(c *gin.Context) {
 	objects := make([]*ObjectHandleResponse, len(handles))
 	for i, h := range handles {
 		objects[i] = &ObjectHandleResponse{
-			Timestamp:       h.Timestamp,
-			PrimaryBlockNum: h.PrimaryBlockNum,
-			TotalSize:       h.TotalSize,
-			BlockCount:      h.BlockCount,
+			Timestamp: h.Timestamp,
+			BlockNum:  h.BlockNum,
+			Size:      h.Size,
 		}
 	}
 
@@ -400,10 +393,9 @@ func (h *ObjectHandler) ListRange(c *gin.Context) {
 	objects := make([]*ObjectHandleResponse, len(handles))
 	for i, h := range handles {
 		objects[i] = &ObjectHandleResponse{
-			Timestamp:       h.Timestamp,
-			PrimaryBlockNum: h.PrimaryBlockNum,
-			TotalSize:       h.TotalSize,
-			BlockCount:      h.BlockCount,
+			Timestamp: h.Timestamp,
+			BlockNum:  h.BlockNum,
+			Size:      h.Size,
 		}
 	}
 

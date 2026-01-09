@@ -167,68 +167,6 @@ func TestCircularWrap(t *testing.T) {
 	}
 }
 
-func TestAttachedBlocks(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfig()
-	cfg.Name = "test-store"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 10
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	// Insert primary block
-	ts := time.Now().UnixNano()
-	primaryBlock, err := s.Insert(ts, []byte("primary"))
-	if err != nil {
-		t.Fatalf("Failed to insert primary: %v", err)
-	}
-
-	// Attach blocks
-	attached1, err := s.AttachBlock(primaryBlock)
-	if err != nil {
-		t.Fatalf("Failed to attach block 1: %v", err)
-	}
-
-	attached2, err := s.AttachBlock(primaryBlock)
-	if err != nil {
-		t.Fatalf("Failed to attach block 2: %v", err)
-	}
-
-	// Write data to attached blocks
-	if err := s.WriteBlockData(attached1, []byte("attached1")); err != nil {
-		t.Fatalf("Failed to write to attached1: %v", err)
-	}
-	if err := s.WriteBlockData(attached2, []byte("attached2")); err != nil {
-		t.Fatalf("Failed to write to attached2: %v", err)
-	}
-
-	// Get attached blocks
-	attachedList, err := s.GetAttachedBlocks(primaryBlock)
-	if err != nil {
-		t.Fatalf("Failed to get attached blocks: %v", err)
-	}
-	if len(attachedList) != 2 {
-		t.Errorf("Expected 2 attached blocks, got %d", len(attachedList))
-	}
-
-	// Verify data
-	data1, _ := s.ReadBlockData(attached1)
-	if string(data1) != "attached1" {
-		t.Errorf("Wrong data in attached1: %s", data1)
-	}
-
-	// Verify stats
-	stats := s.Stats()
-	if stats.TotalAttached != 2 {
-		t.Errorf("Expected TotalAttached=2, got %d", stats.TotalAttached)
-	}
-}
-
 func TestRangeQuery(t *testing.T) {
 	tmpDir := t.TempDir()
 

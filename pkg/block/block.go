@@ -16,39 +16,34 @@ var (
 )
 
 // BlockHeader is stored at the beginning of each data block.
-// Total size: 40 bytes (fixed)
+// Total size: 32 bytes (fixed)
 type BlockHeader struct {
-	Timestamp     int64  // Unix nanoseconds
-	BlockNum      uint32 // Primary block number in circle (0 to NumBlocks-1)
-	AttachedCount uint32 // Number of attached overflow blocks
-	FirstAttached uint32 // Block number of first attached block (0 if none)
-	LastAttached  uint32 // Block number of last attached block (0 if none)
-	DataLen       uint32 // Actual data length in this block
-	Flags         uint32 // Block flags (free, primary, attached, etc.)
-	NextFree      uint32 // Next block in free list (only valid if on free list)
+	Timestamp int64  // Unix nanoseconds
+	BlockNum  uint32 // Block number in circle (0 to NumBlocks-1)
+	DataLen   uint32 // Actual data length in this block
+	Flags     uint32 // Block flags (free, primary)
+	NextFree  uint32 // Next block in free list (only valid if on free list)
+	Reserved  uint32 // Padding/future use
 }
 
 const (
-	BlockHeaderSize = 40
+	BlockHeaderSize = 32
 	MinBlockSize    = 64 // Minimum block size (must fit header + some data)
 
 	// Block flags
-	FlagFree     uint32 = 1 << 0 // Block is on free list
-	FlagPrimary  uint32 = 1 << 1 // Block is a primary circular block
-	FlagAttached uint32 = 1 << 2 // Block is attached to a primary block
+	FlagFree    uint32 = 1 << 0 // Block is on free list
+	FlagPrimary uint32 = 1 << 1 // Block is a primary circular block
 )
 
 // IndexEntry represents one entry in the circular index.
-// Total size: 24 bytes
+// Total size: 16 bytes
 type IndexEntry struct {
-	Timestamp     int64  // Unix nanoseconds (0 if slot is empty/reclaimed)
-	BlockNum      uint32 // Primary block number
-	AttachedCount uint32 // Number of attached blocks
-	FirstAttached uint32 // First attached block number
-	Reserved      uint32 // For alignment and future use
+	Timestamp int64  // Unix nanoseconds (0 if slot is empty/reclaimed)
+	BlockNum  uint32 // Block number
+	Reserved  uint32 // For alignment and future use
 }
 
-const IndexEntrySize = 24
+const IndexEntrySize = 16
 
 // ValidateBlockSize checks if size is a power of 2 and >= MinBlockSize
 func ValidateBlockSize(size uint32) error {
@@ -76,43 +71,35 @@ func IndexEntriesPerBlock(indexBlockSize uint32) uint32 {
 func (h *BlockHeader) Encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[0:8], uint64(h.Timestamp))
 	binary.LittleEndian.PutUint32(buf[8:12], h.BlockNum)
-	binary.LittleEndian.PutUint32(buf[12:16], h.AttachedCount)
-	binary.LittleEndian.PutUint32(buf[16:20], h.FirstAttached)
-	binary.LittleEndian.PutUint32(buf[20:24], h.LastAttached)
-	binary.LittleEndian.PutUint32(buf[24:28], h.DataLen)
-	binary.LittleEndian.PutUint32(buf[28:32], h.Flags)
-	binary.LittleEndian.PutUint32(buf[32:36], h.NextFree)
-	// bytes 36-39 reserved/padding
+	binary.LittleEndian.PutUint32(buf[12:16], h.DataLen)
+	binary.LittleEndian.PutUint32(buf[16:20], h.Flags)
+	binary.LittleEndian.PutUint32(buf[20:24], h.NextFree)
+	binary.LittleEndian.PutUint32(buf[24:28], h.Reserved)
+	// bytes 28-31 padding
 }
 
 // Decode deserializes bytes into a BlockHeader
 func (h *BlockHeader) Decode(buf []byte) {
 	h.Timestamp = int64(binary.LittleEndian.Uint64(buf[0:8]))
 	h.BlockNum = binary.LittleEndian.Uint32(buf[8:12])
-	h.AttachedCount = binary.LittleEndian.Uint32(buf[12:16])
-	h.FirstAttached = binary.LittleEndian.Uint32(buf[16:20])
-	h.LastAttached = binary.LittleEndian.Uint32(buf[20:24])
-	h.DataLen = binary.LittleEndian.Uint32(buf[24:28])
-	h.Flags = binary.LittleEndian.Uint32(buf[28:32])
-	h.NextFree = binary.LittleEndian.Uint32(buf[32:36])
+	h.DataLen = binary.LittleEndian.Uint32(buf[12:16])
+	h.Flags = binary.LittleEndian.Uint32(buf[16:20])
+	h.NextFree = binary.LittleEndian.Uint32(buf[20:24])
+	h.Reserved = binary.LittleEndian.Uint32(buf[24:28])
 }
 
 // Encode serializes an IndexEntry to bytes
 func (e *IndexEntry) Encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[0:8], uint64(e.Timestamp))
 	binary.LittleEndian.PutUint32(buf[8:12], e.BlockNum)
-	binary.LittleEndian.PutUint32(buf[12:16], e.AttachedCount)
-	binary.LittleEndian.PutUint32(buf[16:20], e.FirstAttached)
-	binary.LittleEndian.PutUint32(buf[20:24], e.Reserved)
+	binary.LittleEndian.PutUint32(buf[12:16], e.Reserved)
 }
 
 // Decode deserializes bytes into an IndexEntry
 func (e *IndexEntry) Decode(buf []byte) {
 	e.Timestamp = int64(binary.LittleEndian.Uint64(buf[0:8]))
 	e.BlockNum = binary.LittleEndian.Uint32(buf[8:12])
-	e.AttachedCount = binary.LittleEndian.Uint32(buf[12:16])
-	e.FirstAttached = binary.LittleEndian.Uint32(buf[16:20])
-	e.Reserved = binary.LittleEndian.Uint32(buf[20:24])
+	e.Reserved = binary.LittleEndian.Uint32(buf[12:16])
 }
 
 // Time returns the timestamp as a time.Time
@@ -133,9 +120,4 @@ func (h *BlockHeader) IsFree() bool {
 // IsPrimary returns true if block is a primary circular block
 func (h *BlockHeader) IsPrimary() bool {
 	return h.Flags&FlagPrimary != 0
-}
-
-// IsAttached returns true if block is attached to a primary block
-func (h *BlockHeader) IsAttached() bool {
-	return h.Flags&FlagAttached != 0
 }

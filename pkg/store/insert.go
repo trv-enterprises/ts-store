@@ -60,14 +60,10 @@ func (s *Store) Insert(timestamp int64, data []byte) (uint32, error) {
 
 	// Initialize block header
 	header := &block.BlockHeader{
-		Timestamp:     timestamp,
-		BlockNum:      blockNum,
-		AttachedCount: 0,
-		FirstAttached: 0,
-		LastAttached:  0,
-		DataLen:       uint32(len(data)),
-		Flags:         block.FlagPrimary,
-		NextFree:      0,
+		Timestamp: timestamp,
+		BlockNum:  blockNum,
+		DataLen:   uint32(len(data)),
+		Flags:     block.FlagPrimary,
 	}
 
 	// Write block header
@@ -85,10 +81,8 @@ func (s *Store) Insert(timestamp int64, data []byte) (uint32, error) {
 
 	// Update index entry
 	entry := &block.IndexEntry{
-		Timestamp:     timestamp,
-		BlockNum:      blockNum,
-		AttachedCount: 0,
-		FirstAttached: 0,
+		Timestamp: timestamp,
+		BlockNum:  blockNum,
 	}
 	if err := s.writeIndexEntry(blockNum, entry); err != nil {
 		return 0, err

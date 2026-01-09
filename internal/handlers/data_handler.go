@@ -84,10 +84,9 @@ func (h *DataHandler) Insert(c *gin.Context) {
 
 // BlockResponse represents a block data response.
 type BlockResponse struct {
-	BlockNum      uint32 `json:"block_num"`
-	Timestamp     int64  `json:"timestamp"`
-	Data          string `json:"data"` // Base64 encoded
-	AttachedCount uint32 `json:"attached_count"`
+	BlockNum  uint32 `json:"block_num"`
+	Timestamp int64  `json:"timestamp"`
+	Data      string `json:"data"` // Base64 encoded
 }
 
 // GetByTime handles GET /api/stores/:store/data/time/:timestamp
@@ -129,10 +128,9 @@ func (h *DataHandler) GetByTime(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, BlockResponse{
-		BlockNum:      blockNum,
-		Timestamp:     header.Timestamp,
-		Data:          base64.StdEncoding.EncodeToString(data),
-		AttachedCount: header.AttachedCount,
+		BlockNum:  blockNum,
+		Timestamp: header.Timestamp,
+		Data:      base64.StdEncoding.EncodeToString(data),
 	})
 }
 
@@ -169,10 +167,9 @@ func (h *DataHandler) GetByBlock(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, BlockResponse{
-		BlockNum:      blockNum,
-		Timestamp:     header.Timestamp,
-		Data:          base64.StdEncoding.EncodeToString(data),
-		AttachedCount: header.AttachedCount,
+		BlockNum:  blockNum,
+		Timestamp: header.Timestamp,
+		Data:      base64.StdEncoding.EncodeToString(data),
 	})
 }
 
@@ -225,131 +222,15 @@ func (h *DataHandler) GetRange(c *gin.Context) {
 		}
 
 		blocks = append(blocks, BlockResponse{
-			BlockNum:      blockNum,
-			Timestamp:     header.Timestamp,
-			Data:          base64.StdEncoding.EncodeToString(data),
-			AttachedCount: header.AttachedCount,
-		})
-	}
-
-	c.JSON(http.StatusOK, RangeResponse{
-		Blocks: blocks,
-		Count:  len(blocks),
-	})
-}
-
-// AttachRequest represents an attach block request.
-type AttachRequest struct {
-	Data string `json:"data"` // Base64 encoded data
-}
-
-// AttachResponse represents the attach response.
-type AttachResponse struct {
-	PrimaryBlockNum  uint32 `json:"primary_block_num"`
-	AttachedBlockNum uint32 `json:"attached_block_num"`
-}
-
-// AttachByBlock handles POST /api/stores/:store/data/block/:blocknum/attach
-func (h *DataHandler) AttachByBlock(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	blockNumStr := c.Param("blocknum")
-	blockNum64, err := strconv.ParseUint(blockNumStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
-		return
-	}
-	primaryBlockNum := uint32(blockNum64)
-
-	var req AttachRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Decode base64 data
-	data, err := base64.StdEncoding.DecodeString(req.Data)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid base64 data"})
-		return
-	}
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Attach new block
-	attachedBlockNum, err := st.AttachBlock(primaryBlockNum)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Write data to attached block
-	if len(data) > 0 {
-		if err := st.WriteBlockData(attachedBlockNum, data); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-	}
-
-	c.JSON(http.StatusCreated, AttachResponse{
-		PrimaryBlockNum:  primaryBlockNum,
-		AttachedBlockNum: attachedBlockNum,
-	})
-}
-
-// GetAttached handles GET /api/stores/:store/data/block/:blocknum/attached
-func (h *DataHandler) GetAttached(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	blockNumStr := c.Param("blocknum")
-	blockNum64, err := strconv.ParseUint(blockNumStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
-		return
-	}
-	primaryBlockNum := uint32(blockNum64)
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Get attached block numbers
-	attachedNums, err := st.GetAttachedBlocks(primaryBlockNum)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Read data from each attached block
-	blocks := make([]BlockResponse, 0, len(attachedNums))
-	for _, blockNum := range attachedNums {
-		data, err := st.ReadBlockData(blockNum)
-		if err != nil {
-			continue
-		}
-
-		header, err := st.GetBlockHeader(blockNum)
-		if err != nil {
-			continue
-		}
-
-		blocks = append(blocks, BlockResponse{
 			BlockNum:  blockNum,
 			Timestamp: header.Timestamp,
 			Data:      base64.StdEncoding.EncodeToString(data),
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"primary_block_num": primaryBlockNum,
-		"attached_blocks":   blocks,
-		"count":             len(blocks),
+	c.JSON(http.StatusOK, RangeResponse{
+		Blocks: blocks,
+		Count:  len(blocks),
 	})
 }
 

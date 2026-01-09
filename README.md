@@ -9,26 +9,20 @@ ts-store implements a circular buffer-based storage system optimized for time se
 - **Fixed storage footprint** - Total size is determined at creation time
 - **Automatic reclamation** - Oldest data is automatically reclaimed when space is needed
 - **O(log n) time lookups** - Binary search on sorted timestamps
-- **Overflow support** - Attached blocks allow entries to exceed a single block
+- **Single-block objects** - Each object fits in one block (max size = blockSize - 32 bytes)
 
 ### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Circular Primary Blocks                   │
+│                    Circular Data Blocks                      │
 │  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐      │
 │  │  0  │──│  1  │──│  2  │──│  3  │──│  4  │──│  5  │──... │
 │  │     │  │     │  │     │  │     │  │     │  │     │      │
-│  └──┬──┘  └─────┘  └──┬──┘  └─────┘  └─────┘  └─────┘      │
-│     │                 │                                      │
-│     ▼                 ▼                                      │
-│  ┌─────┐           ┌─────┐                                  │
-│  │ A.1 │           │ A.1 │  Attached Blocks (overflow)      │
-│  └──┬──┘           └──┬──┘                                  │
-│     ▼                 ▼                                      │
-│  ┌─────┐           ┌─────┐                                  │
-│  │ A.2 │           │ A.2 │                                  │
-│  └─────┘           └─────┘                                  │
+│  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘      │
+│     ↑                                   ↑                    │
+│    tail                               head                   │
+│  (oldest)                           (newest)                 │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -42,23 +36,22 @@ ts-store implements a circular buffer-based storage system optimized for time se
 
 **Key concepts:**
 
-- **Primary blocks** form a fixed-size circular buffer ordered by time
-- **Attached blocks** provide overflow capacity, linked to their primary block
+- **Data blocks** form a fixed-size circular buffer ordered by time
 - **Index** mirrors the circular structure, enabling binary search by timestamp
 - **Free list** tracks reclaimed blocks for reuse
 
-When the circular buffer is full, the oldest primary block (and its attached blocks) is automatically reclaimed.
+When the circular buffer is full, the oldest block is automatically reclaimed.
 
 ## Features
 
 - **Configurable block sizes** - Separate power-of-2 sizes for data blocks and index blocks
 - **Multiple stores per process** - Each store is fully independent
-- **Attached overflow blocks** - Data larger than one block can span multiple attached blocks
 - **Range queries** - Efficiently find all blocks within a time range
 - **Time-based or block-based reclaim** - Free specific ranges of data
 - **Crash recovery** - Metadata is persisted after each operation
 - **REST API server** - HTTP API with per-store API key authentication
 - **Edge-friendly** - Small footprint, no external database dependencies
+- **Max object size** - Objects limited to `blockSize - 32` bytes (32-byte header)
 
 ## Installation
 
@@ -248,23 +241,6 @@ GET /api/stores/:store/data/newest
 X-API-Key: <api-key>
 ```
 
-#### Attach Block (requires auth)
-```
-POST /api/stores/:store/data/block/:blocknum/attach
-X-API-Key: <api-key>
-Content-Type: application/json
-
-{
-  "data": "base64-encoded-data"
-}
-```
-
-#### Get Attached Blocks (requires auth)
-```
-GET /api/stores/:store/data/block/:blocknum/attached
-X-API-Key: <api-key>
-```
-
 #### Reclaim Blocks (requires auth)
 ```
 POST /api/stores/:store/data/reclaim
@@ -286,7 +262,7 @@ Or by time range:
 
 ### Object API (High-Level)
 
-The Object API provides a higher-level interface for storing data that may span multiple blocks. Objects are automatically split across blocks on write and reassembled on read.
+The Object API provides a higher-level interface for storing objects. Objects must fit in a single block (max size = blockSize - 32 bytes). Returns `ErrObjectTooLarge` if data exceeds the limit.
 
 #### Store Object (requires auth)
 ```
@@ -296,16 +272,15 @@ Content-Type: application/json
 
 {
   "timestamp": 1704067200000000000,
-  "data": "base64-encoded-data-of-any-size"
+  "data": "base64-encoded-data"
 }
 ```
 Returns:
 ```json
 {
   "timestamp": 1704067200000000000,
-  "primary_block_num": 5,
-  "total_size": 50000,
-  "block_count": 13
+  "block_num": 5,
+  "size": 1024
 }
 ```
 
@@ -314,7 +289,6 @@ Returns:
 GET /api/stores/:store/objects/time/:timestamp
 X-API-Key: <api-key>
 ```
-Returns the full object data (reassembled from all blocks).
 
 #### Get Object by Block Number (requires auth)
 ```
@@ -327,7 +301,6 @@ X-API-Key: <api-key>
 DELETE /api/stores/:store/objects/time/:timestamp
 X-API-Key: <api-key>
 ```
-Deletes the object and all its associated blocks.
 
 #### Delete Object by Block Number (requires auth)
 ```
@@ -391,9 +364,8 @@ Returns:
 ```json
 {
   "timestamp": 1704067200000000000,
-  "primary_block_num": 5,
-  "total_size": 64,
-  "block_count": 1,
+  "block_num": 5,
+  "size": 64,
   "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
 }
 ```
@@ -443,7 +415,7 @@ Create stores from the command line:
 ```
 
 Options:
-- `--blocks <n>` - Number of primary blocks (default: 1024)
+- `--blocks <n>` - Number of blocks (default: 1024)
 - `--data-size <n>` - Data block size in bytes, must be power of 2 (default: 4096)
 - `--index-size <n>` - Index block size in bytes, must be power of 2 (default: 4096)
 - `--path <dir>` - Base directory for stores (default: ./data or TSSTORE_DATA_PATH)
@@ -481,7 +453,7 @@ cfg.Path = "/var/data"
 cfg := store.Config{
     Name:           "sensor-data",
     Path:           "/var/data",
-    NumBlocks:      10000,    // 10K primary blocks
+    NumBlocks:      10000,    // 10K blocks
     DataBlockSize:  8192,     // 8KB data blocks
     IndexBlockSize: 4096,     // 4KB index blocks
 }
@@ -491,6 +463,9 @@ if err != nil {
     log.Fatal(err)
 }
 defer s.Close()
+
+// Check max object size
+maxSize := s.MaxObjectSize()  // blockSize - 32 bytes
 ```
 
 ### Inserting Data
@@ -529,29 +504,6 @@ for _, blockNum := range blocks {
 }
 ```
 
-### Attached Blocks (Overflow)
-
-When data exceeds a single block, use attached blocks:
-
-```go
-// Insert primary block
-primaryBlock, _ := s.Insert(timestamp, initialData)
-
-// Attach overflow blocks
-attached1, _ := s.AttachBlock(primaryBlock)
-s.WriteBlockData(attached1, moreData)
-
-attached2, _ := s.AttachBlock(primaryBlock)
-s.WriteBlockData(attached2, evenMoreData)
-
-// Read all attached blocks
-attachedBlocks, _ := s.GetAttachedBlocks(primaryBlock)
-for _, blk := range attachedBlocks {
-    data, _ := s.ReadBlockData(blk)
-    // process overflow data...
-}
-```
-
 ### Reclaiming Space
 
 ```go
@@ -567,14 +519,17 @@ s.AddRangeToFreeListByTime(startTime, endTime)
 
 ### Object API (High-Level)
 
-For data that may exceed a single block, use the Object API which automatically handles splitting and reassembly:
+The Object API provides a convenient interface for single-block objects:
 
 ```go
-// Store an object (any size, automatically split across blocks)
-handle, err := s.PutObject(timestamp, largeData)
-handle, err := s.PutObjectNow(largeData) // Use current time
+// Store an object (must fit in one block)
+handle, err := s.PutObject(timestamp, data)
+if err == store.ErrObjectTooLarge {
+    // Object exceeds max size
+}
+handle, err := s.PutObjectNow(data) // Use current time
 
-// Retrieve an object (automatically reassembled)
+// Retrieve an object
 data, err := s.GetObject(handle)
 data, handle, err := s.GetObjectByTime(timestamp)
 data, handle, err := s.GetObjectByBlock(blockNum)
@@ -585,7 +540,7 @@ handles, err := s.GetNewestObjects(10)  // Last 10 (from head)
 handles, err := s.GetObjectsInRange(startTime, endTime, limit)
 handles, err := s.GetObjectsSince(2*time.Hour, limit)  // Last 2 hours
 
-// Delete an object and all its blocks
+// Delete an object
 err := s.DeleteObject(handle)
 err := s.DeleteObjectByTime(timestamp)
 ```
@@ -593,10 +548,9 @@ err := s.DeleteObjectByTime(timestamp)
 The ObjectHandle contains metadata about the stored object:
 ```go
 type ObjectHandle struct {
-    Timestamp       int64  // When the object was stored
-    PrimaryBlockNum uint32 // First block of the object
-    TotalSize       uint32 // Total size in bytes
-    BlockCount      uint32 // Number of blocks used
+    Timestamp int64  // When the object was stored
+    BlockNum  uint32 // Block number
+    Size      uint32 // Size in bytes
 }
 ```
 
@@ -657,12 +611,11 @@ store.DeleteStore("/var/data", "sensor-data")
 
 ```go
 stats := s.Stats()
-fmt.Printf("Blocks: %d, Head: %d, Tail: %d, Free: %d, Attached: %d\n",
+fmt.Printf("Blocks: %d, Head: %d, Tail: %d, Free: %d\n",
     stats.NumBlocks,
     stats.HeadBlock,
     stats.TailBlock,
     stats.FreeListCount,
-    stats.TotalAttached,
 )
 
 oldest, _ := s.GetOldestTimestamp()
@@ -676,8 +629,7 @@ newest, _ := s.GetNewestTimestamp()
 | Insert | O(1) | Appends to head of circle |
 | Find by time | O(log n) | Binary search, ~20 reads max for 1M entries |
 | Range query | O(log n + k) | k = number of results |
-| Attach block | O(1) | Links to end of chain |
-| Reclaim | O(m) | m = attached blocks to free |
+| Reclaim | O(1) | Just updates metadata |
 
 **Disk I/O for 1 million entries:**
 - Single lookup: ~7-10 block reads average (1.4ms on NVMe SSD)
@@ -689,7 +641,7 @@ Each store creates a directory with the following files:
 
 ```
 sensor-data/
-├── data.tsdb    # Data blocks (primary + attached)
+├── data.tsdb    # Data blocks
 ├── index.tsdb   # Time index entries
 ├── meta.tsdb    # Store metadata (64 bytes)
 └── keys.json    # API key hashes (only when using API server)
@@ -705,8 +657,8 @@ All Store methods are thread-safe. The implementation uses read-write locks to a
 
 - Timestamps must be positive (Unix nanoseconds)
 - Block sizes must be powers of 2, minimum 64 bytes
-- Data per block is limited to `BlockSize - 40` bytes (40-byte header)
-- Attached block pool equals primary block count (configurable in future)
+- Data per block is limited to `BlockSize - 32` bytes (32-byte header)
+- Objects must fit in a single block (use larger block sizes for larger objects)
 
 ## License
 

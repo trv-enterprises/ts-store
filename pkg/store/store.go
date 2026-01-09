@@ -41,15 +41,14 @@ const (
 type StoreMetadata struct {
 	Magic          uint64 // Magic number for file identification
 	Version        uint32 // Store format version
-	NumBlocks      uint32 // Number of primary circular blocks
+	NumBlocks      uint32 // Number of circular blocks
 	DataBlockSize  uint32 // Size of each data block
 	IndexBlockSize uint32 // Size of each index block
 	HeadBlock      uint32 // Current head of circle (newest)
 	TailBlock      uint32 // Current tail of circle (oldest)
 	FreeListHead   uint32 // First block in free list (0 = empty)
 	FreeListCount  uint32 // Number of blocks in free list
-	TotalAttached  uint32 // Total attached blocks currently in use
-	Reserved       [16]byte
+	Reserved       [20]byte
 }
 
 const metadataSize = 64
@@ -139,7 +138,6 @@ func Create(cfg Config) (*Store, error) {
 		TailBlock:      0,
 		FreeListHead:   0,
 		FreeListCount:  0,
-		TotalAttached:  0,
 	}
 
 	s := &Store{
@@ -320,7 +318,6 @@ func (s *Store) Stats() StoreStats {
 		HeadBlock:     s.meta.HeadBlock,
 		TailBlock:     s.meta.TailBlock,
 		FreeListCount: s.meta.FreeListCount,
-		TotalAttached: s.meta.TotalAttached,
 	}
 }
 
@@ -330,7 +327,6 @@ type StoreStats struct {
 	HeadBlock     uint32
 	TailBlock     uint32
 	FreeListCount uint32
-	TotalAttached uint32
 }
 
 // writeMeta writes metadata to disk (acquires lock).
@@ -352,8 +348,7 @@ func (s *Store) writeMetaLocked() error {
 	binary.LittleEndian.PutUint32(buf[28:32], s.meta.TailBlock)
 	binary.LittleEndian.PutUint32(buf[32:36], s.meta.FreeListHead)
 	binary.LittleEndian.PutUint32(buf[36:40], s.meta.FreeListCount)
-	binary.LittleEndian.PutUint32(buf[40:44], s.meta.TotalAttached)
-	// bytes 44-63 reserved
+	// bytes 40-63 reserved
 
 	if _, err := s.metaFile.WriteAt(buf, 0); err != nil {
 		return err
@@ -377,7 +372,6 @@ func readMetadata(f *os.File, meta *StoreMetadata) error {
 	meta.TailBlock = binary.LittleEndian.Uint32(buf[28:32])
 	meta.FreeListHead = binary.LittleEndian.Uint32(buf[32:36])
 	meta.FreeListCount = binary.LittleEndian.Uint32(buf[36:40])
-	meta.TotalAttached = binary.LittleEndian.Uint32(buf[40:44])
 
 	return nil
 }

@@ -60,8 +60,6 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.
 	data.GET("/range", dataHandler.GetRange)
 	data.GET("/oldest", dataHandler.GetOldest)
 	data.GET("/newest", dataHandler.GetNewest)
-	data.POST("/block/:blocknum/attach", dataHandler.AttachByBlock)
-	data.GET("/block/:blocknum/attached", dataHandler.GetAttached)
 	data.POST("/reclaim", dataHandler.Reclaim)
 
 	return router, storeService, keyManager, tmpDir
@@ -197,69 +195,6 @@ func TestInsertAndRetrieve(t *testing.T) {
 	decodedData, _ := base64.StdEncoding.DecodeString(blockResp.Data)
 	if string(decodedData) != testData {
 		t.Errorf("Data mismatch: got '%s', want '%s'", decodedData, testData)
-	}
-}
-
-func TestAttachBlocks(t *testing.T) {
-	router, storeService, _, _ := setupTestRouter(t)
-	defer storeService.CloseAll()
-
-	// Create a store
-	body := `{"name": "attach-test"}`
-	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	var createResp service.CreateStoreResponse
-	json.Unmarshal(w.Body.Bytes(), &createResp)
-
-	// Insert primary block
-	insertBody := InsertRequest{
-		Timestamp: 2000000000,
-		Data:      base64.StdEncoding.EncodeToString([]byte("primary")),
-	}
-	bodyBytes, _ := json.Marshal(insertBody)
-
-	req, _ = http.NewRequest("POST", "/api/stores/attach-test/data", bytes.NewBuffer(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", createResp.APIKey)
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	// Attach block
-	attachBody := AttachRequest{
-		Data: base64.StdEncoding.EncodeToString([]byte("attached data")),
-	}
-	bodyBytes, _ = json.Marshal(attachBody)
-
-	req, _ = http.NewRequest("POST", "/api/stores/attach-test/data/block/0/attach", bytes.NewBuffer(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", createResp.APIKey)
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Errorf("Attach failed: %d: %s", w.Code, w.Body.String())
-	}
-
-	// Get attached blocks
-	req, _ = http.NewRequest("GET", "/api/stores/attach-test/data/block/0/attached", nil)
-	req.Header.Set("X-API-Key", createResp.APIKey)
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("Get attached failed: %d: %s", w.Code, w.Body.String())
-	}
-
-	var attachedResp struct {
-		Count int `json:"count"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &attachedResp)
-
-	if attachedResp.Count != 1 {
-		t.Errorf("Expected 1 attached block, got %d", attachedResp.Count)
 	}
 }
 

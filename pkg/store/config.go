@@ -57,12 +57,8 @@ func (c *Config) Validate() error {
 }
 
 // DataFileSize returns the total size of the data file in bytes.
-// This includes space for primary blocks plus reserved space for attached blocks.
-// Attached blocks are allocated from a pool that can grow up to 2x the primary blocks.
 func (c *Config) DataFileSize() int64 {
-	// Primary blocks + equal number of potential attached blocks
-	totalBlocks := int64(c.NumBlocks) * 2
-	return totalBlocks * int64(c.DataBlockSize)
+	return int64(c.NumBlocks) * int64(c.DataBlockSize)
 }
 
 // IndexFileSize returns the total size of the index file in bytes.

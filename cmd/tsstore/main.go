@@ -180,12 +180,10 @@ func runServer() {
 				data.GET("/range", dataHandler.GetRange)
 				data.GET("/oldest", dataHandler.GetOldest)
 				data.GET("/newest", dataHandler.GetNewest)
-				data.POST("/block/:blocknum/attach", dataHandler.AttachByBlock)
-				data.GET("/block/:blocknum/attached", dataHandler.GetAttached)
 				data.POST("/reclaim", dataHandler.Reclaim)
 			}
 
-			// High-level object operations (handles multi-block objects)
+			// High-level object operations
 			objects := storeRoutes.Group("/objects")
 			{
 				objects.POST("", objectHandler.Put)
