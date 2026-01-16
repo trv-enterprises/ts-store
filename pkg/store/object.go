@@ -20,7 +20,9 @@ var (
 type ObjectHandle struct {
 	Timestamp int64  `json:"timestamp"`
 	BlockNum  uint32 `json:"block_num"`
+	Offset    uint32 `json:"offset,omitempty"`     // Position within block (0 for V1 format)
 	Size      uint32 `json:"size"`
+	SpanCount uint32 `json:"span_count,omitempty"` // Number of blocks (1 = single block, 0 = legacy)
 }
 
 // MaxObjectSize returns the maximum object size for this store.
@@ -29,7 +31,7 @@ func (s *Store) MaxObjectSize() uint32 {
 }
 
 // PutObject stores an object at the given timestamp.
-// Returns ErrObjectTooLarge if data exceeds block size.
+// Objects are packed into blocks for efficiency. Large objects span multiple blocks.
 func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -42,12 +44,23 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 		return nil, ErrInvalidTimestamp
 	}
 
-	maxSize := s.config.DataBlockSize - block.BlockHeaderSize
-	if uint32(len(data)) > maxSize {
-		return nil, ErrObjectTooLarge
+	objSize := block.ObjectHeaderSize + uint32(len(data))
+	usableSpace := s.config.DataBlockSize - block.BlockHeaderSize
+
+	var handle *ObjectHandle
+	var err error
+
+	// Case 1: Fits in remaining space of current block
+	if s.canFitInCurrentBlock(objSize) {
+		handle, err = s.appendToCurrentBlock(timestamp, data)
+	} else if objSize <= usableSpace {
+		// Case 2: Fits in a single new block
+		handle, err = s.writeToNewBlock(timestamp, data)
+	} else {
+		// Case 3: Spans multiple blocks
+		handle, err = s.writeSpanningObject(timestamp, data)
 	}
 
-	blockNum, err := s.insertLocked(timestamp, data)
 	if err != nil {
 		return nil, err
 	}
@@ -56,11 +69,7 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 		return nil, err
 	}
 
-	return &ObjectHandle{
-		Timestamp: timestamp,
-		BlockNum:  blockNum,
-		Size:      uint32(len(data)),
-	}, nil
+	return handle, nil
 }
 
 // PutObjectNow stores an object with the current timestamp.
@@ -77,6 +86,12 @@ func (s *Store) GetObject(handle *ObjectHandle) ([]byte, error) {
 		return nil, ErrStoreClosed
 	}
 
+	// Check if this is a V2 packed handle (has Offset set)
+	if handle.Offset > 0 {
+		return s.readPackedObjectData(handle.BlockNum, handle.Offset, handle.Size, handle.SpanCount)
+	}
+
+	// V1 legacy format - single object per block
 	return s.readBlockDataLocked(handle.BlockNum)
 }
 
@@ -89,13 +104,24 @@ func (s *Store) GetObjectByTime(timestamp int64) ([]byte, *ObjectHandle, error) 
 		return nil, nil, ErrStoreClosed
 	}
 
-	// Find block by timestamp
+	// Find block by timestamp (binary search finds block with first object <= timestamp)
 	blockNum, err := s.findBlockByTimeLocked(timestamp)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Verify exact match
+	// Check if this is a packed block
+	header, err := s.readBlockHeader(blockNum)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if header.IsPacked() {
+		// V2 packed format - scan for exact timestamp
+		return s.scanBlockForTimestamp(blockNum, timestamp)
+	}
+
+	// V1 legacy format - verify exact match
 	entry, err := s.readIndexEntry(blockNum)
 	if err != nil {
 		return nil, nil, err
@@ -116,7 +142,8 @@ func (s *Store) GetObjectByTime(timestamp int64) ([]byte, *ObjectHandle, error) 
 	}, nil
 }
 
-// GetObjectByBlock retrieves an object by its block number.
+// GetObjectByBlock retrieves the first object in a block by block number.
+// For packed blocks with multiple objects, use GetObjectsByBlock.
 func (s *Store) GetObjectByBlock(blockNum uint32) ([]byte, *ObjectHandle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -129,12 +156,34 @@ func (s *Store) GetObjectByBlock(blockNum uint32) ([]byte, *ObjectHandle, error)
 		return nil, nil, ErrBlockOutOfRange
 	}
 
-	data, err := s.readBlockDataLocked(blockNum)
+	header, err := s.readBlockHeader(blockNum)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	header, err := s.readBlockHeader(blockNum)
+	if header.IsPacked() {
+		// V2 packed format - return first object
+		objHeader, err := s.readObjectHeader(blockNum, block.BlockHeaderSize)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		data, err := s.readPackedObjectData(blockNum, block.BlockHeaderSize, objHeader.DataLen, 1)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return data, &ObjectHandle{
+			Timestamp: objHeader.Timestamp,
+			BlockNum:  blockNum,
+			Offset:    block.BlockHeaderSize,
+			Size:      objHeader.DataLen,
+			SpanCount: 1,
+		}, nil
+	}
+
+	// V1 legacy format
+	data, err := s.readBlockDataLocked(blockNum)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -161,36 +210,24 @@ func (s *Store) GetOldestObjects(limit int) ([]*ObjectHandle, error) {
 		return nil, nil
 	}
 
-	if limit <= 0 || uint32(limit) > count {
-		limit = int(count)
-	}
+	handles := make([]*ObjectHandle, 0)
 
-	handles := make([]*ObjectHandle, 0, limit)
+	// Start from tail (oldest) and walk forward through blocks
+	for i := uint32(0); i < count && (limit <= 0 || len(handles) < limit); i++ {
+		blockNum := s.blockNumFromOffset(i)
 
-	// Start from tail (oldest) and walk forward
-	for i := 0; i < limit; i++ {
-		blockNum := s.blockNumFromOffset(uint32(i))
-
-		entry, err := s.readIndexEntry(blockNum)
+		// Get all objects in this block
+		blockHandles, err := s.scanBlockObjects(blockNum)
 		if err != nil {
-			return nil, err
-		}
-
-		// Skip empty entries
-		if entry.Timestamp == 0 {
 			continue
 		}
 
-		header, err := s.readBlockHeader(blockNum)
-		if err != nil {
-			return nil, err
+		for _, h := range blockHandles {
+			handles = append(handles, h)
+			if limit > 0 && len(handles) >= limit {
+				break
+			}
 		}
-
-		handles = append(handles, &ObjectHandle{
-			Timestamp: entry.Timestamp,
-			BlockNum:  blockNum,
-			Size:      header.DataLen,
-		})
 	}
 
 	return handles, nil
@@ -211,44 +248,29 @@ func (s *Store) GetNewestObjects(limit int) ([]*ObjectHandle, error) {
 		return nil, nil
 	}
 
-	if limit <= 0 || uint32(limit) > count {
-		limit = int(count)
-	}
-
-	handles := make([]*ObjectHandle, 0, limit)
-
-	// Start from head (newest) and walk backward
-	for i := 0; i < limit; i++ {
-		offset := int(count) - 1 - i
-		if offset < 0 {
-			break
-		}
-
-		blockNum := s.blockNumFromOffset(uint32(offset))
-
-		entry, err := s.readIndexEntry(blockNum)
+	// First collect all objects from all blocks (in order)
+	var allHandles []*ObjectHandle
+	for i := uint32(0); i < count; i++ {
+		blockNum := s.blockNumFromOffset(i)
+		blockHandles, err := s.scanBlockObjects(blockNum)
 		if err != nil {
-			return nil, err
-		}
-
-		// Skip empty entries
-		if entry.Timestamp == 0 {
 			continue
 		}
-
-		header, err := s.readBlockHeader(blockNum)
-		if err != nil {
-			return nil, err
-		}
-
-		handles = append(handles, &ObjectHandle{
-			Timestamp: entry.Timestamp,
-			BlockNum:  blockNum,
-			Size:      header.DataLen,
-		})
+		allHandles = append(allHandles, blockHandles...)
 	}
 
-	return handles, nil
+	// Return the last N objects
+	if limit <= 0 || limit > len(allHandles) {
+		limit = len(allHandles)
+	}
+
+	// Return in reverse order (newest first)
+	result := make([]*ObjectHandle, 0, limit)
+	for i := len(allHandles) - 1; i >= 0 && len(result) < limit; i-- {
+		result = append(result, allHandles[i])
+	}
+
+	return result, nil
 }
 
 // GetObjectsSince returns objects from the last duration.
@@ -279,47 +301,38 @@ func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*Objec
 		return nil, nil
 	}
 
-	// Find start position
+	// Find start block position
 	startOffset := s.findOffsetForTimeLocked(startTime, 0, count-1, true)
 
-	// Find end position
+	// Find end block position - we may need to scan one block past this
 	endOffset := s.findOffsetForTimeLocked(endTime, 0, count-1, false)
 
-	if startOffset > endOffset {
-		return nil, nil
-	}
+	handles := make([]*ObjectHandle, 0)
 
-	// Limit results
-	resultCount := int(endOffset - startOffset + 1)
-	if limit > 0 && resultCount > limit {
-		resultCount = limit
-	}
-
-	handles := make([]*ObjectHandle, 0, resultCount)
-
-	for offset := startOffset; offset <= endOffset && len(handles) < resultCount; offset++ {
+	// Scan blocks from startOffset to endOffset+1 (may need extra block for packed objects)
+	for offset := startOffset; offset <= endOffset+1 && offset < count; offset++ {
 		blockNum := s.blockNumFromOffset(offset)
 
-		entry, err := s.readIndexEntry(blockNum)
+		// Get all objects in this block
+		blockHandles, err := s.scanBlockObjects(blockNum)
 		if err != nil {
-			return nil, err
-		}
-
-		// Verify within time range
-		if entry.Timestamp < startTime || entry.Timestamp > endTime {
 			continue
 		}
 
-		header, err := s.readBlockHeader(blockNum)
-		if err != nil {
-			return nil, err
-		}
+		for _, h := range blockHandles {
+			// Check if past end of range - stop scanning
+			if h.Timestamp > endTime {
+				return handles, nil
+			}
 
-		handles = append(handles, &ObjectHandle{
-			Timestamp: entry.Timestamp,
-			BlockNum:  blockNum,
-			Size:      header.DataLen,
-		})
+			// Check if within range
+			if h.Timestamp >= startTime {
+				handles = append(handles, h)
+				if limit > 0 && len(handles) >= limit {
+					return handles, nil
+				}
+			}
+		}
 	}
 
 	return handles, nil

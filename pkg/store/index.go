@@ -16,7 +16,8 @@ var (
 )
 
 // findBlockByTimeLocked finds the primary block number for a given timestamp using binary search.
-// Returns the block with the exact timestamp, or the closest block if exact match not found.
+// For packed blocks, finds the block whose first object timestamp <= target timestamp.
+// The caller should scan the block for the exact object.
 // Lock must be held.
 func (s *Store) findBlockByTimeLocked(timestamp int64) (uint32, error) {
 	if s.meta.HeadBlock == s.meta.TailBlock {
@@ -33,12 +34,14 @@ func (s *Store) findBlockByTimeLocked(timestamp int64) (uint32, error) {
 
 	// Binary search on the circular index
 	// The index is sorted by time from tail (oldest) to head (newest)
+	// For packed blocks, we find the last block whose first object <= timestamp
 	count := s.activeBlockCount()
 
 	left := uint32(0)
 	right := count - 1
+	result := left
 
-	for left < right {
+	for left <= right {
 		mid := (left + right) / 2
 		midBlockNum := s.blockNumFromOffset(mid)
 
@@ -47,17 +50,31 @@ func (s *Store) findBlockByTimeLocked(timestamp int64) (uint32, error) {
 			return 0, err
 		}
 
+		// Skip continuation blocks (timestamp 0)
+		if entry.Timestamp == 0 {
+			left = mid + 1
+			continue
+		}
+
 		if entry.Timestamp == timestamp {
+			// Exact match on block's first object
 			return midBlockNum, nil
 		} else if entry.Timestamp < timestamp {
+			// This block's first object is before target, might contain it
+			result = mid
 			left = mid + 1
 		} else {
-			right = mid
+			// This block starts after target
+			if mid == 0 {
+				break
+			}
+			right = mid - 1
 		}
 	}
 
-	// Return the closest block
-	blockNum := s.blockNumFromOffset(left)
+	// Return the block whose first object is <= timestamp
+	// Caller will scan for exact match
+	blockNum := s.blockNumFromOffset(result)
 	return blockNum, nil
 }
 

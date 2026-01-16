@@ -31,8 +31,30 @@ const (
 	MinBlockSize    = 64 // Minimum block size (must fit header + some data)
 
 	// Block flags
-	FlagFree    uint32 = 1 << 0 // Block is on free list
-	FlagPrimary uint32 = 1 << 1 // Block is a primary circular block
+	FlagFree         uint32 = 1 << 0 // Block is on free list
+	FlagPrimary      uint32 = 1 << 1 // Block is a primary circular block
+	FlagPacked       uint32 = 1 << 2 // Block contains packed objects (V2 format)
+	FlagContinuation uint32 = 1 << 3 // Block is continuation of spanning object
+)
+
+// ObjectHeader is stored before each object's data within the block data area.
+// Used for packed blocks (V2 format) where multiple objects can share a block.
+// Total size: 24 bytes
+type ObjectHeader struct {
+	Timestamp  int64  // Unix nanoseconds for this object
+	DataLen    uint32 // Length of this object's data (total size if spanning)
+	Flags      uint32 // Object flags
+	NextOffset uint32 // Offset to next object in block (0 = last or continuation)
+	Reserved   uint32 // Alignment/future use
+}
+
+const (
+	ObjectHeaderSize = 24
+
+	// Object flags
+	ObjFlagContinuation uint32 = 1 << 0 // Object data continues from previous block
+	ObjFlagContinues    uint32 = 1 << 1 // Object data continues in next block
+	ObjFlagLastInBlock  uint32 = 1 << 2 // Last object header in this block
 )
 
 // IndexEntry represents one entry in the circular index.
@@ -120,4 +142,52 @@ func (h *BlockHeader) IsFree() bool {
 // IsPrimary returns true if block is a primary circular block
 func (h *BlockHeader) IsPrimary() bool {
 	return h.Flags&FlagPrimary != 0
+}
+
+// IsPacked returns true if block uses V2 packed format
+func (h *BlockHeader) IsPacked() bool {
+	return h.Flags&FlagPacked != 0
+}
+
+// IsContinuation returns true if block is a continuation of a spanning object
+func (h *BlockHeader) IsContinuation() bool {
+	return h.Flags&FlagContinuation != 0
+}
+
+// Encode serializes an ObjectHeader to bytes
+func (o *ObjectHeader) Encode(buf []byte) {
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(o.Timestamp))
+	binary.LittleEndian.PutUint32(buf[8:12], o.DataLen)
+	binary.LittleEndian.PutUint32(buf[12:16], o.Flags)
+	binary.LittleEndian.PutUint32(buf[16:20], o.NextOffset)
+	binary.LittleEndian.PutUint32(buf[20:24], o.Reserved)
+}
+
+// Decode deserializes bytes into an ObjectHeader
+func (o *ObjectHeader) Decode(buf []byte) {
+	o.Timestamp = int64(binary.LittleEndian.Uint64(buf[0:8]))
+	o.DataLen = binary.LittleEndian.Uint32(buf[8:12])
+	o.Flags = binary.LittleEndian.Uint32(buf[12:16])
+	o.NextOffset = binary.LittleEndian.Uint32(buf[16:20])
+	o.Reserved = binary.LittleEndian.Uint32(buf[20:24])
+}
+
+// Time returns the timestamp as a time.Time
+func (o *ObjectHeader) Time() time.Time {
+	return time.Unix(0, o.Timestamp)
+}
+
+// IsContinuation returns true if object data continues from previous block
+func (o *ObjectHeader) IsContinuation() bool {
+	return o.Flags&ObjFlagContinuation != 0
+}
+
+// Continues returns true if object data continues in next block
+func (o *ObjectHeader) Continues() bool {
+	return o.Flags&ObjFlagContinues != 0
+}
+
+// IsLastInBlock returns true if this is the last object header in the block
+func (o *ObjectHeader) IsLastInBlock() bool {
+	return o.Flags&ObjFlagLastInBlock != 0
 }

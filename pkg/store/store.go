@@ -48,7 +48,8 @@ type StoreMetadata struct {
 	TailBlock      uint32 // Current tail of circle (oldest)
 	FreeListHead   uint32 // First block in free list (0 = empty)
 	FreeListCount  uint32 // Number of blocks in free list
-	Reserved       [20]byte
+	WriteOffset    uint32 // Current write position within head block (V2 packed format)
+	Reserved       [16]byte
 }
 
 const metadataSize = 64
@@ -318,6 +319,7 @@ func (s *Store) Stats() StoreStats {
 		HeadBlock:     s.meta.HeadBlock,
 		TailBlock:     s.meta.TailBlock,
 		FreeListCount: s.meta.FreeListCount,
+		WriteOffset:   s.meta.WriteOffset,
 	}
 }
 
@@ -327,6 +329,7 @@ type StoreStats struct {
 	HeadBlock     uint32
 	TailBlock     uint32
 	FreeListCount uint32
+	WriteOffset   uint32 // Current write position within head block (V2)
 }
 
 // writeMeta writes metadata to disk (acquires lock).
@@ -348,7 +351,8 @@ func (s *Store) writeMetaLocked() error {
 	binary.LittleEndian.PutUint32(buf[28:32], s.meta.TailBlock)
 	binary.LittleEndian.PutUint32(buf[32:36], s.meta.FreeListHead)
 	binary.LittleEndian.PutUint32(buf[36:40], s.meta.FreeListCount)
-	// bytes 40-63 reserved
+	binary.LittleEndian.PutUint32(buf[40:44], s.meta.WriteOffset)
+	// bytes 44-63 reserved
 
 	if _, err := s.metaFile.WriteAt(buf, 0); err != nil {
 		return err
@@ -372,6 +376,7 @@ func readMetadata(f *os.File, meta *StoreMetadata) error {
 	meta.TailBlock = binary.LittleEndian.Uint32(buf[28:32])
 	meta.FreeListHead = binary.LittleEndian.Uint32(buf[32:36])
 	meta.FreeListCount = binary.LittleEndian.Uint32(buf[36:40])
+	meta.WriteOffset = binary.LittleEndian.Uint32(buf[40:44])
 
 	return nil
 }

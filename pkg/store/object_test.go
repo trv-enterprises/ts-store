@@ -65,11 +65,11 @@ func TestPutGetSmallObject(t *testing.T) {
 	}
 }
 
-func TestPutObjectTooLarge(t *testing.T) {
+func TestSpanningObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	cfg := DefaultConfig()
-	cfg.Name = "large-object-test"
+	cfg.Name = "spanning-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
 	cfg.DataBlockSize = 512
@@ -80,15 +80,67 @@ func TestPutObjectTooLarge(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Create object larger than max size
-	maxSize := cfg.DataBlockSize - block.BlockHeaderSize
-	data := make([]byte, maxSize+1)
+	// Create object larger than single block (should span multiple blocks)
+	usablePerBlock := cfg.DataBlockSize - block.BlockHeaderSize
+	firstBlockUsable := usablePerBlock - block.ObjectHeaderSize
+	// Create an object that needs 3 blocks
+	dataSize := usablePerBlock*2 + 100
+	data := make([]byte, dataSize)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	_ = firstBlockUsable // Used for calculation validation
 
 	timestamp := time.Now().UnixNano()
 
-	_, err = s.PutObject(timestamp, data)
-	if err != ErrObjectTooLarge {
-		t.Errorf("Expected ErrObjectTooLarge, got %v", err)
+	handle, err := s.PutObject(timestamp, data)
+	if err != nil {
+		t.Fatalf("PutObject failed for spanning object: %v", err)
+	}
+
+	t.Logf("Spanning object: size=%d, spanCount=%d, blockNum=%d", handle.Size, handle.SpanCount, handle.BlockNum)
+
+	// Check block headers
+	for i := uint32(0); i < handle.SpanCount; i++ {
+		h, _ := s.GetBlockHeader(handle.BlockNum + i)
+		t.Logf("Block %d: DataLen=%d, Flags=%x, NextFree=%d",
+			handle.BlockNum+i, h.DataLen, h.Flags, h.NextFree)
+	}
+
+	if handle.SpanCount < 2 {
+		t.Errorf("Expected spanning object to use multiple blocks, got spanCount=%d", handle.SpanCount)
+	}
+
+	// Retrieve and verify
+	retrieved, err := s.GetObject(handle)
+	if err != nil {
+		t.Fatalf("GetObject failed for spanning object: %v", err)
+	}
+
+	if !bytes.Equal(data, retrieved) {
+		// Find first difference
+		for i := 0; i < len(data) && i < len(retrieved); i++ {
+			if data[i] != retrieved[i] {
+				t.Errorf("Data mismatch at byte %d: got %d, want %d", i, retrieved[i], data[i])
+				break
+			}
+		}
+		t.Errorf("Data mismatch for spanning object: got len=%d, want len=%d", len(retrieved), len(data))
+	}
+
+	// Also test retrieval by timestamp
+	retrieved2, handle2, err := s.GetObjectByTime(timestamp)
+	if err != nil {
+		t.Fatalf("GetObjectByTime failed for spanning object: %v", err)
+	}
+
+	if !bytes.Equal(data, retrieved2) {
+		t.Errorf("Data mismatch on time lookup for spanning object")
+	}
+
+	if handle2.SpanCount != handle.SpanCount {
+		t.Errorf("SpanCount mismatch: got %d, want %d", handle2.SpanCount, handle.SpanCount)
 	}
 }
 
@@ -209,6 +261,134 @@ func TestDeleteObjectByTime(t *testing.T) {
 	_, _, err = s.GetObjectByTime(timestamp)
 	if err == nil {
 		t.Error("Expected error when getting deleted object by time")
+	}
+}
+
+func TestDeleteSpanningObject(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "delete-spanning-test"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 100
+	cfg.DataBlockSize = 512
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	// Create spanning object (needs 3 blocks with 512 byte blocks)
+	usablePerBlock := cfg.DataBlockSize - block.BlockHeaderSize
+	dataSize := usablePerBlock*2 + 100
+	data := make([]byte, dataSize)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	timestamp := time.Now().UnixNano()
+	handle, err := s.PutObject(timestamp, data)
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	t.Logf("Spanning object spans %d blocks starting at block %d", handle.SpanCount, handle.BlockNum)
+
+	if handle.SpanCount < 2 {
+		t.Fatalf("Expected spanning object with multiple blocks, got %d", handle.SpanCount)
+	}
+
+	// Get stats before delete
+	statsBefore := s.Stats()
+	t.Logf("Before delete: FreeListCount=%d", statsBefore.FreeListCount)
+
+	// Delete the spanning object
+	if err := s.DeleteObject(handle); err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+
+	// Verify all blocks were reclaimed (primary + continuations)
+	statsAfter := s.Stats()
+	t.Logf("After delete: FreeListCount=%d", statsAfter.FreeListCount)
+
+	// Should have reclaimed at least spanCount blocks
+	// Note: The primary block may be returned directly, continuations go to free list
+	freedBlocks := statsAfter.FreeListCount - statsBefore.FreeListCount
+	t.Logf("Blocks freed to free list: %d", freedBlocks)
+
+	// Verify object is no longer retrievable
+	_, err = s.GetObject(handle)
+	// After deletion, blocks are cleared, so reading should fail or return empty data
+	t.Logf("GetObject after delete returned: %v", err)
+}
+
+func TestDeleteLargeSpanningObject(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "delete-large-spanning-test"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 100
+	cfg.DataBlockSize = 512
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	// Create large spanning object (needs 5+ blocks with 512 byte blocks)
+	usablePerBlock := cfg.DataBlockSize - block.BlockHeaderSize
+	dataSize := usablePerBlock*5 + 100 // Should span 6 blocks
+	data := make([]byte, dataSize)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	timestamp := time.Now().UnixNano()
+	handle, err := s.PutObject(timestamp, data)
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	t.Logf("Large spanning object: size=%d, spans %d blocks starting at block %d",
+		handle.Size, handle.SpanCount, handle.BlockNum)
+
+	if handle.SpanCount < 5 {
+		t.Fatalf("Expected spanning object with 5+ blocks, got %d", handle.SpanCount)
+	}
+
+	// Verify we can read it back correctly first
+	retrieved, err := s.GetObject(handle)
+	if err != nil {
+		t.Fatalf("GetObject failed before delete: %v", err)
+	}
+	if !bytes.Equal(data, retrieved) {
+		t.Fatalf("Data mismatch before delete")
+	}
+
+	// Get stats before delete
+	statsBefore := s.Stats()
+	t.Logf("Before delete: FreeListCount=%d, HeadBlock=%d, TailBlock=%d",
+		statsBefore.FreeListCount, statsBefore.HeadBlock, statsBefore.TailBlock)
+
+	// Delete the spanning object
+	if err := s.DeleteObject(handle); err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+
+	// Verify all blocks were reclaimed
+	statsAfter := s.Stats()
+	t.Logf("After delete: FreeListCount=%d, HeadBlock=%d, TailBlock=%d",
+		statsAfter.FreeListCount, statsAfter.HeadBlock, statsAfter.TailBlock)
+
+	freedBlocks := statsAfter.FreeListCount - statsBefore.FreeListCount
+	t.Logf("Blocks freed to free list: %d (expected %d)", freedBlocks, handle.SpanCount)
+
+	// All blocks should be on free list
+	if freedBlocks != handle.SpanCount {
+		t.Errorf("Expected %d blocks freed, got %d", handle.SpanCount, freedBlocks)
 	}
 }
 

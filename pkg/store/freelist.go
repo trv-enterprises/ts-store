@@ -77,26 +77,54 @@ func (s *Store) pushFreeList(blockNum uint32) error {
 }
 
 // reclaimOldestBlock reclaims the oldest primary block (at tail).
+// For spanning objects, reclaims the entire chain.
 // Lock must be held.
 func (s *Store) reclaimOldestBlock() (uint32, error) {
 	tailBlock := s.meta.TailBlock
+
+	// Read header to check for continuation chain
+	header, err := s.readBlockHeader(tailBlock)
+	if err != nil {
+		return 0, err
+	}
+
+	// If this block has continuations (spanning object), reclaim the chain
+	// Put them on free list since they might not be contiguous
+	if header.IsPacked() && header.NextFree != 0 {
+		if err := s.reclaimContinuationChain(header.NextFree); err != nil {
+			return 0, err
+		}
+	}
 
 	// Clear the index entry for this block
 	if err := s.clearIndexEntry(tailBlock); err != nil {
 		return 0, err
 	}
 
-	// Advance the tail
-	s.meta.TailBlock = (tailBlock + 1) % s.meta.NumBlocks
+	// Advance the tail (skip any continuation blocks that are now on free list)
+	nextTail := (tailBlock + 1) % s.meta.NumBlocks
+	s.meta.TailBlock = nextTail
+
+	// Skip over any continuation blocks in the tail
+	for s.meta.TailBlock != s.meta.HeadBlock {
+		nextHeader, err := s.readBlockHeader(s.meta.TailBlock)
+		if err != nil {
+			break
+		}
+		if !nextHeader.IsContinuation() || nextHeader.IsFree() {
+			break
+		}
+		s.meta.TailBlock = (s.meta.TailBlock + 1) % s.meta.NumBlocks
+	}
 
 	// The reclaimed primary block is now available for use
 	// We return it directly instead of putting it on the free list
-	header := &block.BlockHeader{
+	clearHeader := &block.BlockHeader{
 		BlockNum: tailBlock,
 		Flags:    0,
 	}
 
-	if err := s.writeBlockHeader(tailBlock, header); err != nil {
+	if err := s.writeBlockHeader(tailBlock, clearHeader); err != nil {
 		return 0, err
 	}
 
@@ -151,6 +179,7 @@ func (s *Store) AddRangeToFreeList(startBlock, endBlock uint32) error {
 }
 
 // reclaimBlock reclaims a single block.
+// For spanning objects, reclaims the entire chain atomically.
 // Lock must be held.
 func (s *Store) reclaimBlock(blockNum uint32) error {
 	header, err := s.readBlockHeader(blockNum)
@@ -163,6 +192,30 @@ func (s *Store) reclaimBlock(blockNum uint32) error {
 		return nil
 	}
 
+	// If this is a continuation block, find and reclaim from primary
+	if header.IsContinuation() {
+		primaryBlock, err := s.findPrimaryBlock(blockNum)
+		if err != nil {
+			// Can't find primary, just reclaim this block
+			return s.reclaimSingleBlock(blockNum)
+		}
+		return s.reclaimBlock(primaryBlock) // Recurse to reclaim from primary
+	}
+
+	// If this block has continuations (spanning object), reclaim entire chain
+	if header.IsPacked() && header.NextFree != 0 {
+		if err := s.reclaimContinuationChain(header.NextFree); err != nil {
+			return err
+		}
+	}
+
+	// Reclaim this block
+	return s.reclaimSingleBlock(blockNum)
+}
+
+// reclaimSingleBlock reclaims a single block without checking for continuations.
+// Lock must be held.
+func (s *Store) reclaimSingleBlock(blockNum uint32) error {
 	// Clear index entry
 	if err := s.clearIndexEntry(blockNum); err != nil {
 		return err
@@ -170,6 +223,68 @@ func (s *Store) reclaimBlock(blockNum uint32) error {
 
 	// Add block to free list
 	return s.pushFreeList(blockNum)
+}
+
+// reclaimContinuationChain reclaims all continuation blocks starting from blockNum.
+// Lock must be held.
+func (s *Store) reclaimContinuationChain(blockNum uint32) error {
+	for blockNum != 0 {
+		header, err := s.readBlockHeader(blockNum)
+		if err != nil {
+			return err
+		}
+
+		// Skip if already free
+		if header.IsFree() {
+			break
+		}
+
+		nextBlock := header.NextFree
+
+		// Clear index entry and add to free list
+		if err := s.clearIndexEntry(blockNum); err != nil {
+			return err
+		}
+		if err := s.pushFreeList(blockNum); err != nil {
+			return err
+		}
+
+		blockNum = nextBlock
+	}
+	return nil
+}
+
+// findPrimaryBlock finds the primary block that owns a continuation block.
+// This scans backward from the continuation block to find the primary.
+// Lock must be held.
+func (s *Store) findPrimaryBlock(contBlock uint32) (uint32, error) {
+	// Scan active blocks to find one that points to this continuation
+	count := s.activeBlockCount()
+	for i := uint32(0); i < count; i++ {
+		blockNum := s.blockNumFromOffset(i)
+		header, err := s.readBlockHeader(blockNum)
+		if err != nil {
+			continue
+		}
+
+		// Check if this block's continuation chain includes contBlock
+		if header.IsPacked() && !header.IsContinuation() {
+			// Follow the chain
+			nextBlock := header.NextFree
+			for nextBlock != 0 {
+				if nextBlock == contBlock {
+					return blockNum, nil
+				}
+				nextHeader, err := s.readBlockHeader(nextBlock)
+				if err != nil {
+					break
+				}
+				nextBlock = nextHeader.NextFree
+			}
+		}
+	}
+
+	return 0, ErrBlockOutOfRange
 }
 
 // FreeListCount returns the number of blocks on the free list.
