@@ -134,45 +134,6 @@ func (h *DataHandler) GetByTime(c *gin.Context) {
 	})
 }
 
-// GetByBlock handles GET /api/stores/:store/data/block/:blocknum
-func (h *DataHandler) GetByBlock(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	blockNumStr := c.Param("blocknum")
-	blockNum64, err := strconv.ParseUint(blockNumStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
-		return
-	}
-	blockNum := uint32(blockNum64)
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Read block data
-	data, err := st.ReadBlockData(blockNum)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Get header for metadata
-	header, err := st.GetBlockHeader(blockNum)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, BlockResponse{
-		BlockNum:  blockNum,
-		Timestamp: header.Timestamp,
-		Data:      base64.StdEncoding.EncodeToString(data),
-	})
-}
-
 // RangeRequest represents a time range query.
 type RangeRequest struct {
 	StartTime int64 `form:"start_time" binding:"required"`
@@ -232,53 +193,6 @@ func (h *DataHandler) GetRange(c *gin.Context) {
 		Blocks: blocks,
 		Count:  len(blocks),
 	})
-}
-
-// ReclaimRequest represents a reclaim request.
-type ReclaimRequest struct {
-	StartBlock *uint32 `json:"start_block,omitempty"`
-	EndBlock   *uint32 `json:"end_block,omitempty"`
-	StartTime  *int64  `json:"start_time,omitempty"`
-	EndTime    *int64  `json:"end_time,omitempty"`
-}
-
-// Reclaim handles POST /api/stores/:store/data/reclaim
-func (h *DataHandler) Reclaim(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	var req ReclaimRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Reclaim by block range
-	if req.StartBlock != nil && req.EndBlock != nil {
-		if err := st.AddRangeToFreeList(*req.StartBlock, *req.EndBlock); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "blocks reclaimed"})
-		return
-	}
-
-	// Reclaim by time range
-	if req.StartTime != nil && req.EndTime != nil {
-		if err := st.AddRangeToFreeListByTime(*req.StartTime, *req.EndTime); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"message": "blocks reclaimed"})
-		return
-	}
-
-	c.JSON(http.StatusBadRequest, gin.H{"error": "must specify block range or time range"})
 }
 
 // GetOldest handles GET /api/stores/:store/data/oldest

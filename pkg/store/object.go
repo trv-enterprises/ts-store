@@ -44,6 +44,12 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 		return nil, ErrInvalidTimestamp
 	}
 
+	// Validate timestamp is monotonically increasing
+	if newestTs, tsErr := s.getNewestTimestampLocked(); tsErr == nil && timestamp <= newestTs {
+		return nil, ErrTimestampOutOfOrder
+	}
+	// ErrEmptyStore is OK - first insert
+
 	objSize := block.ObjectHeaderSize + uint32(len(data))
 	usableSpace := s.config.DataBlockSize - block.BlockHeaderSize
 

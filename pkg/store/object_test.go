@@ -579,3 +579,42 @@ func TestGetObjectsInRange(t *testing.T) {
 		t.Errorf("Expected 3 objects in range, got %d", len(handles))
 	}
 }
+
+func TestTimestampOutOfOrder(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "timestamp-order-test"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 100
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	// Insert first object with timestamp 1000
+	_, err = s.PutObject(1000, []byte("first"))
+	if err != nil {
+		t.Fatalf("First PutObject failed: %v", err)
+	}
+
+	// Try to insert with earlier timestamp - should fail
+	_, err = s.PutObject(500, []byte("earlier"))
+	if err != ErrTimestampOutOfOrder {
+		t.Errorf("Expected ErrTimestampOutOfOrder, got: %v", err)
+	}
+
+	// Try to insert with same timestamp - should fail
+	_, err = s.PutObject(1000, []byte("same"))
+	if err != ErrTimestampOutOfOrder {
+		t.Errorf("Expected ErrTimestampOutOfOrder for same timestamp, got: %v", err)
+	}
+
+	// Insert with later timestamp - should succeed
+	_, err = s.PutObject(2000, []byte("later"))
+	if err != nil {
+		t.Errorf("Later PutObject should succeed, got: %v", err)
+	}
+}

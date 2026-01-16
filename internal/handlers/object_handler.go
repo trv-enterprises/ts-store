@@ -129,43 +129,6 @@ func (h *ObjectHandler) GetByTime(c *gin.Context) {
 	})
 }
 
-// GetByBlock handles GET /api/stores/:store/objects/block/:blocknum
-// Retrieves an object by its block number.
-func (h *ObjectHandler) GetByBlock(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	blockNumStr := c.Param("blocknum")
-	blockNum64, err := strconv.ParseUint(blockNumStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
-		return
-	}
-	blockNum := uint32(blockNum64)
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	data, handle, err := st.GetObjectByBlock(blockNum)
-	if err != nil {
-		if err == store.ErrBlockOutOfRange {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, ObjectDataResponse{
-		Timestamp: handle.Timestamp,
-		BlockNum:  handle.BlockNum,
-		Size:      handle.Size,
-		Data:      base64.StdEncoding.EncodeToString(data),
-	})
-}
-
 // DeleteByTime handles DELETE /api/stores/:store/objects/time/:timestamp
 // Deletes an object by its timestamp.
 func (h *ObjectHandler) DeleteByTime(c *gin.Context) {
@@ -190,38 +153,6 @@ func (h *ObjectHandler) DeleteByTime(c *gin.Context) {
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "object deleted"})
-}
-
-// DeleteByBlock handles DELETE /api/stores/:store/objects/block/:blocknum
-// Deletes an object by its block number.
-func (h *ObjectHandler) DeleteByBlock(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	blockNumStr := c.Param("blocknum")
-	blockNum64, err := strconv.ParseUint(blockNumStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
-		return
-	}
-	blockNum := uint32(blockNum64)
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Create handle for deletion
-	handle := &store.ObjectHandle{
-		BlockNum: blockNum,
-	}
-
-	if err := st.DeleteObject(handle); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 

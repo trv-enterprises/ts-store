@@ -9,7 +9,8 @@ ts-store implements a circular buffer-based storage system optimized for time se
 - **Fixed storage footprint** - Total size is determined at creation time
 - **Automatic reclamation** - Oldest data is automatically reclaimed when space is needed
 - **O(log n) time lookups** - Binary search on sorted timestamps
-- **Single-block objects** - Each object fits in one block (max size = blockSize - 32 bytes)
+- **Multi-object packing** - Multiple small objects can share a single block for efficiency
+- **Large object spanning** - Objects larger than a block automatically span multiple blocks
 
 ### Architecture
 
@@ -51,7 +52,7 @@ When the circular buffer is full, the oldest block is automatically reclaimed.
 - **Crash recovery** - Metadata is persisted after each operation
 - **REST API server** - HTTP API with per-store API key authentication
 - **Edge-friendly** - Small footprint, no external database dependencies
-- **Max object size** - Objects limited to `blockSize - 32` bytes (32-byte header)
+- **Flexible object sizes** - Small objects pack together, large objects span multiple blocks
 
 ## Installation
 
@@ -222,12 +223,6 @@ GET /api/stores/:store/data/time/:timestamp
 X-API-Key: <api-key>
 ```
 
-#### Get Data by Block Number (requires auth)
-```
-GET /api/stores/:store/data/block/:blocknum
-X-API-Key: <api-key>
-```
-
 #### Query Time Range (requires auth)
 ```
 GET /api/stores/:store/data/range?start_time=X&end_time=Y
@@ -241,28 +236,9 @@ GET /api/stores/:store/data/newest
 X-API-Key: <api-key>
 ```
 
-#### Reclaim Blocks (requires auth)
-```
-POST /api/stores/:store/data/reclaim
-X-API-Key: <api-key>
-Content-Type: application/json
-
-{
-  "start_block": 0,
-  "end_block": 10
-}
-```
-Or by time range:
-```json
-{
-  "start_time": 1704067200000000000,
-  "end_time": 1704153600000000000
-}
-```
-
 ### Object API (High-Level)
 
-The Object API provides a higher-level interface for storing objects. Objects must fit in a single block (max size = blockSize - 32 bytes). Returns `ErrObjectTooLarge` if data exceeds the limit.
+The Object API provides a higher-level interface for storing objects. Small objects are packed together efficiently, and large objects automatically span multiple blocks.
 
 #### Store Object (requires auth)
 ```
@@ -290,21 +266,9 @@ GET /api/stores/:store/objects/time/:timestamp
 X-API-Key: <api-key>
 ```
 
-#### Get Object by Block Number (requires auth)
-```
-GET /api/stores/:store/objects/block/:blocknum
-X-API-Key: <api-key>
-```
-
 #### Delete Object by Timestamp (requires auth)
 ```
 DELETE /api/stores/:store/objects/time/:timestamp
-X-API-Key: <api-key>
-```
-
-#### Delete Object by Block Number (requires auth)
-```
-DELETE /api/stores/:store/objects/block/:blocknum
 X-API-Key: <api-key>
 ```
 
@@ -368,12 +332,6 @@ Returns:
   "size": 64,
   "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
 }
-```
-
-#### Get JSON by Block Number (requires auth)
-```
-GET /api/stores/:store/json/block/:blocknum
-X-API-Key: <api-key>
 ```
 
 #### List Oldest JSON Objects (requires auth)
@@ -464,8 +422,8 @@ if err != nil {
 }
 defer s.Close()
 
-// Check max object size
-maxSize := s.MaxObjectSize()  // blockSize - 32 bytes
+// Small objects are packed together, large objects span multiple blocks
+// No practical size limit (within available blocks)
 ```
 
 ### Inserting Data
@@ -519,20 +477,16 @@ s.AddRangeToFreeListByTime(startTime, endTime)
 
 ### Object API (High-Level)
 
-The Object API provides a convenient interface for single-block objects:
+The Object API provides a convenient interface for storing objects:
 
 ```go
-// Store an object (must fit in one block)
+// Store an object (any size - small objects pack, large objects span)
 handle, err := s.PutObject(timestamp, data)
-if err == store.ErrObjectTooLarge {
-    // Object exceeds max size
-}
 handle, err := s.PutObjectNow(data) // Use current time
 
 // Retrieve an object
 data, err := s.GetObject(handle)
 data, handle, err := s.GetObjectByTime(timestamp)
-data, handle, err := s.GetObjectByBlock(blockNum)
 
 // List objects (returns handles only, not data)
 handles, err := s.GetOldestObjects(10)  // First 10 (from tail)
@@ -549,8 +503,10 @@ The ObjectHandle contains metadata about the stored object:
 ```go
 type ObjectHandle struct {
     Timestamp int64  // When the object was stored
-    BlockNum  uint32 // Block number
+    BlockNum  uint32 // Starting block number
+    Offset    uint32 // Position within block (for packed objects)
     Size      uint32 // Size in bytes
+    SpanCount uint32 // Number of blocks (1 for single, >1 for spanning)
 }
 ```
 
@@ -573,12 +529,10 @@ handle, err := s.PutJSONNow(reading)  // Use current time
 // Retrieve and unmarshal
 var result SensorReading
 handle, err := s.GetJSONByTime(timestamp, &result)
-handle, err := s.GetJSONByBlock(blockNum, &result)
 
 // Get raw JSON (when structure is unknown)
 raw, err := s.GetJSONRaw(handle)  // Returns json.RawMessage
 raw, handle, err := s.GetJSONRawByTime(timestamp)
-raw, handle, err := s.GetJSONRawByBlock(blockNum)
 
 // List JSON objects (returns raw JSON with handles)
 rawMsgs, handles, err := s.GetOldestJSON(10)
@@ -653,12 +607,37 @@ sensor-data/
 
 All Store methods are thread-safe. The implementation uses read-write locks to allow concurrent reads while serializing writes.
 
+## Important: Timestamp Ordering
+
+**ts-store requires strictly increasing timestamps.** The data store depends on monotonically increasing timestamps for its binary search index and efficient range queries. Out-of-order timestamps will be rejected with `ErrTimestampOutOfOrder`.
+
+This constraint has important implications:
+
+1. **User-provided timestamps** must always be greater than the most recent entry
+2. **System clock resets** can cause problems - if the system time is reset to an earlier time (e.g., NTP correction, daylight saving time issues, or manual adjustment) and you rely on `PutObjectNow()`, new inserts will be rejected until the clock advances past the last stored timestamp
+3. **Distributed systems** must coordinate timestamps if multiple writers are possible
+
+**Recommendations:**
+- Use logical timestamps or sequence numbers if clock stability is a concern
+- Monitor for `ErrTimestampOutOfOrder` errors in production
+- Consider using `Reset()` to clear the store if clock issues corrupt the timeline
+
+## Reset Store
+
+If you need to clear all data from a store (e.g., after clock issues or for testing), use the Reset function:
+
+```go
+// Reset clears all data and reinitializes the store
+err := s.Reset()
+```
+
+This clears all blocks and resets head/tail pointers, allowing inserts to start fresh.
+
 ## Limitations
 
+- **Timestamps must be strictly increasing** (see above)
 - Timestamps must be positive (Unix nanoseconds)
 - Block sizes must be powers of 2, minimum 64 bytes
-- Data per block is limited to `BlockSize - 32` bytes (32-byte header)
-- Objects must fit in a single block (use larger block sizes for larger objects)
 
 ## License
 

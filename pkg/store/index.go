@@ -248,6 +248,12 @@ func (s *Store) GetNewestTimestamp() (int64, error) {
 		return 0, ErrStoreClosed
 	}
 
+	return s.getNewestTimestampLocked()
+}
+
+// getNewestTimestampLocked returns the newest timestamp without acquiring lock.
+// Lock must be held.
+func (s *Store) getNewestTimestampLocked() (int64, error) {
 	entry, err := s.readIndexEntry(s.meta.HeadBlock)
 	if err != nil {
 		return 0, err

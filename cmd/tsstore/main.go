@@ -171,26 +171,22 @@ func runServer() {
 			storeRoutes.DELETE("", storeHandler.Delete)
 			storeRoutes.GET("/stats", storeHandler.Stats)
 
-			// Low-level block operations
+			// Low-level data operations
 			data := storeRoutes.Group("/data")
 			{
 				data.POST("", dataHandler.Insert)
 				data.GET("/time/:timestamp", dataHandler.GetByTime)
-				data.GET("/block/:blocknum", dataHandler.GetByBlock)
 				data.GET("/range", dataHandler.GetRange)
 				data.GET("/oldest", dataHandler.GetOldest)
 				data.GET("/newest", dataHandler.GetNewest)
-				data.POST("/reclaim", dataHandler.Reclaim)
 			}
 
-			// High-level object operations
+			// Object operations (base64 encoded data)
 			objects := storeRoutes.Group("/objects")
 			{
 				objects.POST("", objectHandler.Put)
 				objects.GET("/time/:timestamp", objectHandler.GetByTime)
-				objects.GET("/block/:blocknum", objectHandler.GetByBlock)
 				objects.DELETE("/time/:timestamp", objectHandler.DeleteByTime)
-				objects.DELETE("/block/:blocknum", objectHandler.DeleteByBlock)
 				objects.GET("/oldest", objectHandler.ListOldest)
 				objects.GET("/newest", objectHandler.ListNewest)
 				objects.GET("/range", objectHandler.ListRange)
@@ -201,7 +197,6 @@ func runServer() {
 			{
 				jsonRoutes.POST("", jsonHandler.Put)
 				jsonRoutes.GET("/time/:timestamp", jsonHandler.GetByTime)
-				jsonRoutes.GET("/block/:blocknum", jsonHandler.GetByBlock)
 				jsonRoutes.GET("/oldest", jsonHandler.ListOldest)
 				jsonRoutes.GET("/newest", jsonHandler.ListNewest)  // Supports ?since=2h
 				jsonRoutes.GET("/range", jsonHandler.ListRange)    // Supports ?since=2h or ?start_time=X&end_time=Y

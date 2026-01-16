@@ -128,44 +128,6 @@ func (h *JSONHandler) GetByTime(c *gin.Context) {
 	})
 }
 
-// GetByBlock handles GET /api/stores/:store/json/block/:blocknum
-func (h *JSONHandler) GetByBlock(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	blockNumStr := c.Param("blocknum")
-	blockNum64, err := strconv.ParseUint(blockNumStr, 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid block number"})
-		return
-	}
-	blockNum := uint32(blockNum64)
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	raw, handle, err := st.GetJSONRawByBlock(blockNum)
-	if err != nil {
-		if err == store.ErrBlockOutOfRange {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		} else if err == store.ErrInvalidJSON {
-			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "stored data is not valid JSON"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, JSONResponse{
-		Timestamp: handle.Timestamp,
-		BlockNum:  handle.BlockNum,
-		Size:      handle.Size,
-		Data:      raw,
-	})
-}
-
 // JSONListResponse represents a list of JSON objects.
 type JSONListResponse struct {
 	Objects []JSONResponse `json:"objects"`

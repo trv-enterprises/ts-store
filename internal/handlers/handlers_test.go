@@ -56,11 +56,9 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.
 	data := storeRoutes.Group("/data")
 	data.POST("", dataHandler.Insert)
 	data.GET("/time/:timestamp", dataHandler.GetByTime)
-	data.GET("/block/:blocknum", dataHandler.GetByBlock)
 	data.GET("/range", dataHandler.GetRange)
 	data.GET("/oldest", dataHandler.GetOldest)
 	data.GET("/newest", dataHandler.GetNewest)
-	data.POST("/reclaim", dataHandler.Reclaim)
 
 	return router, storeService, keyManager, tmpDir
 }
@@ -179,14 +177,14 @@ func TestInsertAndRetrieve(t *testing.T) {
 	var insertResp InsertResponse
 	json.Unmarshal(w.Body.Bytes(), &insertResp)
 
-	// Retrieve by block number
-	req, _ = http.NewRequest("GET", "/api/stores/data-test/data/block/0", nil)
+	// Retrieve by timestamp
+	req, _ = http.NewRequest("GET", "/api/stores/data-test/data/time/1000000000", nil)
 	req.Header.Set("X-API-Key", createResp.APIKey)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("Get by block failed: %d: %s", w.Code, w.Body.String())
+		t.Errorf("Get by time failed: %d: %s", w.Code, w.Body.String())
 	}
 
 	var blockResp BlockResponse

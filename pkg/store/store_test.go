@@ -343,3 +343,62 @@ func TestMultipleStores(t *testing.T) {
 		s.Close()
 	}
 }
+
+func TestReset(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "reset-test"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 100
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	// Insert some data
+	for i := 0; i < 10; i++ {
+		ts := int64((i + 1) * 1000000000)
+		_, err := s.PutObject(ts, []byte("test data"))
+		if err != nil {
+			t.Fatalf("PutObject failed: %v", err)
+		}
+	}
+
+	// Verify data exists
+	stats := s.Stats()
+	if stats.ActiveBlocks == 0 {
+		t.Fatal("Expected data before reset")
+	}
+	t.Logf("Before reset: ActiveBlocks=%d, OldestTime=%s", stats.ActiveBlocks, stats.OldestTime)
+
+	// Reset the store
+	if err := s.Reset(); err != nil {
+		t.Fatalf("Reset failed: %v", err)
+	}
+
+	// Verify store is empty
+	stats = s.Stats()
+	if stats.HeadBlock != 0 || stats.TailBlock != 0 {
+		t.Errorf("Expected head/tail to be 0 after reset, got head=%d tail=%d",
+			stats.HeadBlock, stats.TailBlock)
+	}
+	if stats.OldestTimestamp != 0 || stats.NewestTimestamp != 0 {
+		t.Errorf("Expected no timestamps after reset")
+	}
+	t.Logf("After reset: HeadBlock=%d, TailBlock=%d", stats.HeadBlock, stats.TailBlock)
+
+	// Verify we can insert new data starting from any timestamp
+	_, err = s.PutObject(500, []byte("new data after reset"))
+	if err != nil {
+		t.Fatalf("Insert after reset failed: %v", err)
+	}
+
+	// Verify data is there
+	_, _, err = s.GetObjectByTime(500)
+	if err != nil {
+		t.Fatalf("GetObjectByTime after reset failed: %v", err)
+	}
+}

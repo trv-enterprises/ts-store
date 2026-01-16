@@ -11,19 +11,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/tviviano/ts-store/pkg/block"
 )
 
 var (
-	ErrStoreExists      = errors.New("store already exists")
-	ErrStoreNotFound    = errors.New("store not found")
-	ErrStoreClosed      = errors.New("store is closed")
-	ErrInvalidMagic     = errors.New("invalid store file (bad magic number)")
-	ErrVersionMismatch  = errors.New("store version mismatch")
-	ErrNoFreeBlocks     = errors.New("no free blocks available")
-	ErrBlockOutOfRange  = errors.New("block number out of range")
-	ErrInvalidTimestamp = errors.New("invalid timestamp")
+	ErrStoreExists         = errors.New("store already exists")
+	ErrStoreNotFound       = errors.New("store not found")
+	ErrStoreClosed         = errors.New("store is closed")
+	ErrInvalidMagic        = errors.New("invalid store file (bad magic number)")
+	ErrVersionMismatch     = errors.New("store version mismatch")
+	ErrNoFreeBlocks        = errors.New("no free blocks available")
+	ErrBlockOutOfRange     = errors.New("block number out of range")
+	ErrInvalidTimestamp    = errors.New("invalid timestamp")
+	ErrTimestampOutOfOrder = errors.New("timestamp must be greater than newest entry")
 )
 
 const (
@@ -297,6 +299,58 @@ func (s *Store) Delete() error {
 	return os.RemoveAll(path)
 }
 
+// Reset clears all data from the store and reinitializes it.
+// This is useful for recovering from clock issues or starting fresh.
+// All existing data will be lost.
+func (s *Store) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrStoreClosed
+	}
+
+	// Reset metadata to initial state
+	s.meta.HeadBlock = 0
+	s.meta.TailBlock = 0
+	s.meta.FreeListHead = 0
+	s.meta.FreeListCount = 0
+	s.meta.WriteOffset = 0
+
+	// Clear all index entries
+	emptyEntry := make([]byte, block.IndexEntrySize)
+	for i := uint32(0); i < s.meta.NumBlocks; i++ {
+		offset := s.indexOffset(i)
+		if _, err := s.indexFile.WriteAt(emptyEntry, offset); err != nil {
+			return fmt.Errorf("failed to clear index entry %d: %w", i, err)
+		}
+	}
+
+	// Clear all block headers
+	emptyHeader := make([]byte, block.BlockHeaderSize)
+	for i := uint32(0); i < s.meta.NumBlocks; i++ {
+		offset := s.blockOffset(i)
+		if _, err := s.dataFile.WriteAt(emptyHeader, offset); err != nil {
+			return fmt.Errorf("failed to clear block header %d: %w", i, err)
+		}
+	}
+
+	// Write updated metadata
+	if err := s.writeMetaLocked(); err != nil {
+		return fmt.Errorf("failed to write metadata: %w", err)
+	}
+
+	// Sync files
+	if err := s.dataFile.Sync(); err != nil {
+		return err
+	}
+	if err := s.indexFile.Sync(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // DeleteStore removes a store by path and name without opening it.
 func DeleteStore(path string, name string) error {
 	storePath := filepath.Join(path, name)
@@ -314,22 +368,59 @@ func (s *Store) Config() Config {
 func (s *Store) Stats() StoreStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return StoreStats{
-		NumBlocks:     s.meta.NumBlocks,
+
+	stats := StoreStats{
+		// Block configuration
+		NumBlocks:      s.meta.NumBlocks,
+		DataBlockSize:  s.meta.DataBlockSize,
+		IndexBlockSize: s.meta.IndexBlockSize,
+
+		// Current state
 		HeadBlock:     s.meta.HeadBlock,
 		TailBlock:     s.meta.TailBlock,
 		FreeListCount: s.meta.FreeListCount,
 		WriteOffset:   s.meta.WriteOffset,
+
+		// Derived stats
+		ActiveBlocks: s.activeBlockCount(),
 	}
+
+	// Get oldest timestamp (from tail)
+	if tailEntry, err := s.readIndexEntry(s.meta.TailBlock); err == nil && tailEntry.Timestamp != 0 {
+		stats.OldestTimestamp = tailEntry.Timestamp
+		stats.OldestTime = time.Unix(0, tailEntry.Timestamp).UTC().Format(time.RFC3339)
+	}
+
+	// Get newest timestamp (from head)
+	if headEntry, err := s.readIndexEntry(s.meta.HeadBlock); err == nil && headEntry.Timestamp != 0 {
+		stats.NewestTimestamp = headEntry.Timestamp
+		stats.NewestTime = time.Unix(0, headEntry.Timestamp).UTC().Format(time.RFC3339)
+	}
+
+	return stats
 }
 
 // StoreStats contains runtime statistics about the store.
 type StoreStats struct {
-	NumBlocks     uint32
-	HeadBlock     uint32
-	TailBlock     uint32
-	FreeListCount uint32
-	WriteOffset   uint32 // Current write position within head block (V2)
+	// Block configuration
+	NumBlocks      uint32 `json:"num_blocks"`
+	DataBlockSize  uint32 `json:"data_block_size"`
+	IndexBlockSize uint32 `json:"index_block_size"`
+
+	// Current state
+	HeadBlock     uint32 `json:"head_block"`
+	TailBlock     uint32 `json:"tail_block"`
+	FreeListCount uint32 `json:"free_list_count"`
+	WriteOffset   uint32 `json:"write_offset"`
+
+	// Derived stats
+	ActiveBlocks uint32 `json:"active_blocks"`
+
+	// Timestamps
+	OldestTimestamp int64  `json:"oldest_timestamp,omitempty"`
+	OldestTime      string `json:"oldest_time,omitempty"`
+	NewestTimestamp int64  `json:"newest_timestamp,omitempty"`
+	NewestTime      string `json:"newest_time,omitempty"`
 }
 
 // writeMeta writes metadata to disk (acquires lock).
