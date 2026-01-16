@@ -1,0 +1,768 @@
+{
+	"info": {
+		"_postman_id": "ts-store-api-collection",
+		"name": "TSStore API",
+		"description": "API collection for testing TSStore time series database",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "storeName",
+			"value": "test-store",
+			"type": "string"
+		},
+		{
+			"key": "apiKey",
+			"value": "tsstore_your-api-key-here",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health & Info",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/health",
+							"host": ["{{baseUrl}}"],
+							"path": ["health"]
+						},
+						"description": "Check if the server is running"
+					}
+				}
+			]
+		},
+		{
+			"name": "Store Management",
+			"item": [
+				{
+					"name": "Create Store",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('storeName', jsonData.name);",
+									"    pm.collectionVariables.set('apiKey', jsonData.api_key);",
+									"    console.log('Store created. API Key saved to collection variables.');",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"test-store\",\n    \"num_blocks\": 1024,\n    \"data_block_size\": 4096,\n    \"index_block_size\": 4096\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/stores",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores"]
+						},
+						"description": "Create a new store. Returns an API key that must be saved."
+					}
+				},
+				{
+					"name": "List Stores",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores"]
+						},
+						"description": "List all open stores"
+					}
+				},
+				{
+					"name": "Get Store Stats",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/stats",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "stats"]
+						},
+						"description": "Get statistics for a store"
+					}
+				},
+				{
+					"name": "Delete Store",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}"]
+						},
+						"description": "Delete a store and all its data"
+					}
+				}
+			]
+		},
+		{
+			"name": "Low-Level Data Operations",
+			"item": [
+				{
+					"name": "Insert Data (Base64)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"timestamp\": {{$timestamp}}000000,\n    \"data\": \"SGVsbG8gV29ybGQh\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "data"]
+						},
+						"description": "Insert raw data (base64 encoded). Timestamp is in nanoseconds."
+					}
+				},
+				{
+					"name": "Get Data by Timestamp",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/time/:timestamp",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "data", "time", ":timestamp"],
+							"variable": [
+								{
+									"key": "timestamp",
+									"value": "1704067200000000000"
+								}
+							]
+						},
+						"description": "Get data by exact timestamp (nanoseconds)"
+					}
+				},
+				{
+					"name": "Get Data by Block Number",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/block/:blocknum",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "data", "block", ":blocknum"],
+							"variable": [
+								{
+									"key": "blocknum",
+									"value": "0"
+								}
+							]
+						},
+						"description": "Get data by block number"
+					}
+				},
+				{
+					"name": "Get Data Range",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/range?start_time=1704067200000000000&end_time=1704153600000000000",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "data", "range"],
+							"query": [
+								{
+									"key": "start_time",
+									"value": "1704067200000000000"
+								},
+								{
+									"key": "end_time",
+									"value": "1704153600000000000"
+								}
+							]
+						},
+						"description": "Get data within a time range (nanoseconds)"
+					}
+				},
+				{
+					"name": "Get Oldest Data",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/oldest?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "data", "oldest"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Get oldest data entries"
+					}
+				},
+				{
+					"name": "Get Newest Data",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "data", "newest"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Get newest data entries"
+					}
+				},
+				{
+					"name": "Reclaim Blocks",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"start_time\": 1704067200000000000,\n    \"end_time\": 1704153600000000000\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/reclaim",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "data", "reclaim"]
+						},
+						"description": "Reclaim blocks in a time range (add to free list)"
+					}
+				}
+			]
+		},
+		{
+			"name": "Object Operations",
+			"item": [
+				{
+					"name": "Put Object (Base64)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"timestamp\": {{$timestamp}}000000,\n    \"data\": \"SGVsbG8gV29ybGQh\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects"]
+						},
+						"description": "Store an object (base64 encoded data)"
+					}
+				},
+				{
+					"name": "Get Object by Timestamp",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects/time/:timestamp",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects", "time", ":timestamp"],
+							"variable": [
+								{
+									"key": "timestamp",
+									"value": "1704067200000000000"
+								}
+							]
+						},
+						"description": "Get object by exact timestamp"
+					}
+				},
+				{
+					"name": "Get Object by Block",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects/block/:blocknum",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects", "block", ":blocknum"],
+							"variable": [
+								{
+									"key": "blocknum",
+									"value": "0"
+								}
+							]
+						},
+						"description": "Get object by block number"
+					}
+				},
+				{
+					"name": "Delete Object by Timestamp",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects/time/:timestamp",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects", "time", ":timestamp"],
+							"variable": [
+								{
+									"key": "timestamp",
+									"value": "1704067200000000000"
+								}
+							]
+						},
+						"description": "Delete object by timestamp"
+					}
+				},
+				{
+					"name": "Delete Object by Block",
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects/block/:blocknum",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects", "block", ":blocknum"],
+							"variable": [
+								{
+									"key": "blocknum",
+									"value": "0"
+								}
+							]
+						},
+						"description": "Delete object by block number"
+					}
+				},
+				{
+					"name": "List Oldest Objects",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects/oldest?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects", "oldest"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "List oldest objects (handles only, no data)"
+					}
+				},
+				{
+					"name": "List Newest Objects",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects/newest?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects", "newest"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "List newest objects (handles only, no data)"
+					}
+				},
+				{
+					"name": "List Objects in Range",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/objects/range?start_time=1704067200000000000&end_time=1704153600000000000&limit=100",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "objects", "range"],
+							"query": [
+								{
+									"key": "start_time",
+									"value": "1704067200000000000"
+								},
+								{
+									"key": "end_time",
+									"value": "1704153600000000000"
+								},
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "List objects in a time range"
+					}
+				}
+			]
+		},
+		{
+			"name": "JSON Operations",
+			"item": [
+				{
+					"name": "Put JSON",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"timestamp\": {{$timestamp}}000000,\n    \"data\": {\n        \"temperature\": 23.5,\n        \"humidity\": 65.2,\n        \"sensor_id\": \"sensor-001\",\n        \"location\": \"building-a\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json"]
+						},
+						"description": "Store a JSON object directly (no base64 encoding needed)"
+					}
+				},
+				{
+					"name": "Put JSON (auto timestamp)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"data\": {\n        \"temperature\": 23.5,\n        \"humidity\": 65.2,\n        \"sensor_id\": \"sensor-001\",\n        \"location\": \"building-a\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json"]
+						},
+						"description": "Store JSON with auto-generated timestamp"
+					}
+				},
+				{
+					"name": "Get JSON by Timestamp",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json/time/:timestamp",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json", "time", ":timestamp"],
+							"variable": [
+								{
+									"key": "timestamp",
+									"value": "1704067200000000000"
+								}
+							]
+						},
+						"description": "Get JSON object by exact timestamp"
+					}
+				},
+				{
+					"name": "Get JSON by Block",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json/block/:blocknum",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json", "block", ":blocknum"],
+							"variable": [
+								{
+									"key": "blocknum",
+									"value": "0"
+								}
+							]
+						},
+						"description": "Get JSON object by block number"
+					}
+				},
+				{
+					"name": "Get Oldest JSON",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json/oldest?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json", "oldest"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Get oldest JSON objects"
+					}
+				},
+				{
+					"name": "Get Newest JSON",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json/newest?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json", "newest"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						},
+						"description": "Get newest JSON objects"
+					}
+				},
+				{
+					"name": "Get Newest JSON (since duration)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json/newest?since=1h&limit=100",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json", "newest"],
+							"query": [
+								{
+									"key": "since",
+									"value": "1h",
+									"description": "Duration: 30s, 5m, 2h, 24h, etc."
+								},
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "Get JSON objects from the last hour (or other duration)"
+					}
+				},
+				{
+					"name": "Get JSON Range (by time)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json/range?start_time=1704067200000000000&end_time=1704153600000000000&limit=100",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json", "range"],
+							"query": [
+								{
+									"key": "start_time",
+									"value": "1704067200000000000"
+								},
+								{
+									"key": "end_time",
+									"value": "1704153600000000000"
+								},
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "Get JSON objects in a time range (nanoseconds)"
+					}
+				},
+				{
+					"name": "Get JSON Range (since duration)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/json/range?since=2h&limit=100",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "json", "range"],
+							"query": [
+								{
+									"key": "since",
+									"value": "2h",
+									"description": "Duration: 30s, 5m, 2h, 24h, etc."
+								},
+								{
+									"key": "limit",
+									"value": "100"
+								}
+							]
+						},
+						"description": "Get JSON objects from the last 2 hours (or other duration)"
+					}
+				}
+			]
+		}
+	]
+}
