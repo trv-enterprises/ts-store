@@ -1,0 +1,471 @@
+// Copyright (c) 2026 TRV Enterprises LLC
+// Licensed under the PolyForm Noncommercial License 1.0.0
+// See LICENSE file for details.
+
+package handlers
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/tviviano/ts-store/internal/middleware"
+	"github.com/tviviano/ts-store/internal/service"
+	"github.com/tviviano/ts-store/pkg/store"
+)
+
+// UnifiedHandler handles the unified /data endpoint.
+// Content-Type header determines encoding:
+//   - application/octet-stream: binary data
+//   - text/plain: UTF-8 text
+//   - application/json: JSON data (or schema-encoded JSON)
+type UnifiedHandler struct {
+	storeService *service.StoreService
+}
+
+// NewUnifiedHandler creates a new unified data handler.
+func NewUnifiedHandler(storeService *service.StoreService) *UnifiedHandler {
+	return &UnifiedHandler{
+		storeService: storeService,
+	}
+}
+
+// ObjectHandleResponse represents the response after storing an object.
+type ObjectHandleResponse struct {
+	Timestamp int64  `json:"timestamp"`
+	BlockNum  uint32 `json:"block_num"`
+	Size      uint32 `json:"size"`
+}
+
+// DataResponse represents a single data object in responses.
+type DataResponse struct {
+	Timestamp int64  `json:"timestamp"`
+	BlockNum  uint32 `json:"block_num"`
+	Size      uint32 `json:"size"`
+	Data      any    `json:"data"` // string (base64 or text) or json.RawMessage
+}
+
+// DataListResponse represents a list of data objects.
+type DataListResponse struct {
+	Objects []DataResponse `json:"objects"`
+	Count   int            `json:"count"`
+}
+
+// Put handles POST /api/stores/:store/data
+// Content-Type determines format:
+//   - application/octet-stream: raw binary body
+//   - text/plain: raw text body
+//   - application/json: JSON body with optional timestamp wrapper
+func (h *UnifiedHandler) Put(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	st, err := h.storeService.GetOrOpen(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	contentType := c.ContentType()
+	storeDataType := st.DataType()
+
+	// Validate content type matches store data type
+	if err := validateContentType(contentType, storeDataType); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var data []byte
+	var timestamp int64
+
+	switch {
+	case strings.HasPrefix(contentType, "application/octet-stream"):
+		// Binary: read raw body
+		data, err = io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+			return
+		}
+		timestamp = time.Now().UnixNano()
+
+	case strings.HasPrefix(contentType, "text/plain"):
+		// Text: read raw body as text
+		data, err = io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+			return
+		}
+		timestamp = time.Now().UnixNano()
+
+	case strings.HasPrefix(contentType, "application/json"):
+		// JSON: parse wrapper with optional timestamp
+		var req struct {
+			Timestamp int64           `json:"timestamp,omitempty"`
+			Data      json.RawMessage `json:"data"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if len(req.Data) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "data is required"})
+			return
+		}
+		// Validate JSON
+		var js json.RawMessage
+		if err := json.Unmarshal(req.Data, &js); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON data"})
+			return
+		}
+		data = req.Data
+		timestamp = req.Timestamp
+		if timestamp == 0 {
+			timestamp = time.Now().UnixNano()
+		}
+
+		// For schema stores, validate and compact the data
+		if storeDataType == store.DataTypeSchema {
+			compactData, err := st.ValidateAndCompact(data)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "schema validation failed: " + err.Error()})
+				return
+			}
+			data = compactData
+		}
+
+	default:
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{
+			"error": "unsupported content type, use application/octet-stream, text/plain, or application/json",
+		})
+		return
+	}
+
+	// Store the object
+	handle, err := st.PutObject(timestamp, data)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, ObjectHandleResponse{
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
+	})
+}
+
+// GetByTime handles GET /api/stores/:store/data/time/:timestamp
+func (h *UnifiedHandler) GetByTime(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	timestampStr := c.Param("timestamp")
+	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid timestamp"})
+		return
+	}
+
+	st, err := h.storeService.GetOrOpen(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	data, handle, err := st.GetObjectByTime(timestamp)
+	if err != nil {
+		if err == store.ErrTimestampNotFound || err == store.ErrEmptyStore {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	// Check if client wants expanded format (default for schema stores)
+	expand := c.Query("format") != "compact"
+
+	c.JSON(http.StatusOK, h.formatDataResponse(data, handle, st.DataType(), st, expand))
+}
+
+// DeleteByTime handles DELETE /api/stores/:store/data/time/:timestamp
+func (h *UnifiedHandler) DeleteByTime(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	timestampStr := c.Param("timestamp")
+	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid timestamp"})
+		return
+	}
+
+	st, err := h.storeService.GetOrOpen(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := st.DeleteObjectByTime(timestamp); err != nil {
+		if err == store.ErrTimestampNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "object deleted"})
+}
+
+// ListOldest handles GET /api/stores/:store/data/oldest
+func (h *UnifiedHandler) ListOldest(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	limitStr := c.DefaultQuery("limit", "10")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 10
+	}
+
+	st, err := h.storeService.GetOrOpen(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	handles, err := st.GetOldestObjects(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// For list operations, we can optionally include data
+	includeData := c.Query("include_data") == "true"
+	expand := c.Query("format") != "compact"
+
+	objects := make([]DataResponse, len(handles))
+	for i, handle := range handles {
+		objects[i] = DataResponse{
+			Timestamp: handle.Timestamp,
+			BlockNum:  handle.BlockNum,
+			Size:      handle.Size,
+		}
+		if includeData {
+			data, err := st.GetObject(handle)
+			if err == nil {
+				objects[i].Data = h.formatData(data, st.DataType(), st, expand)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, DataListResponse{
+		Objects: objects,
+		Count:   len(objects),
+	})
+}
+
+// ListNewest handles GET /api/stores/:store/data/newest
+// Supports optional ?since=<duration> parameter (e.g., since=2h, since=30m, since=7d)
+func (h *UnifiedHandler) ListNewest(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	limitStr := c.DefaultQuery("limit", "10")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 10
+	}
+
+	st, err := h.storeService.GetOrOpen(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var handles []*store.ObjectHandle
+
+	// Check for since parameter
+	sinceStr := c.Query("since")
+	if sinceStr != "" {
+		duration, err := ParseDuration(sinceStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
+			return
+		}
+		handles, err = st.GetObjectsSince(duration, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		handles, err = st.GetNewestObjects(limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	includeData := c.Query("include_data") == "true"
+	expand := c.Query("format") != "compact"
+
+	objects := make([]DataResponse, len(handles))
+	for i, handle := range handles {
+		objects[i] = DataResponse{
+			Timestamp: handle.Timestamp,
+			BlockNum:  handle.BlockNum,
+			Size:      handle.Size,
+		}
+		if includeData {
+			data, err := st.GetObject(handle)
+			if err == nil {
+				objects[i].Data = h.formatData(data, st.DataType(), st, expand)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, DataListResponse{
+		Objects: objects,
+		Count:   len(objects),
+	})
+}
+
+// ListRange handles GET /api/stores/:store/data/range
+// Supports ?start_time=X&end_time=Y or ?since=<duration>
+func (h *UnifiedHandler) ListRange(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	limitStr := c.DefaultQuery("limit", "100")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 100
+	}
+
+	st, err := h.storeService.GetOrOpen(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	var handles []*store.ObjectHandle
+
+	// Check for since parameter first
+	sinceStr := c.Query("since")
+	if sinceStr != "" {
+		duration, err := ParseDuration(sinceStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
+			return
+		}
+		handles, err = st.GetObjectsSince(duration, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		// Use start_time/end_time
+		startTimeStr := c.Query("start_time")
+		endTimeStr := c.Query("end_time")
+
+		if startTimeStr == "" || endTimeStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "start_time and end_time required (or use since parameter)"})
+			return
+		}
+
+		startTime, err := strconv.ParseInt(startTimeStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
+			return
+		}
+
+		endTime, err := strconv.ParseInt(endTimeStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+			return
+		}
+
+		handles, err = st.GetObjectsInRange(startTime, endTime, limit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	includeData := c.Query("include_data") == "true"
+	expand := c.Query("format") != "compact"
+
+	objects := make([]DataResponse, len(handles))
+	for i, handle := range handles {
+		objects[i] = DataResponse{
+			Timestamp: handle.Timestamp,
+			BlockNum:  handle.BlockNum,
+			Size:      handle.Size,
+		}
+		if includeData {
+			data, err := st.GetObject(handle)
+			if err == nil {
+				objects[i].Data = h.formatData(data, st.DataType(), st, expand)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, DataListResponse{
+		Objects: objects,
+		Count:   len(objects),
+	})
+}
+
+// formatDataResponse formats a single data response based on store type.
+func (h *UnifiedHandler) formatDataResponse(data []byte, handle *store.ObjectHandle, dataType store.DataType, st *store.Store, expand bool) DataResponse {
+	return DataResponse{
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
+		Data:      h.formatData(data, dataType, st, expand),
+	}
+}
+
+// formatData formats data based on store type.
+// For schema stores, if expand is true, converts compact format to full field names.
+func (h *UnifiedHandler) formatData(data []byte, dataType store.DataType, st *store.Store, expand bool) any {
+	switch dataType {
+	case store.DataTypeBinary:
+		return base64.StdEncoding.EncodeToString(data)
+	case store.DataTypeText:
+		return string(data)
+	case store.DataTypeJSON:
+		return json.RawMessage(data)
+	case store.DataTypeSchema:
+		if expand {
+			// Expand compact format to full field names
+			expanded, err := st.ExpandData(data, 0) // 0 = current version
+			if err == nil {
+				return json.RawMessage(expanded)
+			}
+		}
+		// Return compact format if not expanding or expansion failed
+		return json.RawMessage(data)
+	default:
+		return base64.StdEncoding.EncodeToString(data)
+	}
+}
+
+// validateContentType checks if content type is compatible with store data type.
+func validateContentType(contentType string, dataType store.DataType) error {
+	switch dataType {
+	case store.DataTypeBinary:
+		if !strings.HasPrefix(contentType, "application/octet-stream") {
+			return store.ErrDataTypeMismatch
+		}
+	case store.DataTypeText:
+		if !strings.HasPrefix(contentType, "text/plain") {
+			return store.ErrDataTypeMismatch
+		}
+	case store.DataTypeJSON, store.DataTypeSchema:
+		if !strings.HasPrefix(contentType, "application/json") {
+			return store.ErrDataTypeMismatch
+		}
+	}
+	return nil
+}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tviviano/ts-store/pkg/block"
+	"github.com/tviviano/ts-store/pkg/schema"
 )
 
 var (
@@ -22,7 +23,6 @@ var (
 	ErrStoreClosed         = errors.New("store is closed")
 	ErrInvalidMagic        = errors.New("invalid store file (bad magic number)")
 	ErrVersionMismatch     = errors.New("store version mismatch")
-	ErrNoFreeBlocks        = errors.New("no free blocks available")
 	ErrBlockOutOfRange     = errors.New("block number out of range")
 	ErrInvalidTimestamp    = errors.New("invalid timestamp")
 	ErrTimestampOutOfOrder = errors.New("timestamp must be greater than newest entry")
@@ -36,36 +36,42 @@ const (
 	dataFileName   = "data.tsdb"
 	indexFileName  = "index.tsdb"
 	metaFileName   = "meta.tsdb"
+	schemaFileName = "schema.json"
 )
 
 // StoreMetadata is persisted to disk and contains store configuration.
 // Total size: 64 bytes
+//
+// The circular buffer uses HeadBlock and TailBlock to track used space:
+// - HeadBlock: newest data (where writes happen)
+// - TailBlock: oldest data (reclaimed when space needed)
+// - Free space is implicit: the gap from (HeadBlock+1) to TailBlock
 type StoreMetadata struct {
-	Magic          uint64 // Magic number for file identification
-	Version        uint32 // Store format version
-	NumBlocks      uint32 // Number of circular blocks
-	DataBlockSize  uint32 // Size of each data block
-	IndexBlockSize uint32 // Size of each index block
-	HeadBlock      uint32 // Current head of circle (newest)
-	TailBlock      uint32 // Current tail of circle (oldest)
-	FreeListHead   uint32 // First block in free list (0 = empty)
-	FreeListCount  uint32 // Number of blocks in free list
-	WriteOffset    uint32 // Current write position within head block (V2 packed format)
-	Reserved       [16]byte
+	Magic          uint64   // Magic number for file identification
+	Version        uint32   // Store format version
+	NumBlocks      uint32   // Number of circular blocks
+	DataBlockSize  uint32   // Size of each data block
+	IndexBlockSize uint32   // Size of each index block
+	HeadBlock      uint32   // Current head of circle (newest)
+	TailBlock      uint32   // Current tail of circle (oldest)
+	WriteOffset    uint32   // Current write position within head block (V2 packed format)
+	DataType       DataType // Type of data stored (binary, text, json, schema)
+	Reserved       [19]byte
 }
 
 const metadataSize = 64
 
 // Store represents an open circular time series store.
 type Store struct {
-	mu       sync.RWMutex
-	config   Config
-	meta     StoreMetadata
-	dataFile *os.File
+	mu        sync.RWMutex
+	config    Config
+	meta      StoreMetadata
+	dataFile  *os.File
 	indexFile *os.File
-	metaFile *os.File
-	closed   bool
-	path     string
+	metaFile  *os.File
+	schemaSet *schema.SchemaSet // Only used for DataTypeSchema stores
+	closed    bool
+	path      string
 }
 
 // Create creates a new store with the given configuration.
@@ -139,8 +145,8 @@ func Create(cfg Config) (*Store, error) {
 		IndexBlockSize: cfg.IndexBlockSize,
 		HeadBlock:      0,
 		TailBlock:      0,
-		FreeListHead:   0,
-		FreeListCount:  0,
+		WriteOffset:    0,
+		DataType:       cfg.DataType,
 	}
 
 	s := &Store{
@@ -223,9 +229,10 @@ func Open(path string, name string) (*Store, error) {
 		NumBlocks:      meta.NumBlocks,
 		DataBlockSize:  meta.DataBlockSize,
 		IndexBlockSize: meta.IndexBlockSize,
+		DataType:       meta.DataType,
 	}
 
-	return &Store{
+	s := &Store{
 		config:    cfg,
 		meta:      meta,
 		dataFile:  dataFile,
@@ -233,7 +240,21 @@ func Open(path string, name string) (*Store, error) {
 		metaFile:  metaFile,
 		closed:    false,
 		path:      storePath,
-	}, nil
+	}
+
+	// Perform crash recovery to fix any inconsistencies
+	if err := s.recoverFromCrash(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("crash recovery failed: %w", err)
+	}
+
+	// Load schema for schema stores
+	if err := s.loadSchema(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("failed to load schema: %w", err)
+	}
+
+	return s, nil
 }
 
 // Close closes the store and flushes all data to disk.
@@ -313,8 +334,6 @@ func (s *Store) Reset() error {
 	// Reset metadata to initial state
 	s.meta.HeadBlock = 0
 	s.meta.TailBlock = 0
-	s.meta.FreeListHead = 0
-	s.meta.FreeListCount = 0
 	s.meta.WriteOffset = 0
 
 	// Clear all index entries
@@ -364,6 +383,13 @@ func (s *Store) Config() Config {
 	return s.config
 }
 
+// DataType returns the store's data type.
+func (s *Store) DataType() DataType {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.meta.DataType
+}
+
 // Stats returns current store statistics.
 func (s *Store) Stats() StoreStats {
 	s.mu.RLock()
@@ -375,11 +401,13 @@ func (s *Store) Stats() StoreStats {
 		DataBlockSize:  s.meta.DataBlockSize,
 		IndexBlockSize: s.meta.IndexBlockSize,
 
+		// Data type
+		DataType: s.meta.DataType.String(),
+
 		// Current state
-		HeadBlock:     s.meta.HeadBlock,
-		TailBlock:     s.meta.TailBlock,
-		FreeListCount: s.meta.FreeListCount,
-		WriteOffset:   s.meta.WriteOffset,
+		HeadBlock:   s.meta.HeadBlock,
+		TailBlock:   s.meta.TailBlock,
+		WriteOffset: s.meta.WriteOffset,
 
 		// Derived stats
 		ActiveBlocks: s.activeBlockCount(),
@@ -407,11 +435,13 @@ type StoreStats struct {
 	DataBlockSize  uint32 `json:"data_block_size"`
 	IndexBlockSize uint32 `json:"index_block_size"`
 
+	// Data type
+	DataType string `json:"data_type"`
+
 	// Current state
-	HeadBlock     uint32 `json:"head_block"`
-	TailBlock     uint32 `json:"tail_block"`
-	FreeListCount uint32 `json:"free_list_count"`
-	WriteOffset   uint32 `json:"write_offset"`
+	HeadBlock   uint32 `json:"head_block"`
+	TailBlock   uint32 `json:"tail_block"`
+	WriteOffset uint32 `json:"write_offset"`
 
 	// Derived stats
 	ActiveBlocks uint32 `json:"active_blocks"`
@@ -440,10 +470,9 @@ func (s *Store) writeMetaLocked() error {
 	binary.LittleEndian.PutUint32(buf[20:24], s.meta.IndexBlockSize)
 	binary.LittleEndian.PutUint32(buf[24:28], s.meta.HeadBlock)
 	binary.LittleEndian.PutUint32(buf[28:32], s.meta.TailBlock)
-	binary.LittleEndian.PutUint32(buf[32:36], s.meta.FreeListHead)
-	binary.LittleEndian.PutUint32(buf[36:40], s.meta.FreeListCount)
-	binary.LittleEndian.PutUint32(buf[40:44], s.meta.WriteOffset)
-	// bytes 44-63 reserved
+	binary.LittleEndian.PutUint32(buf[32:36], s.meta.WriteOffset)
+	buf[36] = byte(s.meta.DataType)
+	// bytes 37-63 reserved
 
 	if _, err := s.metaFile.WriteAt(buf, 0); err != nil {
 		return err
@@ -465,9 +494,8 @@ func readMetadata(f *os.File, meta *StoreMetadata) error {
 	meta.IndexBlockSize = binary.LittleEndian.Uint32(buf[20:24])
 	meta.HeadBlock = binary.LittleEndian.Uint32(buf[24:28])
 	meta.TailBlock = binary.LittleEndian.Uint32(buf[28:32])
-	meta.FreeListHead = binary.LittleEndian.Uint32(buf[32:36])
-	meta.FreeListCount = binary.LittleEndian.Uint32(buf[36:40])
-	meta.WriteOffset = binary.LittleEndian.Uint32(buf[40:44])
+	meta.WriteOffset = binary.LittleEndian.Uint32(buf[32:36])
+	meta.DataType = DataType(buf[36])
 
 	return nil
 }

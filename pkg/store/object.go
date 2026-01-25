@@ -344,7 +344,9 @@ func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*Objec
 	return handles, nil
 }
 
-// DeleteObject removes an object.
+// DeleteObject removes an object by clearing its index entry.
+// In a circular buffer, the block space is not immediately reusable -
+// it will be reclaimed when the tail advances to this position.
 func (s *Store) DeleteObject(handle *ObjectHandle) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -353,15 +355,19 @@ func (s *Store) DeleteObject(handle *ObjectHandle) error {
 		return ErrStoreClosed
 	}
 
-	if err := s.reclaimBlock(handle.BlockNum); err != nil {
+	// Clear the index entry to mark the object as deleted
+	if err := s.clearIndexEntry(handle.BlockNum); err != nil {
 		return err
 	}
 
+	// If this was the tail block, advance the tail
 	s.adjustTailAfterReclaim()
 	return s.writeMetaLocked()
 }
 
 // DeleteObjectByTime removes an object by its timestamp.
+// In a circular buffer, the block space is not immediately reusable -
+// it will be reclaimed when the tail advances to this position.
 func (s *Store) DeleteObjectByTime(timestamp int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -385,10 +391,12 @@ func (s *Store) DeleteObjectByTime(timestamp int64) error {
 		return ErrTimestampNotFound
 	}
 
-	if err := s.reclaimBlock(blockNum); err != nil {
+	// Clear the index entry to mark the object as deleted
+	if err := s.clearIndexEntry(blockNum); err != nil {
 		return err
 	}
 
+	// If this was the tail block, advance the tail
 	s.adjustTailAfterReclaim()
 	return s.writeMetaLocked()
 }
@@ -427,7 +435,6 @@ func (s *Store) insertLocked(timestamp int64, data []byte) (uint32, error) {
 
 	header := &block.BlockHeader{
 		Timestamp: timestamp,
-		BlockNum:  blockNum,
 		DataLen:   uint32(len(data)),
 		Flags:     block.FlagPrimary,
 	}

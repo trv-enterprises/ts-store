@@ -84,11 +84,13 @@ Options:
   --data-size <n>    Data block size in bytes, must be power of 2 (default: 4096)
   --index-size <n>   Index block size in bytes, must be power of 2 (default: 4096)
   --path <dir>       Base directory for stores (default: ./data or TSSTORE_DATA_PATH)
+  --type <type>      Data type: binary, text, json, schema (default: json)
 
 Examples:
   tsstore create my-store
   tsstore create sensors --blocks 10000 --data-size 8192
-  tsstore create logs --path /var/tsstore`)
+  tsstore create logs --path /var/tsstore
+  tsstore create metrics --type schema`)
 }
 
 func printKeyUsage() {
@@ -150,9 +152,10 @@ func runServer() {
 
 	// Initialize handlers
 	storeHandler := handlers.NewStoreHandler(storeService)
-	dataHandler := handlers.NewDataHandler(storeService)
-	objectHandler := handlers.NewObjectHandler(storeService)
-	jsonHandler := handlers.NewJSONHandler(storeService)
+	unifiedHandler := handlers.NewUnifiedHandler(storeService)
+	schemaHandler := handlers.NewSchemaHandler(storeService)
+	wsHandler := handlers.NewWSHandler(storeService)
+	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManager)
 
 	// API routes
 	api := router.Group("/api")
@@ -160,8 +163,8 @@ func runServer() {
 		// Store management (no auth for create, list)
 		stores := api.Group("/stores")
 		{
-			stores.POST("", storeHandler.Create)       // Create new store (returns API key)
-			stores.GET("", storeHandler.List)          // List open stores
+			stores.POST("", storeHandler.Create) // Create new store (returns API key)
+			stores.GET("", storeHandler.List)    // List open stores
 		}
 
 		// Store-specific operations (require auth)
@@ -171,35 +174,37 @@ func runServer() {
 			storeRoutes.DELETE("", storeHandler.Delete)
 			storeRoutes.GET("/stats", storeHandler.Stats)
 
-			// Low-level data operations
+			// Unified data endpoint
+			// Content-Type determines format:
+			//   - application/octet-stream: binary data
+			//   - text/plain: UTF-8 text
+			//   - application/json: JSON data
 			data := storeRoutes.Group("/data")
 			{
-				data.POST("", dataHandler.Insert)
-				data.GET("/time/:timestamp", dataHandler.GetByTime)
-				data.GET("/range", dataHandler.GetRange)
-				data.GET("/oldest", dataHandler.GetOldest)
-				data.GET("/newest", dataHandler.GetNewest)
+				data.POST("", unifiedHandler.Put)
+				data.GET("/time/:timestamp", unifiedHandler.GetByTime)
+				data.DELETE("/time/:timestamp", unifiedHandler.DeleteByTime)
+				data.GET("/oldest", unifiedHandler.ListOldest)
+				data.GET("/newest", unifiedHandler.ListNewest) // Supports ?since=2h
+				data.GET("/range", unifiedHandler.ListRange)   // Supports ?since=2h or ?start_time=X&end_time=Y
 			}
 
-			// Object operations (base64 encoded data)
-			objects := storeRoutes.Group("/objects")
-			{
-				objects.POST("", objectHandler.Put)
-				objects.GET("/time/:timestamp", objectHandler.GetByTime)
-				objects.DELETE("/time/:timestamp", objectHandler.DeleteByTime)
-				objects.GET("/oldest", objectHandler.ListOldest)
-				objects.GET("/newest", objectHandler.ListNewest)
-				objects.GET("/range", objectHandler.ListRange)
-			}
+			// Schema endpoint (only for schema-type stores)
+			storeRoutes.GET("/schema", schemaHandler.Get)
+			storeRoutes.PUT("/schema", schemaHandler.Put)
 
-			// JSON object operations (no base64 encoding needed)
-			jsonRoutes := storeRoutes.Group("/json")
+			// WebSocket endpoints (inbound connections)
+			// Auth is via query param for WebSocket connections
+			storeRoutes.GET("/ws/read", wsHandler.Read)
+			storeRoutes.GET("/ws/write", wsHandler.Write)
+
+			// Outbound connection management
+			wsConns := storeRoutes.Group("/ws/connections")
 			{
-				jsonRoutes.POST("", jsonHandler.Put)
-				jsonRoutes.GET("/time/:timestamp", jsonHandler.GetByTime)
-				jsonRoutes.GET("/oldest", jsonHandler.ListOldest)
-				jsonRoutes.GET("/newest", jsonHandler.ListNewest)  // Supports ?since=2h
-				jsonRoutes.GET("/range", jsonHandler.ListRange)    // Supports ?since=2h or ?start_time=X&end_time=Y
+				wsConns.GET("", wsConnHandler.List)
+				wsConns.POST("", wsConnHandler.Create)
+				wsConns.GET("/:id", wsConnHandler.Get)
+				wsConns.DELETE("/:id", wsConnHandler.Delete)
 			}
 		}
 	}
@@ -261,6 +266,7 @@ func runCreateCommand(args []string) {
 	dataBlockSize := uint32(4096)
 	indexBlockSize := uint32(4096)
 	basePath := ""
+	dataType := "json"
 
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
@@ -296,6 +302,11 @@ func runCreateCommand(args []string) {
 				i++
 				basePath = args[i]
 			}
+		case "--type":
+			if i+1 < len(args) {
+				i++
+				dataType = args[i]
+			}
 		}
 	}
 
@@ -330,6 +341,7 @@ func runCreateCommand(args []string) {
 		NumBlocks:      numBlocks,
 		DataBlockSize:  dataBlockSize,
 		IndexBlockSize: indexBlockSize,
+		DataType:       dataType,
 	}
 
 	resp, err := storeService.Create(req)
@@ -343,6 +355,7 @@ func runCreateCommand(args []string) {
 	fmt.Println("=== STORE CREATED ===")
 	fmt.Printf("Name:        %s\n", resp.Name)
 	fmt.Printf("Path:        %s/%s\n", cfg.Store.BasePath, resp.Name)
+	fmt.Printf("Data Type:   %s\n", dataType)
 	fmt.Printf("Blocks:      %d\n", numBlocks)
 	fmt.Printf("Data Size:   %d bytes\n", dataBlockSize)
 	fmt.Printf("Index Size:  %d bytes\n", indexBlockSize)

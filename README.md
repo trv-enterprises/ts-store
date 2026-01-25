@@ -39,9 +39,9 @@ ts-store implements a circular buffer-based storage system optimized for time se
 
 - **Data blocks** form a fixed-size circular buffer ordered by time
 - **Index** mirrors the circular structure, enabling binary search by timestamp
-- **Free list** tracks reclaimed blocks for reuse
+- **Head/Tail pointers** track newest and oldest data; free space is implicit
 
-When the circular buffer is full, the oldest block is automatically reclaimed.
+When the circular buffer is full, the oldest block (at tail) is automatically reclaimed to make room for new data.
 
 ## Features
 
@@ -51,6 +51,7 @@ When the circular buffer is full, the oldest block is automatically reclaimed.
 - **Time-based or block-based reclaim** - Free specific ranges of data
 - **Crash recovery** - Metadata is persisted after each operation
 - **REST API server** - HTTP API with per-store API key authentication
+- **WebSocket streaming** - Real-time data streaming with inbound and outbound modes
 - **Edge-friendly** - Small footprint, no external database dependencies
 - **Flexible object sizes** - Small objects pack together, large objects span multiple blocks
 
@@ -175,9 +176,17 @@ Content-Type: application/json
   "name": "my-store",
   "num_blocks": 1000,
   "data_block_size": 4096,
-  "index_block_size": 4096
+  "index_block_size": 4096,
+  "data_type": "json"
 }
 ```
+
+**Data Types:**
+- `binary` - Raw binary data (Content-Type: application/octet-stream)
+- `text` - UTF-8 text (Content-Type: text/plain)
+- `json` - Arbitrary JSON objects (Content-Type: application/json) - default
+- `schema` - Schema-defined compact JSON (Content-Type: application/json)
+
 Returns the API key (shown only once):
 ```json
 {
@@ -204,6 +213,10 @@ GET /api/stores/:store/stats
 X-API-Key: <api-key>
 ```
 
+### Data Endpoint
+
+The unified `/data` endpoint handles all data operations. Content-Type header must match the store's data type.
+
 #### Insert Data (requires auth)
 ```
 POST /api/stores/:store/data
@@ -212,116 +225,23 @@ Content-Type: application/json
 
 {
   "timestamp": 1704067200000000000,
-  "data": "base64-encoded-data"
+  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
 }
 ```
-Timestamp is optional (defaults to current time). Data must be base64 encoded.
+Timestamp is optional (defaults to current time).
 
-#### Get Data by Timestamp (requires auth)
-```
-GET /api/stores/:store/data/time/:timestamp
-X-API-Key: <api-key>
-```
-
-#### Query Time Range (requires auth)
-```
-GET /api/stores/:store/data/range?start_time=X&end_time=Y
-X-API-Key: <api-key>
-```
-
-#### Get Oldest/Newest Timestamps (requires auth)
-```
-GET /api/stores/:store/data/oldest
-GET /api/stores/:store/data/newest
-X-API-Key: <api-key>
-```
-
-### Object API (High-Level)
-
-The Object API provides a higher-level interface for storing objects. Small objects are packed together efficiently, and large objects automatically span multiple blocks.
-
-#### Store Object (requires auth)
-```
-POST /api/stores/:store/objects
-X-API-Key: <api-key>
-Content-Type: application/json
-
-{
-  "timestamp": 1704067200000000000,
-  "data": "base64-encoded-data"
-}
-```
 Returns:
 ```json
 {
   "timestamp": 1704067200000000000,
   "block_num": 5,
-  "size": 1024
+  "size": 64
 }
 ```
 
-#### Get Object by Timestamp (requires auth)
+#### Get Data by Timestamp (requires auth)
 ```
-GET /api/stores/:store/objects/time/:timestamp
-X-API-Key: <api-key>
-```
-
-#### Delete Object by Timestamp (requires auth)
-```
-DELETE /api/stores/:store/objects/time/:timestamp
-X-API-Key: <api-key>
-```
-
-#### List Oldest Objects (requires auth)
-```
-GET /api/stores/:store/objects/oldest?limit=10
-X-API-Key: <api-key>
-```
-Returns handles for the N oldest objects (default 10). Does not include data.
-
-#### List Newest Objects (requires auth)
-```
-GET /api/stores/:store/objects/newest?limit=10
-GET /api/stores/:store/objects/newest?since=2h&limit=100
-X-API-Key: <api-key>
-```
-Returns handles for the N newest objects (default 10). Use `since` parameter for relative time queries.
-
-#### List Objects in Time Range (requires auth)
-```
-GET /api/stores/:store/objects/range?start_time=X&end_time=Y&limit=100
-GET /api/stores/:store/objects/range?since=24h&limit=100
-X-API-Key: <api-key>
-```
-Returns handles for objects within the time range. Use `since` as an alternative to `start_time`/`end_time`.
-
-**Supported duration formats:**
-- `30s` - 30 seconds
-- `15m` - 15 minutes
-- `2h` - 2 hours
-- `7d` - 7 days
-- `1w` - 1 week
-
-### JSON API (No Base64 Encoding)
-
-The JSON API provides a convenient interface for storing and retrieving JSON objects without base64 encoding.
-
-#### Store JSON Object (requires auth)
-```
-POST /api/stores/:store/json
-X-API-Key: <api-key>
-Content-Type: application/json
-
-{
-  "timestamp": 1704067200000000000,
-  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
-}
-```
-Timestamp is optional (defaults to current time). Data is stored as-is (no base64).
-
-#### Get JSON by Timestamp (requires auth)
-```
-GET /api/stores/:store/json/time/:timestamp
+GET /api/stores/:store/data/time/:timestamp
 X-API-Key: <api-key>
 ```
 Returns:
@@ -334,39 +254,198 @@ Returns:
 }
 ```
 
-#### List Oldest JSON Objects (requires auth)
+#### Delete Data by Timestamp (requires auth)
 ```
-GET /api/stores/:store/json/oldest?limit=10
+DELETE /api/stores/:store/data/time/:timestamp
 X-API-Key: <api-key>
 ```
-Returns the N oldest JSON objects with their data.
 
-#### List Newest JSON Objects (requires auth)
+#### List Oldest Data (requires auth)
 ```
-GET /api/stores/:store/json/newest?limit=10
-GET /api/stores/:store/json/newest?since=30m&limit=50
+GET /api/stores/:store/data/oldest?limit=10&include_data=true
 X-API-Key: <api-key>
 ```
-Returns the N newest JSON objects with their data. Use `since` for relative time queries.
+Returns handles for the N oldest objects (default 10). Add `include_data=true` to include data in response.
 
-#### List JSON Objects in Time Range (requires auth)
+#### List Newest Data (requires auth)
 ```
-GET /api/stores/:store/json/range?start_time=X&end_time=Y&limit=100
-GET /api/stores/:store/json/range?since=1h&limit=100
+GET /api/stores/:store/data/newest?limit=10
+GET /api/stores/:store/data/newest?since=2h&limit=100&include_data=true
 X-API-Key: <api-key>
 ```
-Returns JSON objects within the time range. Use `since` as an alternative to `start_time`/`end_time`.
+Returns handles for the N newest objects (default 10). Use `since` parameter for relative time queries.
+
+#### Query Time Range (requires auth)
+```
+GET /api/stores/:store/data/range?start_time=X&end_time=Y&limit=100
+GET /api/stores/:store/data/range?since=24h&limit=100&include_data=true
+X-API-Key: <api-key>
+```
+Returns objects within the time range. Use `since` as an alternative to `start_time`/`end_time`.
+
+**Supported duration formats:**
+- `30s` - 30 seconds
+- `15m` - 15 minutes
+- `2h` - 2 hours
+- `7d` - 7 days
+- `1w` - 1 week
+
+### Schema Endpoint (for schema-type stores)
+
+Schema stores use a compact JSON format where field names are replaced with numeric indices. This reduces storage space significantly for structured data with known schemas.
+
+#### Get Current Schema
+```
+GET /api/stores/:store/schema
+X-API-Key: <api-key>
+```
+Returns:
+```json
+{
+  "version": 1,
+  "fields": [
+    {"index": 1, "name": "temperature", "type": "float32"},
+    {"index": 2, "name": "humidity", "type": "float32"},
+    {"index": 3, "name": "sensor_id", "type": "string"}
+  ]
+}
+```
+
+#### Set/Update Schema
+```
+PUT /api/stores/:store/schema
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "fields": [
+    {"index": 1, "name": "temperature", "type": "float32"},
+    {"index": 2, "name": "humidity", "type": "float32"},
+    {"index": 3, "name": "sensor_id", "type": "string"}
+  ]
+}
+```
+
+**Field types:** `int8`, `int16`, `int32`, `int64`, `uint8`, `uint16`, `uint32`, `uint64`, `float32`, `float64`, `bool`, `string`
+
+**Schema evolution:** New schemas must only add fields (append-only). Existing fields cannot be modified or removed. This ensures backward compatibility with stored data.
+
+**Compact storage:** When data is stored, field names are replaced with indices:
+- Input: `{"temperature": 72.5, "humidity": 45, "sensor_id": "room-1"}`
+- Stored: `{"1": 72.5, "2": 45, "3": "room-1"}`
+
+When retrieving data, the compact format is automatically expanded to full field names (default) or returned in compact format with `?format=compact`.
+
+### WebSocket Endpoints
+
+ts-store supports real-time data streaming via WebSocket connections.
+
+#### Inbound Read Stream
+```
+GET /api/stores/:store/ws/read?api_key=<key>&from=now&format=full
+```
+
+Query parameters:
+- `api_key` - Required for authentication
+- `from` - Start point: Unix nanosecond timestamp or `now` (default: `now`)
+- `format` - For schema stores: `compact` or `full` (default: `full`)
+
+Server sends messages:
+```json
+{"type": "data", "timestamp": 1234567890, "block_num": 5, "size": 64, "data": {...}}
+{"type": "caught_up"}
+{"type": "error", "message": "..."}
+```
+
+#### Inbound Write Stream
+```
+GET /api/stores/:store/ws/write?api_key=<key>&format=full
+```
+
+Query parameters:
+- `api_key` - Required for authentication
+- `format` - For schema stores: `compact` or `full` (default: `full`)
+
+Client sends:
+```json
+{"timestamp": 1234567890, "data": {...}}
+```
+
+Server responds:
+```json
+{"type": "ack", "timestamp": 1234567890, "block_num": 5, "size": 64}
+{"type": "error", "message": "..."}
+```
+
+#### Outbound Connection Management
+
+Create outbound connections where ts-store connects to remote servers.
+
+**List Connections:**
+```
+GET /api/stores/:store/ws/connections
+X-API-Key: <api-key>
+```
+
+**Create Connection:**
+```
+POST /api/stores/:store/ws/connections
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "mode": "push",
+  "url": "wss://remote.example.com/data",
+  "from": 0,
+  "format": "compact",
+  "headers": {"Authorization": "Bearer token"}
+}
+```
+
+Modes:
+- `push` - ts-store sends data to remote server
+- `pull` - ts-store receives data from remote server
+
+**Get Connection Status:**
+```
+GET /api/stores/:store/ws/connections/:id
+X-API-Key: <api-key>
+```
+
+Returns:
+```json
+{
+  "id": "abc123",
+  "mode": "push",
+  "url": "wss://remote.example.com/data",
+  "status": "connected",
+  "last_timestamp": 1234567890,
+  "messages_sent": 1000,
+  "errors": 0
+}
+```
+
+**Delete Connection:**
+```
+DELETE /api/stores/:store/ws/connections/:id
+X-API-Key: <api-key>
+```
+
+Outbound connections automatically reconnect with exponential backoff (1s to 60s max) and resume from the last sent timestamp.
 
 ### CLI Store Management
 
 Create stores from the command line:
 
 ```bash
-# Create a store with defaults (1024 blocks, 4KB data/index)
+# Create a store with defaults (1024 blocks, 4KB data/index, json type)
 ./tsstore create my-store
 
 # Create with custom settings
 ./tsstore create sensors --blocks 10000 --data-size 8192
+
+# Create a schema store for compact JSON
+./tsstore create metrics --type schema
 
 # Create in a specific directory
 ./tsstore create logs --path /var/tsstore
@@ -377,6 +456,7 @@ Options:
 - `--data-size <n>` - Data block size in bytes, must be power of 2 (default: 4096)
 - `--index-size <n>` - Index block size in bytes, must be power of 2 (default: 4096)
 - `--path <dir>` - Base directory for stores (default: ./data or TSSTORE_DATA_PATH)
+- `--type <type>` - Data type: binary, text, json, schema (default: json)
 
 ### API Key Management
 
@@ -465,14 +545,14 @@ for _, blockNum := range blocks {
 ### Reclaiming Space
 
 ```go
-// Reclaim by block number
+// Reclaim by block number (clears index entry, tail advances when it reaches this block)
 s.Reclaim(blockNum)
 
-// Reclaim a range of blocks
-s.AddRangeToFreeList(startBlock, endBlock)
+// Reclaim blocks up to a specific block number
+s.ReclaimUpTo(targetBlock)
 
 // Reclaim by time range (finds closest matches)
-s.AddRangeToFreeListByTime(startTime, endTime)
+s.ReclaimByTimeRange(startTime, endTime)
 ```
 
 ### Object API (High-Level)
@@ -565,15 +645,41 @@ store.DeleteStore("/var/data", "sensor-data")
 
 ```go
 stats := s.Stats()
-fmt.Printf("Blocks: %d, Head: %d, Tail: %d, Free: %d\n",
+fmt.Printf("Blocks: %d, Head: %d, Tail: %d, Active: %d\n",
     stats.NumBlocks,
     stats.HeadBlock,
     stats.TailBlock,
-    stats.FreeListCount,
+    stats.ActiveBlocks,
 )
 
 oldest, _ := s.GetOldestTimestamp()
 newest, _ := s.GetNewestTimestamp()
+```
+
+## Testing WebSocket Connections
+
+Use `websocat` or similar tools to test WebSocket endpoints:
+
+```bash
+# Install websocat
+brew install websocat  # macOS
+# or: cargo install websocat
+
+# Test inbound read (stream data from store)
+websocat "ws://localhost:8080/api/stores/my-store/ws/read?api_key=KEY&from=0"
+
+# Test inbound write (send data to store)
+websocat "ws://localhost:8080/api/stores/my-store/ws/write?api_key=KEY"
+# Then type: {"data": {"temp": 72.5}}
+
+# Test outbound push (start a test server first)
+websocat -s 9000  # Start test server on port 9000
+
+# Create outbound push connection
+curl -X POST localhost:8080/api/stores/my-store/ws/connections \
+  -H "X-API-Key: KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "push", "url": "ws://localhost:9000", "from": 0}'
 ```
 
 ## Performance Characteristics

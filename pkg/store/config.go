@@ -15,24 +15,71 @@ var (
 	ErrInvalidNumBlocks = errors.New("number of blocks must be greater than 0")
 	ErrNameRequired     = errors.New("store name is required")
 	ErrPathRequired     = errors.New("store path is required")
+	ErrInvalidDataType  = errors.New("invalid data type: must be binary, text, json, or schema")
+	ErrSchemaRequired   = errors.New("schema is required for schema data type")
+	ErrDataTypeMismatch = errors.New("data does not match store's data type")
 )
+
+// DataType represents the type of data stored in a store.
+type DataType uint8
+
+const (
+	DataTypeBinary DataType = 0 // Raw binary data
+	DataTypeText   DataType = 1 // UTF-8 text
+	DataTypeJSON   DataType = 2 // Arbitrary JSON
+	DataTypeSchema DataType = 3 // Schema-defined compact JSON
+)
+
+// String returns the string representation of a DataType.
+func (dt DataType) String() string {
+	switch dt {
+	case DataTypeBinary:
+		return "binary"
+	case DataTypeText:
+		return "text"
+	case DataTypeJSON:
+		return "json"
+	case DataTypeSchema:
+		return "schema"
+	default:
+		return "unknown"
+	}
+}
+
+// ParseDataType parses a string into a DataType.
+func ParseDataType(s string) (DataType, error) {
+	switch s {
+	case "binary":
+		return DataTypeBinary, nil
+	case "text":
+		return DataTypeText, nil
+	case "json":
+		return DataTypeJSON, nil
+	case "schema":
+		return DataTypeSchema, nil
+	default:
+		return 0, ErrInvalidDataType
+	}
+}
 
 // Config defines the configuration for creating a new store.
 type Config struct {
-	Name           string // Unique name for this store
-	Path           string // Directory path where store files will be created
-	NumBlocks      uint32 // Number of primary blocks in the circular buffer
-	DataBlockSize  uint32 // Size of each data block (must be power of 2, >= 64)
-	IndexBlockSize uint32 // Size of each index block (must be power of 2, >= 64)
+	Name           string   // Unique name for this store
+	Path           string   // Directory path where store files will be created
+	NumBlocks      uint32   // Number of primary blocks in the circular buffer
+	DataBlockSize  uint32   // Size of each data block (must be power of 2, >= 64)
+	IndexBlockSize uint32   // Size of each index block (must be power of 2, >= 64)
+	DataType       DataType // Type of data stored (binary, text, json, schema)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 // Name and Path must still be set.
 func DefaultConfig() Config {
 	return Config{
-		NumBlocks:      1024,  // 1K primary blocks
-		DataBlockSize:  4096,  // 4KB data blocks
-		IndexBlockSize: 4096,  // 4KB index blocks
+		NumBlocks:      1024,         // 1K primary blocks
+		DataBlockSize:  4096,         // 4KB data blocks
+		IndexBlockSize: 4096,         // 4KB index blocks
+		DataType:       DataTypeJSON, // JSON by default
 	}
 }
 

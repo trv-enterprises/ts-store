@@ -16,25 +16,25 @@ var (
 )
 
 // BlockHeader is stored at the beginning of each data block.
-// Total size: 32 bytes (fixed)
+// Total size: 24 bytes (fixed)
+//
+// The block number is not stored - it's calculated from file offset.
+// The next block in a spanning object is always (current + 1) % numBlocks.
 type BlockHeader struct {
 	Timestamp int64  // Unix nanoseconds
-	BlockNum  uint32 // Block number in circle (0 to NumBlocks-1)
 	DataLen   uint32 // Actual data length in this block
-	Flags     uint32 // Block flags (free, primary)
-	NextFree  uint32 // Next block in free list (only valid if on free list)
-	Reserved  uint32 // Padding/future use
+	Flags     uint32 // Block flags (primary, packed, continuation)
+	Reserved  uint64 // Padding/future use (maintains 8-byte alignment)
 }
 
 const (
-	BlockHeaderSize = 32
+	BlockHeaderSize = 24
 	MinBlockSize    = 64 // Minimum block size (must fit header + some data)
 
 	// Block flags
-	FlagFree         uint32 = 1 << 0 // Block is on free list
-	FlagPrimary      uint32 = 1 << 1 // Block is a primary circular block
-	FlagPacked       uint32 = 1 << 2 // Block contains packed objects (V2 format)
-	FlagContinuation uint32 = 1 << 3 // Block is continuation of spanning object
+	FlagPrimary      uint32 = 1 << 0 // Block is a primary circular block (starts an object or packed block)
+	FlagPacked       uint32 = 1 << 1 // Block contains packed objects (V2 format)
+	FlagContinuation uint32 = 1 << 2 // Block is continuation of spanning object
 )
 
 // ObjectHeader is stored before each object's data within the block data area.
@@ -92,22 +92,17 @@ func IndexEntriesPerBlock(indexBlockSize uint32) uint32 {
 // Encode serializes a BlockHeader to bytes
 func (h *BlockHeader) Encode(buf []byte) {
 	binary.LittleEndian.PutUint64(buf[0:8], uint64(h.Timestamp))
-	binary.LittleEndian.PutUint32(buf[8:12], h.BlockNum)
-	binary.LittleEndian.PutUint32(buf[12:16], h.DataLen)
-	binary.LittleEndian.PutUint32(buf[16:20], h.Flags)
-	binary.LittleEndian.PutUint32(buf[20:24], h.NextFree)
-	binary.LittleEndian.PutUint32(buf[24:28], h.Reserved)
-	// bytes 28-31 padding
+	binary.LittleEndian.PutUint32(buf[8:12], h.DataLen)
+	binary.LittleEndian.PutUint32(buf[12:16], h.Flags)
+	binary.LittleEndian.PutUint64(buf[16:24], h.Reserved)
 }
 
 // Decode deserializes bytes into a BlockHeader
 func (h *BlockHeader) Decode(buf []byte) {
 	h.Timestamp = int64(binary.LittleEndian.Uint64(buf[0:8]))
-	h.BlockNum = binary.LittleEndian.Uint32(buf[8:12])
-	h.DataLen = binary.LittleEndian.Uint32(buf[12:16])
-	h.Flags = binary.LittleEndian.Uint32(buf[16:20])
-	h.NextFree = binary.LittleEndian.Uint32(buf[20:24])
-	h.Reserved = binary.LittleEndian.Uint32(buf[24:28])
+	h.DataLen = binary.LittleEndian.Uint32(buf[8:12])
+	h.Flags = binary.LittleEndian.Uint32(buf[12:16])
+	h.Reserved = binary.LittleEndian.Uint64(buf[16:24])
 }
 
 // Encode serializes an IndexEntry to bytes
@@ -132,11 +127,6 @@ func (h *BlockHeader) Time() time.Time {
 // Time returns the timestamp as a time.Time
 func (e *IndexEntry) Time() time.Time {
 	return time.Unix(0, e.Timestamp)
-}
-
-// IsFree returns true if block is on free list
-func (h *BlockHeader) IsFree() bool {
-	return h.Flags&FlagFree != 0
 }
 
 // IsPrimary returns true if block is a primary circular block

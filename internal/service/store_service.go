@@ -11,6 +11,7 @@ import (
 
 	"github.com/tviviano/ts-store/internal/apikey"
 	"github.com/tviviano/ts-store/internal/config"
+	"github.com/tviviano/ts-store/internal/ws"
 	"github.com/tviviano/ts-store/pkg/store"
 )
 
@@ -24,7 +25,8 @@ type StoreService struct {
 	mu         sync.RWMutex
 	cfg        *config.Config
 	keyManager *apikey.Manager
-	stores     map[string]*store.Store // storeName -> Store
+	stores     map[string]*store.Store  // storeName -> Store
+	wsManagers map[string]*ws.Manager   // storeName -> WS Manager
 }
 
 // NewStoreService creates a new store service.
@@ -33,6 +35,7 @@ func NewStoreService(cfg *config.Config, keyManager *apikey.Manager) *StoreServi
 		cfg:        cfg,
 		keyManager: keyManager,
 		stores:     make(map[string]*store.Store),
+		wsManagers: make(map[string]*ws.Manager),
 	}
 }
 
@@ -42,6 +45,7 @@ type CreateStoreRequest struct {
 	NumBlocks      uint32 `json:"num_blocks,omitempty"`
 	DataBlockSize  uint32 `json:"data_block_size,omitempty"`
 	IndexBlockSize uint32 `json:"index_block_size,omitempty"`
+	DataType       string `json:"data_type,omitempty"` // binary, text, json, schema (default: json)
 }
 
 // CreateStoreResponse contains the result of store creation.
@@ -63,6 +67,7 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 		NumBlocks:      s.cfg.Store.NumBlocks,
 		DataBlockSize:  s.cfg.Store.DataBlockSize,
 		IndexBlockSize: s.cfg.Store.IndexBlockSize,
+		DataType:       store.DataTypeJSON, // default
 	}
 
 	// Override with request values if provided
@@ -74,6 +79,13 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 	}
 	if req.IndexBlockSize > 0 {
 		cfg.IndexBlockSize = req.IndexBlockSize
+	}
+	if req.DataType != "" {
+		dataType, err := store.ParseDataType(req.DataType)
+		if err != nil {
+			return nil, err
+		}
+		cfg.DataType = dataType
 	}
 
 	// Create the store
@@ -91,6 +103,11 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 
 	// Keep store open
 	s.stores[req.Name] = st
+
+	// Create and start WS manager for this store
+	wsManager := ws.NewManager(st, req.Name)
+	s.wsManagers[req.Name] = wsManager
+	go wsManager.LoadAndStart()
 
 	return &CreateStoreResponse{
 		Name:   req.Name,
@@ -114,6 +131,12 @@ func (s *StoreService) Open(name string) error {
 	}
 
 	s.stores[name] = st
+
+	// Create and start WS manager for this store
+	wsManager := ws.NewManager(st, name)
+	s.wsManagers[name] = wsManager
+	go wsManager.LoadAndStart()
+
 	return nil
 }
 
@@ -125,6 +148,12 @@ func (s *StoreService) Close(name string) error {
 	st, ok := s.stores[name]
 	if !ok {
 		return ErrStoreNotOpen
+	}
+
+	// Stop WS manager first
+	if manager, ok := s.wsManagers[name]; ok {
+		manager.Stop()
+		delete(s.wsManagers, name)
 	}
 
 	if err := st.Close(); err != nil {
@@ -139,6 +168,12 @@ func (s *StoreService) Close(name string) error {
 func (s *StoreService) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Stop WS manager first
+	if manager, ok := s.wsManagers[name]; ok {
+		manager.Stop()
+		delete(s.wsManagers, name)
+	}
 
 	// Close if open
 	if st, ok := s.stores[name]; ok {
@@ -185,6 +220,12 @@ func (s *StoreService) GetOrOpen(name string) (*store.Store, error) {
 	}
 
 	s.stores[name] = st
+
+	// Create and start WS manager for this store
+	wsManager := ws.NewManager(st, name)
+	s.wsManagers[name] = wsManager
+	go wsManager.LoadAndStart()
+
 	return st, nil
 }
 
@@ -216,6 +257,12 @@ func (s *StoreService) CloseAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Stop all WS managers first
+	for name, manager := range s.wsManagers {
+		manager.Stop()
+		delete(s.wsManagers, name)
+	}
+
 	var lastErr error
 	for name, st := range s.stores {
 		if err := st.Close(); err != nil {
@@ -225,4 +272,11 @@ func (s *StoreService) CloseAll() error {
 	}
 
 	return lastErr
+}
+
+// GetWSManager returns the WebSocket manager for a store.
+func (s *StoreService) GetWSManager(name string) *ws.Manager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wsManagers[name]
 }

@@ -1,0 +1,1000 @@
+openapi: 3.0.3
+info:
+  title: ts-store API
+  description: |
+    Time series database API using a circular file architecture.
+
+    ## Authentication
+    Most endpoints require an API key passed via:
+    - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+    - Query parameter: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+
+    API keys are generated when creating a store and shown only once.
+
+    ## Timestamps
+    All timestamps are Unix nanoseconds (int64). Timestamps must be strictly increasing - out-of-order timestamps will be rejected.
+
+    ## Duration Format
+    The `since` parameter accepts durations like: `30s`, `15m`, `2h`, `7d`, `1w`
+  version: 0.1.0
+  license:
+    name: PolyForm Noncommercial License 1.0.0
+  contact:
+    name: TRV Enterprises LLC
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Server health check
+  - name: Stores
+    description: Store management operations
+  - name: Data
+    description: Low-level data operations (base64 encoded)
+  - name: Objects
+    description: Object operations (base64 encoded, returns handles)
+  - name: JSON
+    description: JSON object operations (no base64 encoding)
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Returns server health status. No authentication required.
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  time:
+                    type: string
+                    format: date-time
+                    example: "2026-01-17T12:00:00Z"
+
+  /api/stores:
+    get:
+      tags:
+        - Stores
+      summary: List open stores
+      description: Returns a list of currently open stores.
+      responses:
+        '200':
+          description: List of stores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stores:
+                    type: array
+                    items:
+                      type: string
+                    example: ["my-store", "sensor-data"]
+
+    post:
+      tags:
+        - Stores
+      summary: Create a new store
+      description: |
+        Creates a new store and returns the API key.
+        **Important:** The API key is shown only once. Save it securely.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStoreRequest'
+      responses:
+        '201':
+          description: Store created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateStoreResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Store already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/stores/{store}:
+    delete:
+      tags:
+        - Stores
+      summary: Delete a store
+      description: Permanently deletes a store and all its data.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Store deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: store deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stores/{store}/stats:
+    get:
+      tags:
+        - Stores
+      summary: Get store statistics
+      description: Returns detailed statistics about the store.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Store statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreStats'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/data:
+    post:
+      tags:
+        - Data
+      summary: Insert data
+      description: Insert base64-encoded data with optional timestamp.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InsertRequest'
+      responses:
+        '201':
+          description: Data inserted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InsertResponse'
+        '400':
+          description: Invalid request or out-of-order timestamp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/data/time/{timestamp}:
+    get:
+      tags:
+        - Data
+      summary: Get data by timestamp
+      description: Retrieve data by its exact timestamp.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Timestamp'
+      responses:
+        '200':
+          description: Data found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stores/{store}/data/range:
+    get:
+      tags:
+        - Data
+      summary: Query data in time range
+      description: Retrieve all data within a time range.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - name: start_time
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: Start timestamp (Unix nanoseconds)
+        - name: end_time
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: End timestamp (Unix nanoseconds)
+      responses:
+        '200':
+          description: Data in range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RangeResponse'
+        '400':
+          description: Missing or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/data/oldest:
+    get:
+      tags:
+        - Data
+      summary: Get oldest timestamp
+      description: Returns the oldest timestamp in the store.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Oldest timestamp
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  oldest_timestamp:
+                    type: integer
+                    format: int64
+                    example: 1704067200000000000
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store is empty
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/stores/{store}/data/newest:
+    get:
+      tags:
+        - Data
+      summary: Get newest timestamp
+      description: Returns the newest timestamp in the store.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Newest timestamp
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  newest_timestamp:
+                    type: integer
+                    format: int64
+                    example: 1704153600000000000
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Store is empty
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/stores/{store}/objects:
+    post:
+      tags:
+        - Objects
+      summary: Store an object
+      description: Store base64-encoded object data. Small objects are packed together, large objects span multiple blocks.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutObjectRequest'
+      responses:
+        '201':
+          description: Object stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectHandleResponse'
+        '400':
+          description: Invalid request or out-of-order timestamp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/objects/time/{timestamp}:
+    get:
+      tags:
+        - Objects
+      summary: Get object by timestamp
+      description: Retrieve an object by its exact timestamp.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Timestamp'
+      responses:
+        '200':
+          description: Object found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectDataResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Objects
+      summary: Delete object by timestamp
+      description: Delete an object by its timestamp.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Timestamp'
+      responses:
+        '200':
+          description: Object deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: object deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stores/{store}/objects/oldest:
+    get:
+      tags:
+        - Objects
+      summary: List oldest objects
+      description: Returns handles for the N oldest objects (without data).
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: List of object handles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/objects/newest:
+    get:
+      tags:
+        - Objects
+      summary: List newest objects
+      description: Returns handles for the N newest objects (without data). Supports relative time queries with `since` parameter.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Since'
+      responses:
+        '200':
+          description: List of object handles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectListResponse'
+        '400':
+          description: Invalid since duration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/objects/range:
+    get:
+      tags:
+        - Objects
+      summary: List objects in time range
+      description: Returns handles for objects within a time range. Use `since` or `start_time`/`end_time`.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit100'
+        - $ref: '#/components/parameters/Since'
+        - name: start_time
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Start timestamp (Unix nanoseconds). Required if `since` not provided.
+        - name: end_time
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: End timestamp (Unix nanoseconds). Required if `since` not provided.
+      responses:
+        '200':
+          description: List of object handles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectListResponse'
+        '400':
+          description: Missing parameters or invalid duration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/json:
+    post:
+      tags:
+        - JSON
+      summary: Store JSON object
+      description: Store a JSON object directly (no base64 encoding needed).
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutJSONRequest'
+            example:
+              timestamp: 1704067200000000000
+              data:
+                temperature: 72.5
+                humidity: 45
+                sensor: living-room
+      responses:
+        '201':
+          description: JSON object stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObjectHandleResponse'
+        '400':
+          description: Invalid JSON or out-of-order timestamp
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/json/time/{timestamp}:
+    get:
+      tags:
+        - JSON
+      summary: Get JSON by timestamp
+      description: Retrieve a JSON object by its exact timestamp.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Timestamp'
+      responses:
+        '200':
+          description: JSON object found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONResponse'
+              example:
+                timestamp: 1704067200000000000
+                block_num: 5
+                size: 64
+                data:
+                  temperature: 72.5
+                  humidity: 45
+                  sensor: living-room
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: Stored data is not valid JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/stores/{store}/json/oldest:
+    get:
+      tags:
+        - JSON
+      summary: List oldest JSON objects
+      description: Returns the N oldest JSON objects with their data.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: List of JSON objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/json/newest:
+    get:
+      tags:
+        - JSON
+      summary: List newest JSON objects
+      description: Returns the N newest JSON objects with their data. Supports relative time queries with `since` parameter.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Since'
+      responses:
+        '200':
+          description: List of JSON objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONListResponse'
+        '400':
+          description: Invalid since duration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/json/range:
+    get:
+      tags:
+        - JSON
+      summary: List JSON objects in time range
+      description: Returns JSON objects within a time range. Use `since` or `start_time`/`end_time`.
+      security:
+        - ApiKeyHeader: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit100'
+        - $ref: '#/components/parameters/Since'
+        - name: start_time
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Start timestamp (Unix nanoseconds). Required if `since` not provided.
+        - name: end_time
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: End timestamp (Unix nanoseconds). Required if `since` not provided.
+      responses:
+        '200':
+          description: List of JSON objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JSONListResponse'
+        '400':
+          description: Missing parameters or invalid duration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key in header
+    ApiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+      description: API key in query parameter
+
+  parameters:
+    StoreName:
+      name: store
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Store name
+      example: my-store
+
+    Timestamp:
+      name: timestamp
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: Unix timestamp in nanoseconds
+      example: 1704067200000000000
+
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 10
+        minimum: 1
+      description: Maximum number of results to return
+
+    Limit100:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 100
+        minimum: 1
+      description: Maximum number of results to return
+
+    Since:
+      name: since
+      in: query
+      schema:
+        type: string
+      description: Relative time duration (e.g., 30s, 15m, 2h, 7d, 1w)
+      example: 2h
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: error message
+
+    CreateStoreRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Store name
+          example: my-store
+        num_blocks:
+          type: integer
+          default: 1024
+          description: Number of blocks
+        data_block_size:
+          type: integer
+          default: 4096
+          description: Data block size in bytes (must be power of 2)
+        index_block_size:
+          type: integer
+          default: 4096
+          description: Index block size in bytes (must be power of 2)
+
+    CreateStoreResponse:
+      type: object
+      properties:
+        name:
+          type: string
+          example: my-store
+        api_key:
+          type: string
+          description: API key (shown only once)
+          example: tsstore_a1b2c3d4-e5f6-7890-abcd-ef1234567890
+        key_id:
+          type: string
+          description: Key ID for reference
+          example: a1b2c3d4
+
+    StoreStats:
+      type: object
+      properties:
+        num_blocks:
+          type: integer
+          format: uint32
+          example: 1024
+        data_block_size:
+          type: integer
+          format: uint32
+          example: 4096
+        index_block_size:
+          type: integer
+          format: uint32
+          example: 4096
+        head_block:
+          type: integer
+          format: uint32
+          example: 50
+        tail_block:
+          type: integer
+          format: uint32
+          example: 0
+        free_list_count:
+          type: integer
+          format: uint32
+          example: 0
+        write_offset:
+          type: integer
+          format: uint32
+          example: 128
+        active_blocks:
+          type: integer
+          format: uint32
+          example: 51
+        oldest_timestamp:
+          type: integer
+          format: int64
+          example: 1704067200000000000
+        oldest_time:
+          type: string
+          example: "2024-01-01T00:00:00Z"
+        newest_timestamp:
+          type: integer
+          format: int64
+          example: 1704153600000000000
+        newest_time:
+          type: string
+          example: "2024-01-02T00:00:00Z"
+
+    InsertRequest:
+      type: object
+      required:
+        - data
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp in nanoseconds (optional, defaults to now)
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded data
+
+    InsertResponse:
+      type: object
+      properties:
+        block_num:
+          type: integer
+          format: uint32
+          example: 5
+        timestamp:
+          type: integer
+          format: int64
+          example: 1704067200000000000
+
+    BlockResponse:
+      type: object
+      properties:
+        block_num:
+          type: integer
+          format: uint32
+          example: 5
+        timestamp:
+          type: integer
+          format: int64
+          example: 1704067200000000000
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded data
+
+    RangeResponse:
+      type: object
+      properties:
+        blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlockResponse'
+        count:
+          type: integer
+          example: 10
+
+    PutObjectRequest:
+      type: object
+      required:
+        - data
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp in nanoseconds (optional, defaults to now)
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded data
+
+    ObjectHandleResponse:
+      type: object
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          example: 1704067200000000000
+        block_num:
+          type: integer
+          format: uint32
+          example: 5
+        size:
+          type: integer
+          format: uint32
+          example: 1024
+
+    ObjectDataResponse:
+      type: object
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          example: 1704067200000000000
+        block_num:
+          type: integer
+          format: uint32
+          example: 5
+        size:
+          type: integer
+          format: uint32
+          example: 1024
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded data
+
+    ObjectListResponse:
+      type: object
+      properties:
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObjectHandleResponse'
+        count:
+          type: integer
+          example: 10
+
+    PutJSONRequest:
+      type: object
+      required:
+        - data
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp in nanoseconds (optional, defaults to now)
+        data:
+          type: object
+          description: Any valid JSON object
+
+    JSONResponse:
+      type: object
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          example: 1704067200000000000
+        block_num:
+          type: integer
+          format: uint32
+          example: 5
+        size:
+          type: integer
+          format: uint32
+          example: 64
+        data:
+          type: object
+          description: The stored JSON object
+
+    JSONListResponse:
+      type: object
+      properties:
+        objects:
+          type: array
+          items:
+            $ref: '#/components/schemas/JSONResponse'
+        count:
+          type: integer
+          example: 10
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: unauthorized
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: not found

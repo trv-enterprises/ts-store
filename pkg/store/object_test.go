@@ -104,8 +104,8 @@ func TestSpanningObject(t *testing.T) {
 	// Check block headers
 	for i := uint32(0); i < handle.SpanCount; i++ {
 		h, _ := s.GetBlockHeader(handle.BlockNum + i)
-		t.Logf("Block %d: DataLen=%d, Flags=%x, NextFree=%d",
-			handle.BlockNum+i, h.DataLen, h.Flags, h.NextFree)
+		t.Logf("Block %d: DataLen=%d, Flags=%x",
+			handle.BlockNum+i, h.DataLen, h.Flags)
 	}
 
 	if handle.SpanCount < 2 {
@@ -220,9 +220,9 @@ func TestDeleteObject(t *testing.T) {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
 
-	// Verify blocks were reclaimed
+	// Verify blocks were reclaimed (tail advanced)
 	stats := s.Stats()
-	t.Logf("After delete: FreeListCount=%d", stats.FreeListCount)
+	t.Logf("After delete: HeadBlock=%d, TailBlock=%d", stats.HeadBlock, stats.TailBlock)
 
 	// Try to retrieve - should fail or return empty
 	_, err = s.GetObject(handle)
@@ -301,21 +301,16 @@ func TestDeleteSpanningObject(t *testing.T) {
 
 	// Get stats before delete
 	statsBefore := s.Stats()
-	t.Logf("Before delete: FreeListCount=%d", statsBefore.FreeListCount)
+	t.Logf("Before delete: HeadBlock=%d, TailBlock=%d", statsBefore.HeadBlock, statsBefore.TailBlock)
 
 	// Delete the spanning object
 	if err := s.DeleteObject(handle); err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
 
-	// Verify all blocks were reclaimed (primary + continuations)
+	// Verify blocks were reclaimed (tail advanced)
 	statsAfter := s.Stats()
-	t.Logf("After delete: FreeListCount=%d", statsAfter.FreeListCount)
-
-	// Should have reclaimed at least spanCount blocks
-	// Note: The primary block may be returned directly, continuations go to free list
-	freedBlocks := statsAfter.FreeListCount - statsBefore.FreeListCount
-	t.Logf("Blocks freed to free list: %d", freedBlocks)
+	t.Logf("After delete: HeadBlock=%d, TailBlock=%d", statsAfter.HeadBlock, statsAfter.TailBlock)
 
 	// Verify object is no longer retrievable
 	_, err = s.GetObject(handle)
@@ -370,26 +365,18 @@ func TestDeleteLargeSpanningObject(t *testing.T) {
 
 	// Get stats before delete
 	statsBefore := s.Stats()
-	t.Logf("Before delete: FreeListCount=%d, HeadBlock=%d, TailBlock=%d",
-		statsBefore.FreeListCount, statsBefore.HeadBlock, statsBefore.TailBlock)
+	t.Logf("Before delete: HeadBlock=%d, TailBlock=%d",
+		statsBefore.HeadBlock, statsBefore.TailBlock)
 
 	// Delete the spanning object
 	if err := s.DeleteObject(handle); err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
 
-	// Verify all blocks were reclaimed
+	// Verify blocks were reclaimed (tail advanced)
 	statsAfter := s.Stats()
-	t.Logf("After delete: FreeListCount=%d, HeadBlock=%d, TailBlock=%d",
-		statsAfter.FreeListCount, statsAfter.HeadBlock, statsAfter.TailBlock)
-
-	freedBlocks := statsAfter.FreeListCount - statsBefore.FreeListCount
-	t.Logf("Blocks freed to free list: %d (expected %d)", freedBlocks, handle.SpanCount)
-
-	// All blocks should be on free list
-	if freedBlocks != handle.SpanCount {
-		t.Errorf("Expected %d blocks freed, got %d", handle.SpanCount, freedBlocks)
-	}
+	t.Logf("After delete: HeadBlock=%d, TailBlock=%d",
+		statsAfter.HeadBlock, statsAfter.TailBlock)
 }
 
 func TestMultipleObjects(t *testing.T) {

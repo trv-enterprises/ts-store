@@ -85,7 +85,6 @@ func (s *Store) writeToNewBlock(timestamp int64, data []byte) (*ObjectHandle, er
 	// Initialize block header with packed flag
 	blockHeader := &block.BlockHeader{
 		Timestamp: timestamp, // First object's timestamp
-		BlockNum:  blockNum,
 		DataLen:   block.ObjectHeaderSize + uint32(len(data)),
 		Flags:     block.FlagPrimary | block.FlagPacked,
 	}
@@ -160,7 +159,6 @@ func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle
 	}
 	s.meta.HeadBlock = firstBlock
 
-	prevBlock := firstBlock
 	currentBlock := firstBlock
 	dataPos := uint32(0)
 
@@ -173,10 +171,8 @@ func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle
 
 		blockHeader := &block.BlockHeader{
 			Timestamp: timestamp,
-			BlockNum:  currentBlock,
 			DataLen:   block.ObjectHeaderSize + chunkSize,
 			Flags:     block.FlagPrimary | block.FlagPacked,
-			NextFree:  0, // Will be updated if there are continuation blocks
 		}
 
 		objFlags := uint32(block.ObjFlagLastInBlock)
@@ -215,48 +211,31 @@ func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle
 		}
 
 		dataPos = chunkSize
-		prevBlock = currentBlock
 	}
 
-	// Write continuation blocks
+	// Write continuation blocks (sequentially in circular order)
 	for dataPos < uint32(len(data)) {
 		chunkSize := usablePerBlock
 		if chunkSize > uint32(len(data))-dataPos {
 			chunkSize = uint32(len(data)) - dataPos
 		}
 
-		// Allocate next block
+		// Allocate next block (sequential in circular order)
 		nextBlock, err := s.allocateNextBlock()
 		if err != nil {
 			return nil, err
 		}
 
-
 		s.meta.HeadBlock = nextBlock
-
-		// Link previous block to this continuation
-		prevHeader, err := s.readBlockHeader(prevBlock)
-		if err != nil {
-			return nil, err
-		}
-		// Debug: fmt.Printf("DEBUG: before link: prevBlock=%d has DataLen=%d, NextFree=%d\n",
-		//     prevBlock, prevHeader.DataLen, prevHeader.NextFree)
-		prevHeader.NextFree = nextBlock // Continuation pointer
-		if err := s.writeBlockHeader(prevBlock, prevHeader); err != nil {
-			return nil, err
-		}
-
 		currentBlock = nextBlock
 
 		// Write continuation block header
+		// Next continuation is implicitly (currentBlock + 1) % numBlocks
 		contHeader := &block.BlockHeader{
 			Timestamp: 0, // Continuation blocks have timestamp 0
-			BlockNum:  currentBlock,
 			DataLen:   chunkSize,
 			Flags:     block.FlagPrimary | block.FlagPacked | block.FlagContinuation,
-			NextFree:  0, // Will be updated if more continuations
 		}
-		// Debug: fmt.Printf("DEBUG: writing contHeader to block %d with DataLen=%d\n", currentBlock, chunkSize)
 		if err := s.writeBlockHeader(currentBlock, contHeader); err != nil {
 			return nil, err
 		}
@@ -277,7 +256,6 @@ func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle
 		}
 
 		dataPos += chunkSize
-		prevBlock = currentBlock
 	}
 
 	// Calculate final write offset
@@ -390,7 +368,7 @@ func (s *Store) readPackedObjectData(blockNum uint32, offset uint32, size uint32
 		return data, nil
 	}
 
-	// Spanning object - read from multiple blocks
+	// Spanning object - read from multiple blocks (sequential in circular order)
 	data := make([]byte, 0, objHeader.DataLen)
 	currentBlock := blockNum
 	remaining := objHeader.DataLen
@@ -431,9 +409,9 @@ func (s *Store) readPackedObjectData(blockNum uint32, offset uint32, size uint32
 		data = append(data, chunk...)
 		remaining -= chunkSize
 
-		// Move to next block if more data
+		// Move to next block in circular order
 		if remaining > 0 {
-			currentBlock = blockHeader.NextFree // Continuation pointer
+			currentBlock = (currentBlock + 1) % s.meta.NumBlocks
 		}
 
 		isFirst = false
