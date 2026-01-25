@@ -236,7 +236,7 @@ func TestReclaimByTimeRange(t *testing.T) {
 	startTime := baseTime + int64(5*1000000000)
 	endTime := baseTime + int64(10*1000000000)
 
-	if err := s.AddRangeToFreeListByTime(startTime, endTime); err != nil {
+	if err := s.ReclaimByTimeRange(startTime, endTime); err != nil {
 		t.Fatalf("Reclaim by time failed: %v", err)
 	}
 

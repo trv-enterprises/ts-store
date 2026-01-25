@@ -153,11 +153,6 @@ func (s *Store) ReclaimByTimeRange(startTime, endTime int64) error {
 	return s.writeMetaLocked()
 }
 
-// AddRangeToFreeListByTime is deprecated, use ReclaimByTimeRange instead.
-func (s *Store) AddRangeToFreeListByTime(startTime, endTime int64) error {
-	return s.ReclaimByTimeRange(startTime, endTime)
-}
-
 // adjustTailAfterReclaim moves the tail forward past any free/empty blocks.
 func (s *Store) adjustTailAfterReclaim() {
 	for {

@@ -158,8 +158,3 @@ func (w *wsWriter) sendError(message string) error {
 	}
 	return w.conn.WriteJSON(resp)
 }
-
-// stop stops the writer.
-func (w *wsWriter) stop() {
-	close(w.closeCh)
-}

@@ -241,6 +241,7 @@ func (s *Store) GetOldestObjects(limit int) ([]*ObjectHandle, error) {
 
 // GetNewestObjects returns the N newest objects (from head).
 // Returns handles only, not data. Use GetObject to retrieve data.
+// Results are returned newest first.
 func (s *Store) GetNewestObjects(limit int) ([]*ObjectHandle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -254,26 +255,20 @@ func (s *Store) GetNewestObjects(limit int) ([]*ObjectHandle, error) {
 		return nil, nil
 	}
 
-	// First collect all objects from all blocks (in order)
-	var allHandles []*ObjectHandle
-	for i := uint32(0); i < count; i++ {
-		blockNum := s.blockNumFromOffset(i)
+	// Iterate from head (newest) backwards to collect only needed objects
+	result := make([]*ObjectHandle, 0, limit)
+
+	for i := int(count) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
+		blockNum := s.blockNumFromOffset(uint32(i))
 		blockHandles, err := s.scanBlockObjects(blockNum)
 		if err != nil {
 			continue
 		}
-		allHandles = append(allHandles, blockHandles...)
-	}
 
-	// Return the last N objects
-	if limit <= 0 || limit > len(allHandles) {
-		limit = len(allHandles)
-	}
-
-	// Return in reverse order (newest first)
-	result := make([]*ObjectHandle, 0, limit)
-	for i := len(allHandles) - 1; i >= 0 && len(result) < limit; i-- {
-		result = append(result, allHandles[i])
+		// Add handles from this block in reverse order (newest first)
+		for j := len(blockHandles) - 1; j >= 0 && (limit <= 0 || len(result) < limit); j-- {
+			result = append(result, blockHandles[j])
+		}
 	}
 
 	return result, nil
@@ -399,66 +394,6 @@ func (s *Store) DeleteObjectByTime(timestamp int64) error {
 	// If this was the tail block, advance the tail
 	s.adjustTailAfterReclaim()
 	return s.writeMetaLocked()
-}
-
-// insertLocked is the internal insert without lock acquisition.
-func (s *Store) insertLocked(timestamp int64, data []byte) (uint32, error) {
-	if timestamp <= 0 {
-		return 0, ErrInvalidTimestamp
-	}
-
-	maxData := s.config.DataBlockSize - block.BlockHeaderSize
-	if uint32(len(data)) > maxData {
-		return 0, ErrObjectTooLarge
-	}
-
-	var blockNum uint32
-	var err error
-
-	firstEntry, _ := s.readIndexEntry(s.meta.HeadBlock)
-	isFirstInsert := firstEntry.Timestamp == 0
-
-	if isFirstInsert {
-		blockNum = s.meta.HeadBlock
-	} else {
-		nextHead := (s.meta.HeadBlock + 1) % s.meta.NumBlocks
-		if nextHead == s.meta.TailBlock {
-			blockNum, err = s.allocateBlock()
-			if err != nil {
-				return 0, err
-			}
-		} else {
-			blockNum = nextHead
-		}
-		s.meta.HeadBlock = blockNum
-	}
-
-	header := &block.BlockHeader{
-		Timestamp: timestamp,
-		DataLen:   uint32(len(data)),
-		Flags:     block.FlagPrimary,
-	}
-
-	if err := s.writeBlockHeader(blockNum, header); err != nil {
-		return 0, err
-	}
-
-	if len(data) > 0 {
-		offset := s.blockOffset(blockNum) + block.BlockHeaderSize
-		if _, err := s.dataFile.WriteAt(data, offset); err != nil {
-			return 0, err
-		}
-	}
-
-	entry := &block.IndexEntry{
-		Timestamp: timestamp,
-		BlockNum:  blockNum,
-	}
-	if err := s.writeIndexEntry(blockNum, entry); err != nil {
-		return 0, err
-	}
-
-	return blockNum, nil
 }
 
 // ReadBlockData reads the data from a block.

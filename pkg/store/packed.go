@@ -8,6 +8,19 @@ import (
 	"github.com/tviviano/ts-store/pkg/block"
 )
 
+// calculateSpanCount calculates how many blocks a spanning object uses.
+func (s *Store) calculateSpanCount(dataLen uint32) uint32 {
+	usablePerBlock := s.config.DataBlockSize - block.BlockHeaderSize
+	firstBlockUsable := usablePerBlock - block.ObjectHeaderSize
+
+	if dataLen <= firstBlockUsable {
+		return 1
+	}
+
+	remaining := dataLen - firstBlockUsable
+	return 1 + (remaining+usablePerBlock-1)/usablePerBlock
+}
+
 // canFitInCurrentBlock checks if the object can fit in remaining space of head block.
 func (s *Store) canFitInCurrentBlock(objSize uint32) bool {
 	// If WriteOffset is 0, no packed objects have been written yet
@@ -147,10 +160,6 @@ func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle
 		remaining -= firstBlockUsable
 		spanCount += (remaining + usablePerBlock - 1) / usablePerBlock
 	}
-
-	// Debug
-	// fmt.Printf("writeSpanningObject: dataLen=%d, firstBlockUsable=%d, usablePerBlock=%d, spanCount=%d\n",
-	//     len(data), firstBlockUsable, usablePerBlock, spanCount)
 
 	// Allocate first block
 	firstBlock, err := s.allocateNextBlock()
@@ -444,14 +453,7 @@ func (s *Store) scanBlockForTimestamp(blockNum uint32, timestamp int64) ([]byte,
 
 			spanCount := uint32(1)
 			if objHeader.Continues() {
-				// Calculate span count
-				usablePerBlock := s.config.DataBlockSize - block.BlockHeaderSize
-				firstBlockUsable := usablePerBlock - block.ObjectHeaderSize
-				remaining := objHeader.DataLen
-				if remaining > firstBlockUsable {
-					remaining -= firstBlockUsable
-					spanCount += (remaining + usablePerBlock - 1) / usablePerBlock
-				}
+				spanCount = s.calculateSpanCount(objHeader.DataLen)
 			}
 
 			return data, &ObjectHandle{
@@ -525,13 +527,7 @@ func (s *Store) scanBlockObjects(blockNum uint32) ([]*ObjectHandle, error) {
 
 		spanCount := uint32(1)
 		if objHeader.Continues() {
-			usablePerBlock := s.config.DataBlockSize - block.BlockHeaderSize
-			firstBlockUsable := usablePerBlock - block.ObjectHeaderSize
-			remaining := objHeader.DataLen
-			if remaining > firstBlockUsable {
-				remaining -= firstBlockUsable
-				spanCount += (remaining + usablePerBlock - 1) / usablePerBlock
-			}
+			spanCount = s.calculateSpanCount(objHeader.DataLen)
 		}
 
 		handles = append(handles, &ObjectHandle{
