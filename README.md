@@ -155,8 +155,9 @@ Environment variables:
 
 Each store has its own API key. The key is generated when the store is created and shown only once. Store it securely.
 
-Pass the API key via:
+Pass the API key via any of these methods (checked in order):
 - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+- Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 - Query param: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
 ### API Endpoints

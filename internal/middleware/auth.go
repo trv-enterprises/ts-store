@@ -33,7 +33,15 @@ func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
 		}
 
 		// Get API key from header or query param
+		// Supports: X-API-Key header, Authorization: Bearer, or api_key query param
 		apiKeyValue := c.GetHeader("X-API-Key")
+		if apiKeyValue == "" {
+			// Check Authorization: Bearer header
+			authHeader := c.GetHeader("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				apiKeyValue = strings.TrimPrefix(authHeader, "Bearer ")
+			}
+		}
 		if apiKeyValue == "" {
 			apiKeyValue = c.Query("api_key")
 		}
