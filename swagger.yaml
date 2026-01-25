@@ -23,7 +23,7 @@ info:
     name: TRV Enterprises LLC
 
 servers:
-  - url: http://localhost:8080
+  - url: http://localhost:21080
     description: Local development server
 
 tags:

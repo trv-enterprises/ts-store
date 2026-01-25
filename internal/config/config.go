@@ -37,7 +37,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
 			Host: "0.0.0.0",
-			Port: 8080,
+			Port: 21080,
 			Mode: "release",
 		},
 		Store: StoreConfig{

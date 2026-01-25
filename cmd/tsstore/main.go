@@ -11,7 +11,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -46,6 +49,8 @@ func main() {
 			os.Exit(1)
 		}
 		runKeyCommand(os.Args[2:])
+	case "swagger":
+		runSwaggerCommand()
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
@@ -67,6 +72,7 @@ Commands:
   serve     Start the API server
   create    Create a new store
   key       Manage API keys (requires device access)
+  swagger   Open Swagger UI in browser to explore the API
   help      Show this help message
   version   Show version
 
@@ -457,5 +463,99 @@ func runKeyCommand(args []string) {
 		fmt.Printf("Unknown key subcommand: %s\n", subCommand)
 		printKeyUsage()
 		os.Exit(1)
+	}
+}
+
+func runSwaggerCommand() {
+	const swaggerPort = 21090
+	const swaggerEditorURL = "https://editor.swagger.io"
+
+	// Find swagger.yaml - check current dir, then relative to executable
+	swaggerPath := "swagger.yaml"
+	if _, err := os.Stat(swaggerPath); os.IsNotExist(err) {
+		// Try relative to executable
+		execPath, _ := os.Executable()
+		if execPath != "" {
+			swaggerPath = filepath.Join(filepath.Dir(execPath), "swagger.yaml")
+		}
+	}
+
+	swaggerContent, err := os.ReadFile(swaggerPath)
+	if err != nil {
+		log.Fatalf("Failed to read swagger.yaml: %v\nMake sure swagger.yaml is in the current directory or next to the executable.", err)
+	}
+
+	// Create HTTP server with CORS
+	mux := http.NewServeMux()
+	mux.HandleFunc("/swagger.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Content-Type", "application/yaml")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		w.Write(swaggerContent)
+	})
+
+	addr := fmt.Sprintf("localhost:%d", swaggerPort)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	// Start server in background
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Swagger server error: %v", err)
+		}
+	}()
+
+	// Give server a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Build URL with spec location
+	specURL := fmt.Sprintf("http://localhost:%d/swagger.yaml", swaggerPort)
+	editorURL := fmt.Sprintf("%s/?url=%s", swaggerEditorURL, specURL)
+
+	fmt.Printf("Serving swagger.yaml on http://%s/swagger.yaml\n", addr)
+	fmt.Printf("Opening Swagger Editor...\n")
+	fmt.Printf("Press Ctrl+C to stop\n\n")
+
+	// Open browser
+	openBrowser(editorURL)
+
+	// Wait for interrupt
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	fmt.Println("\nShutting down swagger server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+}
+
+// openBrowser opens the specified URL in the default browser
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		fmt.Printf("Please open manually: %s\n", url)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("Failed to open browser: %v\nPlease open manually: %s\n", err, url)
 	}
 }

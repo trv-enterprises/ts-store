@@ -76,7 +76,7 @@ Build and run with Docker:
 docker build -t tsstore .
 
 # Run the container
-docker run -d -v tsstore-data:/data -p 8080:8080 --name tsstore tsstore
+docker run -d -v tsstore-data:/data -p 21080:21080 --name tsstore tsstore
 ```
 
 Or use Docker Compose:
@@ -109,7 +109,7 @@ This design maintains security - key management requires container access, while
 |----------|---------|-------------|
 | `TSSTORE_DATA_PATH` | `/data` | Base path for stores |
 | `TSSTORE_HOST` | `0.0.0.0` | Server bind address |
-| `TSSTORE_PORT` | `8080` | Server port |
+| `TSSTORE_PORT` | `21080` | Server port |
 | `TSSTORE_MODE` | `release` | Gin mode (debug/release) |
 
 ## REST API Server
@@ -132,7 +132,7 @@ Create `config.json`:
 {
   "server": {
     "host": "0.0.0.0",
-    "port": 8080,
+    "port": 21080,
     "mode": "release"
   },
   "store": {
@@ -499,6 +499,16 @@ API keys can only be managed via CLI (requires device access):
 ./tsstore key revoke my-store a1b2c3d4
 ```
 
+### Swagger UI
+
+Explore the API interactively using Swagger Editor:
+
+```bash
+./tsstore swagger
+```
+
+This starts a local file server on port 21090, serves `swagger.yaml` with CORS headers, and opens https://editor.swagger.io in your browser with the spec pre-loaded. Press Ctrl+C to stop.
+
 ## Go Library
 
 The store can also be used directly as a Go library without the API server.
@@ -692,17 +702,17 @@ brew install websocat  # macOS
 # or: cargo install websocat
 
 # Test inbound read (stream data from store)
-websocat "ws://localhost:8080/api/stores/my-store/ws/read?api_key=KEY&from=0"
+websocat "ws://localhost:21080/api/stores/my-store/ws/read?api_key=KEY&from=0"
 
 # Test inbound write (send data to store)
-websocat "ws://localhost:8080/api/stores/my-store/ws/write?api_key=KEY"
+websocat "ws://localhost:21080/api/stores/my-store/ws/write?api_key=KEY"
 # Then type: {"data": {"temp": 72.5}}
 
 # Test outbound push (start a test server first)
 websocat -s 9000  # Start test server on port 9000
 
 # Create outbound push connection
-curl -X POST localhost:8080/api/stores/my-store/ws/connections \
+curl -X POST localhost:21080/api/stores/my-store/ws/connections \
   -H "X-API-Key: KEY" \
   -H "Content-Type: application/json" \
   -d '{"mode": "push", "url": "ws://localhost:9000", "from": 0}'

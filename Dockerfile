@@ -42,15 +42,15 @@ WORKDIR /data
 # Default environment
 ENV TSSTORE_DATA_PATH=/data
 ENV TSSTORE_HOST=0.0.0.0
-ENV TSSTORE_PORT=8080
+ENV TSSTORE_PORT=21080
 ENV TSSTORE_MODE=release
 
 # Expose port
-EXPOSE 8080
+EXPOSE 21080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:21080/health || exit 1
 
 # Default command
 CMD ["tsstore", "serve"]
