@@ -90,11 +90,16 @@ clean: ## Remove build artifacts
 	rm -rf $(BUILD_DIR)
 
 list-artifacts: ## List artifacts in Artifactory
+	@echo "ts-store artifacts in Artifactory:"
+	@echo ""
 	@curl -s -u $(ARTIFACTORY_USER):$(ARTIFACTORY_PASS) \
-		"$(ARTIFACTORY_URL)/api/storage/$(ARTIFACTORY_REPO)/$(ARTIFACTORY_PATH)?list&deep=1" | \
-		jq -r '.files[]?.uri // empty' 2>/dev/null || \
-		curl -s -u $(ARTIFACTORY_USER):$(ARTIFACTORY_PASS) \
-		"$(ARTIFACTORY_URL)/api/storage/$(ARTIFACTORY_REPO)/$(ARTIFACTORY_PATH)"
+		"$(ARTIFACTORY_URL)/api/storage/$(ARTIFACTORY_REPO)/$(ARTIFACTORY_PATH)" | \
+		jq -r '.children[]?.uri // empty' 2>/dev/null | while read dir; do \
+			echo "$$dir:"; \
+			curl -s -u $(ARTIFACTORY_USER):$(ARTIFACTORY_PASS) \
+				"$(ARTIFACTORY_URL)/api/storage/$(ARTIFACTORY_REPO)/$(ARTIFACTORY_PATH)$$dir" | \
+				jq -r '.children[]? | "  \(.uri) (\(.folder // false | if . then "folder" else "file" end))"' 2>/dev/null; \
+		done
 
 help: ## Show this help
 	@echo "ts-store Makefile targets:"
