@@ -25,17 +25,19 @@ type WSReadMessage struct {
 
 // wsReader handles streaming data to a WebSocket client.
 type wsReader struct {
-	conn     *websocket.Conn
-	store    *store.Store
-	from     int64  // Start timestamp (0 = from beginning, -1 = now)
-	format   string // "compact" or "full"
-	closeCh  chan struct{}
-	lastSent int64
-	caughtUp bool
+	conn             *websocket.Conn
+	store            *store.Store
+	from             int64  // Start timestamp (0 = from beginning, -1 = now)
+	format           string // "compact" or "full"
+	filter           string // Substring filter
+	filterIgnoreCase bool   // Case-insensitive matching
+	closeCh          chan struct{}
+	lastSent         int64
+	caughtUp         bool
 }
 
 // newWSReader creates a new WebSocket reader.
-func newWSReader(conn *websocket.Conn, st *store.Store, fromStr, format string) (*wsReader, error) {
+func newWSReader(conn *websocket.Conn, st *store.Store, fromStr, format, filter string, filterIgnoreCase bool) (*wsReader, error) {
 	var from int64 = -1 // Default to "now"
 
 	if fromStr != "" && fromStr != "now" {
@@ -51,11 +53,13 @@ func newWSReader(conn *websocket.Conn, st *store.Store, fromStr, format string) 
 	}
 
 	return &wsReader{
-		conn:    conn,
-		store:   st,
-		from:    from,
-		format:  format,
-		closeCh: make(chan struct{}),
+		conn:             conn,
+		store:            st,
+		from:             from,
+		format:           format,
+		filter:           filter,
+		filterIgnoreCase: filterIgnoreCase,
+		closeCh:          make(chan struct{}),
 	}, nil
 }
 
@@ -179,6 +183,11 @@ func (r *wsReader) sendNewData() {
 
 // sendData sends a single data message.
 func (r *wsReader) sendData(handle *store.ObjectHandle, data []byte) error {
+	// Apply filter - skip if doesn't match
+	if !store.MatchesFilter(data, r.filter, r.filterIgnoreCase) {
+		return nil
+	}
+
 	// Format the data
 	var payload any
 	dataType := r.store.DataType()

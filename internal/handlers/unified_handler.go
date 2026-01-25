@@ -236,7 +236,17 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 		return
 	}
 
-	handles, err := st.GetOldestObjects(limit)
+	// Get filter parameters
+	filter := c.Query("filter")
+	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
+
+	// When filtering, we need to fetch more than limit since some may be filtered out
+	fetchLimit := limit
+	if filter != "" {
+		fetchLimit = 0 // Fetch all, filter in loop
+	}
+
+	handles, err := st.GetOldestObjects(fetchLimit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -246,19 +256,31 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	includeData := c.Query("include_data") == "true"
 	expand := c.Query("format") != "compact"
 
-	objects := make([]DataResponse, len(handles))
-	for i, handle := range handles {
-		objects[i] = DataResponse{
+	objects := make([]DataResponse, 0, limit)
+	for _, handle := range handles {
+		if len(objects) >= limit {
+			break
+		}
+
+		data, err := st.GetObject(handle)
+		if err != nil {
+			continue
+		}
+
+		// Apply filter
+		if !store.MatchesFilter(data, filter, filterIgnoreCase) {
+			continue
+		}
+
+		obj := DataResponse{
 			Timestamp: handle.Timestamp,
 			BlockNum:  handle.BlockNum,
 			Size:      handle.Size,
 		}
 		if includeData {
-			data, err := st.GetObject(handle)
-			if err == nil {
-				objects[i].Data = h.formatData(data, st.DataType(), st, expand)
-			}
+			obj.Data = h.formatData(data, st.DataType(), st, expand)
 		}
+		objects = append(objects, obj)
 	}
 
 	c.JSON(http.StatusOK, DataListResponse{
@@ -284,6 +306,16 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 		return
 	}
 
+	// Get filter parameters
+	filter := c.Query("filter")
+	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
+
+	// When filtering, we need to fetch more than limit since some may be filtered out
+	fetchLimit := limit
+	if filter != "" {
+		fetchLimit = 0 // Fetch all, filter in loop
+	}
+
 	var handles []*store.ObjectHandle
 
 	// Check for since parameter
@@ -294,13 +326,13 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
 			return
 		}
-		handles, err = st.GetObjectsSince(duration, limit)
+		handles, err = st.GetObjectsSince(duration, fetchLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
 	} else {
-		handles, err = st.GetNewestObjects(limit)
+		handles, err = st.GetNewestObjects(fetchLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -310,19 +342,31 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	includeData := c.Query("include_data") == "true"
 	expand := c.Query("format") != "compact"
 
-	objects := make([]DataResponse, len(handles))
-	for i, handle := range handles {
-		objects[i] = DataResponse{
+	objects := make([]DataResponse, 0, limit)
+	for _, handle := range handles {
+		if len(objects) >= limit {
+			break
+		}
+
+		data, err := st.GetObject(handle)
+		if err != nil {
+			continue
+		}
+
+		// Apply filter
+		if !store.MatchesFilter(data, filter, filterIgnoreCase) {
+			continue
+		}
+
+		obj := DataResponse{
 			Timestamp: handle.Timestamp,
 			BlockNum:  handle.BlockNum,
 			Size:      handle.Size,
 		}
 		if includeData {
-			data, err := st.GetObject(handle)
-			if err == nil {
-				objects[i].Data = h.formatData(data, st.DataType(), st, expand)
-			}
+			obj.Data = h.formatData(data, st.DataType(), st, expand)
 		}
+		objects = append(objects, obj)
 	}
 
 	c.JSON(http.StatusOK, DataListResponse{
@@ -348,6 +392,16 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 		return
 	}
 
+	// Get filter parameters
+	filter := c.Query("filter")
+	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
+
+	// When filtering, we need to fetch more than limit since some may be filtered out
+	fetchLimit := limit
+	if filter != "" {
+		fetchLimit = 0 // Fetch all in range, filter in loop
+	}
+
 	var handles []*store.ObjectHandle
 
 	// Check for since parameter first
@@ -358,7 +412,7 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
 			return
 		}
-		handles, err = st.GetObjectsSince(duration, limit)
+		handles, err = st.GetObjectsSince(duration, fetchLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -385,7 +439,7 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 			return
 		}
 
-		handles, err = st.GetObjectsInRange(startTime, endTime, limit)
+		handles, err = st.GetObjectsInRange(startTime, endTime, fetchLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -395,19 +449,31 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	includeData := c.Query("include_data") == "true"
 	expand := c.Query("format") != "compact"
 
-	objects := make([]DataResponse, len(handles))
-	for i, handle := range handles {
-		objects[i] = DataResponse{
+	objects := make([]DataResponse, 0, limit)
+	for _, handle := range handles {
+		if len(objects) >= limit {
+			break
+		}
+
+		data, err := st.GetObject(handle)
+		if err != nil {
+			continue
+		}
+
+		// Apply filter
+		if !store.MatchesFilter(data, filter, filterIgnoreCase) {
+			continue
+		}
+
+		obj := DataResponse{
 			Timestamp: handle.Timestamp,
 			BlockNum:  handle.BlockNum,
 			Size:      handle.Size,
 		}
 		if includeData {
-			data, err := st.GetObject(handle)
-			if err == nil {
-				objects[i].Data = h.formatData(data, st.DataType(), st, expand)
-			}
+			obj.Data = h.formatData(data, st.DataType(), st, expand)
 		}
+		objects = append(objects, obj)
 	}
 
 	c.JSON(http.StatusOK, DataListResponse{

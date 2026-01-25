@@ -290,6 +290,21 @@ Returns objects within the time range. Use `since` as an alternative to `start_t
 - `7d` - 7 days
 - `1w` - 1 week
 
+#### Filtering Results
+
+All list endpoints (`/data/oldest`, `/data/newest`, `/data/range`) support substring filtering:
+
+```
+GET /api/stores/:store/data/newest?filter=sensor:01&include_data=true
+GET /api/stores/:store/data/range?since=1h&filter=BUILDING+A&filter_ignore_case=true
+```
+
+**Filter parameters:**
+- `filter` - Substring to match in the object data
+- `filter_ignore_case` - Set to `true` for case-insensitive matching (default: `false`)
+
+Only objects containing the filter substring are returned. When filtering is active, all objects are scanned to find matches up to the specified limit.
+
 ### Schema Endpoint (for schema-type stores)
 
 Schema stores use a compact JSON format where field names are replaced with numeric indices. This reduces storage space significantly for structured data with known schemas.
@@ -343,12 +358,15 @@ ts-store supports real-time data streaming via WebSocket connections.
 #### Inbound Read Stream
 ```
 GET /api/stores/:store/ws/read?api_key=<key>&from=now&format=full
+GET /api/stores/:store/ws/read?api_key=<key>&from=0&filter=sensor:01
 ```
 
 Query parameters:
 - `api_key` - Required for authentication
 - `from` - Start point: Unix nanosecond timestamp or `now` (default: `now`)
 - `format` - For schema stores: `compact` or `full` (default: `full`)
+- `filter` - Substring to match in data (optional)
+- `filter_ignore_case` - `true` for case-insensitive matching (default: `false`)
 
 Server sends messages:
 ```json
@@ -398,13 +416,20 @@ Content-Type: application/json
   "url": "wss://remote.example.com/data",
   "from": 0,
   "format": "compact",
-  "headers": {"Authorization": "Bearer token"}
+  "headers": {"Authorization": "Bearer token"},
+  "filter": "building:north",
+  "filter_ignore_case": true
 }
 ```
 
-Modes:
-- `push` - ts-store sends data to remote server
-- `pull` - ts-store receives data from remote server
+**Connection parameters:**
+- `mode` - `push` (ts-store sends to remote) or `pull` (ts-store receives from remote)
+- `url` - WebSocket URL to connect to
+- `from` - Start timestamp for push mode (0 = from beginning)
+- `format` - `compact` or `full` for schema stores
+- `headers` - Custom HTTP headers for connection
+- `filter` - Substring to match in data (push mode only)
+- `filter_ignore_case` - `true` for case-insensitive matching
 
 **Get Connection Status:**
 ```

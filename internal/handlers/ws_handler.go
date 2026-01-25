@@ -38,6 +38,8 @@ func NewWSHandler(storeService *service.StoreService) *WSHandler {
 //   - api_key: Required for authentication
 //   - from: Start point - Unix nanosecond timestamp or "now" (default: "now")
 //   - format: For schema stores - "compact" or "full" (default: "full")
+//   - filter: Substring to match in data (optional)
+//   - filter_ignore_case: "true" for case-insensitive matching (default: "false")
 func (h *WSHandler) Read(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -50,6 +52,8 @@ func (h *WSHandler) Read(c *gin.Context) {
 	// Get query parameters
 	from := c.DefaultQuery("from", "now")
 	format := c.DefaultQuery("format", "full")
+	filter := c.Query("filter")
+	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
 
 	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
@@ -59,7 +63,7 @@ func (h *WSHandler) Read(c *gin.Context) {
 	}
 
 	// Create and run reader
-	reader, err := newWSReader(conn, st, from, format)
+	reader, err := newWSReader(conn, st, from, format, filter, filterIgnoreCase)
 	if err != nil {
 		conn.WriteJSON(WSReadMessage{
 			Type:    "error",

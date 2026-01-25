@@ -22,18 +22,20 @@ var (
 
 // ConnectionStatus represents the state of an outbound connection.
 type ConnectionStatus struct {
-	ID            string    `json:"id"`
-	Mode          string    `json:"mode"`
-	URL           string    `json:"url"`
-	From          int64     `json:"from,omitempty"`
-	Format        string    `json:"format"`
-	Status        string    `json:"status"` // connecting, connected, disconnected, error
-	CreatedAt     time.Time `json:"created_at"`
-	LastTimestamp int64     `json:"last_timestamp,omitempty"`
-	MessagesSent  int64     `json:"messages_sent,omitempty"`
-	MessagesRecv  int64     `json:"messages_received,omitempty"`
-	Errors        int64     `json:"errors,omitempty"`
-	LastError     string    `json:"last_error,omitempty"`
+	ID               string    `json:"id"`
+	Mode             string    `json:"mode"`
+	URL              string    `json:"url"`
+	From             int64     `json:"from,omitempty"`
+	Format           string    `json:"format"`
+	Filter           string    `json:"filter,omitempty"`
+	FilterIgnoreCase bool      `json:"filter_ignore_case,omitempty"`
+	Status           string    `json:"status"` // connecting, connected, disconnected, error
+	CreatedAt        time.Time `json:"created_at"`
+	LastTimestamp    int64     `json:"last_timestamp,omitempty"`
+	MessagesSent     int64     `json:"messages_sent,omitempty"`
+	MessagesRecv     int64     `json:"messages_received,omitempty"`
+	Errors           int64     `json:"errors,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
 }
 
 // Connection is the interface for outbound connections (push or pull).
@@ -90,11 +92,13 @@ func (m *Manager) LoadAndStart() error {
 
 // CreateConnectionRequest holds parameters for creating a new connection.
 type CreateConnectionRequest struct {
-	Mode    string            `json:"mode"` // "push" or "pull"
-	URL     string            `json:"url"`
-	From    int64             `json:"from"`    // Start timestamp (push mode)
-	Format  string            `json:"format"`  // "compact" or "full"
-	Headers map[string]string `json:"headers"` // Custom headers
+	Mode             string            `json:"mode"`              // "push" or "pull"
+	URL              string            `json:"url"`               //
+	From             int64             `json:"from"`              // Start timestamp (push mode)
+	Format           string            `json:"format"`            // "compact" or "full"
+	Headers          map[string]string `json:"headers"`           // Custom headers
+	Filter           string            `json:"filter"`            // Substring filter
+	FilterIgnoreCase bool              `json:"filter_ignore_case"` // Case-insensitive matching
 }
 
 // CreateConnection creates and starts a new outbound connection.
@@ -119,13 +123,15 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 	id := uuid.New().String()[:8]
 
 	wsConn := store.WSConnection{
-		ID:        id,
-		Mode:      req.Mode,
-		URL:       req.URL,
-		From:      req.From,
-		Format:    req.Format,
-		Headers:   req.Headers,
-		CreatedAt: time.Now().UTC(),
+		ID:               id,
+		Mode:             req.Mode,
+		URL:              req.URL,
+		From:             req.From,
+		Format:           req.Format,
+		Headers:          req.Headers,
+		Filter:           req.Filter,
+		FilterIgnoreCase: req.FilterIgnoreCase,
+		CreatedAt:        time.Now().UTC(),
 	}
 
 	// Persist to config

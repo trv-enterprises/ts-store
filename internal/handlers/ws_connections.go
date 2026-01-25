@@ -44,11 +44,13 @@ func (h *WSConnectionsHandler) List(c *gin.Context) {
 
 // CreateRequest represents a request to create a new outbound connection.
 type CreateRequest struct {
-	Mode    string            `json:"mode" binding:"required"`
-	URL     string            `json:"url" binding:"required"`
-	From    int64             `json:"from,omitempty"`
-	Format  string            `json:"format,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	Mode             string            `json:"mode" binding:"required"`
+	URL              string            `json:"url" binding:"required"`
+	From             int64             `json:"from,omitempty"`
+	Format           string            `json:"format,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
+	Filter           string            `json:"filter,omitempty"`
+	FilterIgnoreCase bool              `json:"filter_ignore_case,omitempty"`
 }
 
 // Create handles POST /api/stores/:store/ws/connections
@@ -68,11 +70,13 @@ func (h *WSConnectionsHandler) Create(c *gin.Context) {
 	}
 
 	status, err := manager.CreateConnection(ws.CreateConnectionRequest{
-		Mode:    req.Mode,
-		URL:     req.URL,
-		From:    req.From,
-		Format:  req.Format,
-		Headers: req.Headers,
+		Mode:             req.Mode,
+		URL:              req.URL,
+		From:             req.From,
+		Format:           req.Format,
+		Headers:          req.Headers,
+		Filter:           req.Filter,
+		FilterIgnoreCase: req.FilterIgnoreCase,
 	})
 	if err != nil {
 		if err == ws.ErrInvalidMode {

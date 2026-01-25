@@ -15,13 +15,15 @@ const wsConnectionsFileName = "ws_connections.json"
 
 // WSConnection represents an outbound WebSocket connection configuration.
 type WSConnection struct {
-	ID        string            `json:"id"`
-	Mode      string            `json:"mode"` // "push" or "pull"
-	URL       string            `json:"url"`
-	From      int64             `json:"from"`    // Start timestamp (push mode)
-	Format    string            `json:"format"`  // "compact" or "full"
-	Headers   map[string]string `json:"headers"` // Custom headers
-	CreatedAt time.Time         `json:"created_at"`
+	ID               string            `json:"id"`
+	Mode             string            `json:"mode"`                         // "push" or "pull"
+	URL              string            `json:"url"`                          //
+	From             int64             `json:"from"`                         // Start timestamp (push mode)
+	Format           string            `json:"format"`                       // "compact" or "full"
+	Headers          map[string]string `json:"headers"`                      // Custom headers
+	Filter           string            `json:"filter,omitempty"`             // Substring filter
+	FilterIgnoreCase bool              `json:"filter_ignore_case,omitempty"` // Case-insensitive matching
+	CreatedAt        time.Time         `json:"created_at"`
 }
 
 // WSConnectionsConfig holds all outbound connection configurations for a store.

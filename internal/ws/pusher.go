@@ -56,17 +56,19 @@ func (p *Pusher) Status() ConnectionStatus {
 	defer p.mu.RUnlock()
 
 	return ConnectionStatus{
-		ID:            p.config.ID,
-		Mode:          p.config.Mode,
-		URL:           p.config.URL,
-		From:          p.config.From,
-		Format:        p.config.Format,
-		Status:        p.status,
-		CreatedAt:     p.config.CreatedAt,
-		LastTimestamp: p.lastTimestamp,
-		MessagesSent:  p.messagesSent,
-		Errors:        p.errors,
-		LastError:     p.lastError,
+		ID:               p.config.ID,
+		Mode:             p.config.Mode,
+		URL:              p.config.URL,
+		From:             p.config.From,
+		Format:           p.config.Format,
+		Filter:           p.config.Filter,
+		FilterIgnoreCase: p.config.FilterIgnoreCase,
+		Status:           p.status,
+		CreatedAt:        p.config.CreatedAt,
+		LastTimestamp:    p.lastTimestamp,
+		MessagesSent:     p.messagesSent,
+		Errors:           p.errors,
+		LastError:        p.lastError,
 	}
 }
 
@@ -231,6 +233,15 @@ func (p *Pusher) sendNewData() error {
 	for _, handle := range handles {
 		data, err := p.store.GetObject(handle)
 		if err != nil {
+			continue
+		}
+
+		// Apply filter - skip if doesn't match
+		if !store.MatchesFilter(data, p.config.Filter, p.config.FilterIgnoreCase) {
+			// Update lastTimestamp even for filtered items to avoid re-processing
+			p.mu.Lock()
+			p.lastTimestamp = handle.Timestamp
+			p.mu.Unlock()
 			continue
 		}
 
