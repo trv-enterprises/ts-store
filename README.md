@@ -749,8 +749,18 @@ This clears all blocks and resets head/tail pointers, allowing inserts to start 
 
 Copyright (c) 2026 TRV Enterprises LLC
 
-This software is licensed under the PolyForm Noncommercial License 1.0.0.
-You may use this software for non-commercial purposes only. For commercial
-licensing, please contact TRV Enterprises LLC.
+This software is licensed under the [Business Source License 1.1](LICENSE).
 
-See [LICENSE](LICENSE) for full details.
+**What you CAN do:**
+- Use ts-store internally in your business (manufacturing, monitoring, etc.)
+- Modify and create derivative works
+- Use for development, testing, and non-production purposes
+
+**What you CANNOT do:**
+- Offer ts-store to third parties on a hosted, managed, or embedded basis
+- Include ts-store in a product or SaaS offering you sell
+
+**Open Source Conversion:**
+On January 25, 2028 (or 4 years after any specific version's release), the code becomes available under the Apache License 2.0.
+
+For commercial licensing inquiries, please contact TRV Enterprises LLC.

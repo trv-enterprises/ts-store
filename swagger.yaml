@@ -18,7 +18,7 @@ info:
     The `since` parameter accepts durations like: `30s`, `15m`, `2h`, `7d`, `1w`
   version: 0.1.0
   license:
-    name: PolyForm Noncommercial License 1.0.0
+    name: Business Source License 1.1
   contact:
     name: TRV Enterprises LLC
 

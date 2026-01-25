@@ -1,5 +1,5 @@
 // Copyright (c) 2026 TRV Enterprises LLC
-// Licensed under the PolyForm Noncommercial License 1.0.0
+// Licensed under the Business Source License 1.1
 // See LICENSE file for details.
 
 // Package block defines the core block structures for the circular time series store.
