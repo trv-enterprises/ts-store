@@ -276,7 +276,9 @@ paths:
       tags:
         - Data
       summary: Delete data by timestamp
-      description: Delete data by its exact timestamp.
+      description: |
+        Soft delete - excludes data from API responses and WebSocket streams.
+        The data remains on disk until the block is overwritten as the circular buffer wraps.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
