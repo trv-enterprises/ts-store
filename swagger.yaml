@@ -33,11 +33,9 @@ tags:
   - name: Stores
     description: Store management operations
   - name: Data
-    description: Low-level data operations (base64 encoded)
-  - name: Objects
-    description: Object operations (base64 encoded, returns handles)
-  - name: JSON
-    description: JSON object operations (no base64 encoding)
+    description: Unified data operations (Content-Type determines format)
+  - name: Schema
+    description: Schema management for schema-type stores
 
 paths:
   /health:
@@ -170,7 +168,13 @@ paths:
       tags:
         - Data
       summary: Insert data
-      description: Insert base64-encoded data with optional timestamp.
+      description: |
+        Insert data with optional timestamp. Content-Type header determines format:
+        - `application/json`: JSON body with `{"timestamp": ..., "data": ...}` wrapper
+        - `application/octet-stream`: Raw binary body (timestamp auto-generated)
+        - `text/plain`: Raw text body (timestamp auto-generated)
+
+        For schema-type stores, data is validated against the schema and stored compactly.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -182,7 +186,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/InsertRequest'
+              $ref: '#/components/schemas/InsertJSONRequest'
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+          text/plain:
+            schema:
+              type: string
       responses:
         '201':
           description: Data inserted
@@ -191,13 +202,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/InsertResponse'
         '400':
-          description: Invalid request or out-of-order timestamp
+          description: Invalid request, data type mismatch, or out-of-order timestamp
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/stores/{store}/data/time/{timestamp}:
     get:
@@ -212,180 +229,14 @@ paths:
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Timestamp'
+        - $ref: '#/components/parameters/Format'
       responses:
         '200':
           description: Data found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BlockResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/stores/{store}/data/range:
-    get:
-      tags:
-        - Data
-      summary: Query data in time range
-      description: Retrieve all data within a time range.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - name: start_time
-          in: query
-          required: true
-          schema:
-            type: integer
-            format: int64
-          description: Start timestamp (Unix nanoseconds)
-        - name: end_time
-          in: query
-          required: true
-          schema:
-            type: integer
-            format: int64
-          description: End timestamp (Unix nanoseconds)
-      responses:
-        '200':
-          description: Data in range
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RangeResponse'
-        '400':
-          description: Missing or invalid parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/stores/{store}/data/oldest:
-    get:
-      tags:
-        - Data
-      summary: Get oldest timestamp
-      description: Returns the oldest timestamp in the store.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-      responses:
-        '200':
-          description: Oldest timestamp
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  oldest_timestamp:
-                    type: integer
-                    format: int64
-                    example: 1704067200000000000
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Store is empty
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /api/stores/{store}/data/newest:
-    get:
-      tags:
-        - Data
-      summary: Get newest timestamp
-      description: Returns the newest timestamp in the store.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-      responses:
-        '200':
-          description: Newest timestamp
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  newest_timestamp:
-                    type: integer
-                    format: int64
-                    example: 1704153600000000000
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Store is empty
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /api/stores/{store}/objects:
-    post:
-      tags:
-        - Objects
-      summary: Store an object
-      description: Store base64-encoded object data. Small objects are packed together, large objects span multiple blocks.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PutObjectRequest'
-      responses:
-        '201':
-          description: Object stored
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ObjectHandleResponse'
-        '400':
-          description: Invalid request or out-of-order timestamp
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/stores/{store}/objects/time/{timestamp}:
-    get:
-      tags:
-        - Objects
-      summary: Get object by timestamp
-      description: Retrieve an object by its exact timestamp.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - $ref: '#/components/parameters/Timestamp'
-      responses:
-        '200':
-          description: Object found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ObjectDataResponse'
+                $ref: '#/components/schemas/DataResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -393,9 +244,9 @@ paths:
 
     delete:
       tags:
-        - Objects
-      summary: Delete object by timestamp
-      description: Delete an object by its timestamp.
+        - Data
+      summary: Delete data by timestamp
+      description: Delete data by its exact timestamp.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -405,7 +256,7 @@ paths:
         - $ref: '#/components/parameters/Timestamp'
       responses:
         '200':
-          description: Object deleted
+          description: Data deleted
           content:
             application/json:
               schema:
@@ -419,65 +270,15 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /api/stores/{store}/objects/oldest:
+  /api/stores/{store}/data/range:
     get:
       tags:
-        - Objects
-      summary: List oldest objects
-      description: Returns handles for the N oldest objects (without data).
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - $ref: '#/components/parameters/Limit'
-      responses:
-        '200':
-          description: List of object handles
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ObjectListResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/stores/{store}/objects/newest:
-    get:
-      tags:
-        - Objects
-      summary: List newest objects
-      description: Returns handles for the N newest objects (without data). Supports relative time queries with `since` parameter.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Since'
-      responses:
-        '200':
-          description: List of object handles
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ObjectListResponse'
-        '400':
-          description: Invalid since duration
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/stores/{store}/objects/range:
-    get:
-      tags:
-        - Objects
-      summary: List objects in time range
-      description: Returns handles for objects within a time range. Use `since` or `start_time`/`end_time`.
+        - Data
+      summary: Query data in time range
+      description: |
+        Retrieve data within a time range. Use either:
+        - `since` parameter for relative time (e.g., `since=2h`)
+        - `start_time` and `end_time` for absolute timestamps
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -498,15 +299,19 @@ paths:
             type: integer
             format: int64
           description: End timestamp (Unix nanoseconds). Required if `since` not provided.
+        - $ref: '#/components/parameters/IncludeData'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/FilterIgnoreCase'
+        - $ref: '#/components/parameters/Format'
       responses:
         '200':
-          description: List of object handles
+          description: Data in range
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ObjectListResponse'
+                $ref: '#/components/schemas/DataListResponse'
         '400':
-          description: Missing parameters or invalid duration
+          description: Missing or invalid parameters
           content:
             application/json:
               schema:
@@ -514,12 +319,108 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/stores/{store}/json:
-    post:
+  /api/stores/{store}/data/oldest:
+    get:
       tags:
-        - JSON
-      summary: Store JSON object
-      description: Store a JSON object directly (no base64 encoding needed).
+        - Data
+      summary: List oldest data objects
+      description: Returns the N oldest data objects. Use `include_data=true` to include the actual data content.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeData'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/FilterIgnoreCase'
+        - $ref: '#/components/parameters/Format'
+      responses:
+        '200':
+          description: List of data objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/data/newest:
+    get:
+      tags:
+        - Data
+      summary: List newest data objects
+      description: Returns the N newest data objects. Supports relative time queries with `since` parameter. Use `include_data=true` to include the actual data content.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Since'
+        - $ref: '#/components/parameters/IncludeData'
+        - $ref: '#/components/parameters/Filter'
+        - $ref: '#/components/parameters/FilterIgnoreCase'
+        - $ref: '#/components/parameters/Format'
+      responses:
+        '200':
+          description: List of data objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataListResponse'
+        '400':
+          description: Invalid since duration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/schema:
+    get:
+      tags:
+        - Schema
+      summary: Get schema
+      description: Returns the current schema for schema-type stores.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Schema found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchemaResponse'
+        '400':
+          description: Store is not a schema-type store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No schema defined
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Schema
+      summary: Set or update schema
+      description: |
+        Sets or updates the schema for schema-type stores.
+        For updates, the new schema must be append-only compatible (existing fields cannot be modified or removed).
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -531,156 +432,31 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PutJSONRequest'
+              $ref: '#/components/schemas/SchemaRequest'
             example:
-              timestamp: 1704067200000000000
-              data:
-                temperature: 72.5
-                humidity: 45
-                sensor: living-room
+              fields:
+                - index: 1
+                  name: temperature
+                  type: float32
+                - index: 2
+                  name: humidity
+                  type: float32
       responses:
-        '201':
-          description: JSON object stored
+        '200':
+          description: Schema updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ObjectHandleResponse'
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: schema updated
+                  version:
+                    type: integer
+                    example: 1
         '400':
-          description: Invalid JSON or out-of-order timestamp
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/stores/{store}/json/time/{timestamp}:
-    get:
-      tags:
-        - JSON
-      summary: Get JSON by timestamp
-      description: Retrieve a JSON object by its exact timestamp.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - $ref: '#/components/parameters/Timestamp'
-      responses:
-        '200':
-          description: JSON object found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JSONResponse'
-              example:
-                timestamp: 1704067200000000000
-                block_num: 5
-                size: 64
-                data:
-                  temperature: 72.5
-                  humidity: 45
-                  sensor: living-room
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '422':
-          description: Stored data is not valid JSON
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /api/stores/{store}/json/oldest:
-    get:
-      tags:
-        - JSON
-      summary: List oldest JSON objects
-      description: Returns the N oldest JSON objects with their data.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - $ref: '#/components/parameters/Limit'
-      responses:
-        '200':
-          description: List of JSON objects
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JSONListResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/stores/{store}/json/newest:
-    get:
-      tags:
-        - JSON
-      summary: List newest JSON objects
-      description: Returns the N newest JSON objects with their data. Supports relative time queries with `since` parameter.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - $ref: '#/components/parameters/Limit'
-        - $ref: '#/components/parameters/Since'
-      responses:
-        '200':
-          description: List of JSON objects
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JSONListResponse'
-        '400':
-          description: Invalid since duration
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /api/stores/{store}/json/range:
-    get:
-      tags:
-        - JSON
-      summary: List JSON objects in time range
-      description: Returns JSON objects within a time range. Use `since` or `start_time`/`end_time`.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-        - $ref: '#/components/parameters/Limit100'
-        - $ref: '#/components/parameters/Since'
-        - name: start_time
-          in: query
-          schema:
-            type: integer
-            format: int64
-          description: Start timestamp (Unix nanoseconds). Required if `since` not provided.
-        - name: end_time
-          in: query
-          schema:
-            type: integer
-            format: int64
-          description: End timestamp (Unix nanoseconds). Required if `since` not provided.
-      responses:
-        '200':
-          description: List of JSON objects
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/JSONListResponse'
-        '400':
-          description: Missing parameters or invalid duration
+          description: Invalid schema or not a schema-type store
           content:
             application/json:
               schema:
@@ -750,6 +526,38 @@ components:
         type: string
       description: Relative time duration (e.g., 30s, 15m, 2h, 7d, 1w)
       example: 2h
+
+    IncludeData:
+      name: include_data
+      in: query
+      schema:
+        type: boolean
+        default: false
+      description: Include the actual data content in the response
+
+    Filter:
+      name: filter
+      in: query
+      schema:
+        type: string
+      description: Text filter - only return objects containing this string
+
+    FilterIgnoreCase:
+      name: filter_ignore_case
+      in: query
+      schema:
+        type: boolean
+        default: false
+      description: Make text filter case-insensitive
+
+    Format:
+      name: format
+      in: query
+      schema:
+        type: string
+        enum: [compact, expanded]
+        default: expanded
+      description: For schema stores, 'compact' returns numeric field indices, 'expanded' returns field names
 
   schemas:
     Error:
@@ -846,7 +654,7 @@ components:
           type: string
           example: "2024-01-02T00:00:00Z"
 
-    InsertRequest:
+    InsertJSONRequest:
       type: object
       required:
         - data
@@ -856,124 +664,15 @@ components:
           format: int64
           description: Unix timestamp in nanoseconds (optional, defaults to now)
         data:
-          type: string
-          format: byte
-          description: Base64-encoded data
+          description: JSON data to store
+          oneOf:
+            - type: object
+            - type: array
+            - type: string
+            - type: number
+            - type: boolean
 
     InsertResponse:
-      type: object
-      properties:
-        block_num:
-          type: integer
-          format: uint32
-          example: 5
-        timestamp:
-          type: integer
-          format: int64
-          example: 1704067200000000000
-
-    BlockResponse:
-      type: object
-      properties:
-        block_num:
-          type: integer
-          format: uint32
-          example: 5
-        timestamp:
-          type: integer
-          format: int64
-          example: 1704067200000000000
-        data:
-          type: string
-          format: byte
-          description: Base64-encoded data
-
-    RangeResponse:
-      type: object
-      properties:
-        blocks:
-          type: array
-          items:
-            $ref: '#/components/schemas/BlockResponse'
-        count:
-          type: integer
-          example: 10
-
-    PutObjectRequest:
-      type: object
-      required:
-        - data
-      properties:
-        timestamp:
-          type: integer
-          format: int64
-          description: Unix timestamp in nanoseconds (optional, defaults to now)
-        data:
-          type: string
-          format: byte
-          description: Base64-encoded data
-
-    ObjectHandleResponse:
-      type: object
-      properties:
-        timestamp:
-          type: integer
-          format: int64
-          example: 1704067200000000000
-        block_num:
-          type: integer
-          format: uint32
-          example: 5
-        size:
-          type: integer
-          format: uint32
-          example: 1024
-
-    ObjectDataResponse:
-      type: object
-      properties:
-        timestamp:
-          type: integer
-          format: int64
-          example: 1704067200000000000
-        block_num:
-          type: integer
-          format: uint32
-          example: 5
-        size:
-          type: integer
-          format: uint32
-          example: 1024
-        data:
-          type: string
-          format: byte
-          description: Base64-encoded data
-
-    ObjectListResponse:
-      type: object
-      properties:
-        objects:
-          type: array
-          items:
-            $ref: '#/components/schemas/ObjectHandleResponse'
-        count:
-          type: integer
-          example: 10
-
-    PutJSONRequest:
-      type: object
-      required:
-        - data
-      properties:
-        timestamp:
-          type: integer
-          format: int64
-          description: Unix timestamp in nanoseconds (optional, defaults to now)
-        data:
-          type: object
-          description: Any valid JSON object
-
-    JSONResponse:
       type: object
       properties:
         timestamp:
@@ -988,20 +687,92 @@ components:
           type: integer
           format: uint32
           example: 64
-        data:
-          type: object
-          description: The stored JSON object
 
-    JSONListResponse:
+    DataResponse:
+      type: object
+      description: A data object with optional data content
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+          example: 1704067200000000000
+        block_num:
+          type: integer
+          format: uint32
+          example: 5
+        size:
+          type: integer
+          format: uint32
+          example: 64
+        data:
+          description: |
+            Data content (only present if include_data=true).
+            Format depends on store type:
+            - binary: base64-encoded string
+            - text: UTF-8 string
+            - json: JSON object
+            - schema: JSON object with field names (or numeric indices if format=compact)
+          oneOf:
+            - type: string
+            - type: object
+
+    DataListResponse:
       type: object
       properties:
         objects:
           type: array
           items:
-            $ref: '#/components/schemas/JSONResponse'
+            $ref: '#/components/schemas/DataResponse'
         count:
           type: integer
           example: 10
+
+    SchemaField:
+      type: object
+      required:
+        - index
+        - name
+        - type
+      properties:
+        index:
+          type: integer
+          minimum: 1
+          description: Field index (1-based, used in compact storage format)
+          example: 1
+        name:
+          type: string
+          description: Field name
+          example: temperature
+        type:
+          type: string
+          enum: [int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64, bool, string]
+          description: Field data type
+          example: float32
+
+    SchemaRequest:
+      type: object
+      required:
+        - fields
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaField'
+          description: Schema fields
+
+    SchemaResponse:
+      type: object
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: Schema version number
+          example: 1
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/SchemaField'
+          description: Schema fields
 
   responses:
     Unauthorized:
