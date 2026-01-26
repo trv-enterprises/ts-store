@@ -5,12 +5,27 @@ info:
     Time series database API using a circular file architecture.
 
     ## Authentication
-    Most endpoints require an API key passed via (checked in order):
+
+    ts-store uses two types of authentication:
+
+    ### Admin Key (for store management)
+    Required for creating new stores. Pass via:
+    - Header: `X-Admin-Key: <admin-key>`
+    - Query parameter: `?admin_key=<admin-key>`
+
+    The admin key is configured at server startup (min 20 characters).
+
+    ### Store API Key (for data operations)
+    Required for all data operations on a store. Pass via (checked in order):
     - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
     - Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
     - Query parameter: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
-    API keys are generated when creating a store and shown only once.
+    Store API keys are generated when creating a store and shown only once.
+
+    ## TLS/HTTPS
+    The server supports optional TLS. When configured with certificate and key files,
+    all HTTP endpoints use HTTPS and WebSocket endpoints use WSS.
 
     ## Timestamps
     All timestamps are Unix nanoseconds (int64). Timestamps must be strictly increasing - out-of-order timestamps will be rejected.
@@ -113,6 +128,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid admin key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: admin key required
         '409':
           description: Store already exists
           content:

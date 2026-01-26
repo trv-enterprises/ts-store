@@ -504,6 +504,124 @@ On successful reconnect:
   - No duplicate data sent
 ```
 
+## Security Architecture
+
+ts-store uses a two-tier authentication model to protect both administrative and data operations.
+
+### Authentication Flow
+
+```
+                              ┌─────────────────────────────────────┐
+                              │           ts-store Server           │
+                              │                                     │
+  ┌──────────┐               │  ┌─────────────────────────────┐   │
+  │  Admin   │               │  │      Admin Auth Layer       │   │
+  │ (DevOps) │  X-Admin-Key  │  │                             │   │
+  │          │──────────────►│  │  - Store creation           │   │
+  └──────────┘               │  │  - Requires admin_key       │   │
+                              │  │  - Min 20 characters        │   │
+                              │  └─────────────────────────────┘   │
+                              │                                     │
+  ┌──────────┐               │  ┌─────────────────────────────┐   │
+  │  Client  │               │  │      Store Auth Layer       │   │
+  │  (App)   │  X-API-Key    │  │                             │   │
+  │          │──────────────►│  │  - Data operations          │   │
+  └──────────┘               │  │  - Per-store API keys       │   │
+                              │  │  - Generated on creation    │   │
+                              │  └─────────────────────────────┘   │
+                              │                                     │
+                              └─────────────────────────────────────┘
+```
+
+### Authentication Methods
+
+```
+Admin Operations (POST /api/stores):
+  ┌─────────────────────────────────────────────────────────┐
+  │  Header: X-Admin-Key: <admin-key>                       │
+  │  Query:  ?admin_key=<admin-key>                         │
+  └─────────────────────────────────────────────────────────┘
+
+Store Operations (data, schema, websocket):
+  ┌─────────────────────────────────────────────────────────┐
+  │  Header: X-API-Key: tsstore_xxxx-xxxx-xxxx-xxxx         │
+  │  Header: Authorization: Bearer tsstore_xxxx-xxxx-xxxx   │
+  │  Query:  ?api_key=tsstore_xxxx-xxxx-xxxx                │
+  └─────────────────────────────────────────────────────────┘
+```
+
+### TLS Configuration
+
+```
+Without TLS:                        With TLS:
+┌──────────┐     HTTP/WS           ┌──────────┐    HTTPS/WSS
+│  Client  │ ──────────────►       │  Client  │ ──────────────►
+└──────────┘     Port 21080        └──────────┘    Port 21080
+                                                         │
+                                                         ▼
+                                                   ┌──────────┐
+                                                   │ TLS Term │
+                                                   │ cert.pem │
+                                                   │ key.pem  │
+                                                   └──────────┘
+
+Environment Variables:
+  TSSTORE_TLS_CERT=/path/to/cert.pem
+  TSSTORE_TLS_KEY=/path/to/key.pem
+
+Behavior:
+  - Both provided: Server uses HTTPS/WSS
+  - Neither provided: Server uses HTTP/WS
+  - Only one provided: Error at startup
+```
+
+### API Key Storage
+
+```
+Store Directory:
+my-store/
+├── data.tsdb
+├── index.tsdb
+├── meta.tsdb
+├── keys.json          <── API key hashes (bcrypt)
+└── ws_connections.json
+
+keys.json structure:
+{
+  "keys": [
+    {
+      "id": "a1b2c3d4",           // Short ID for reference
+      "hash": "$2a$10$...",       // bcrypt hash (not plaintext)
+      "created_at": "2024-01-01T00:00:00Z"
+    }
+  ]
+}
+
+Security notes:
+  - API keys shown only once at creation
+  - Only bcrypt hashes stored on disk
+  - Admin key never stored (config/env only)
+  - Constant-time comparison prevents timing attacks
+```
+
+### Endpoint Security Matrix
+
+```
+Endpoint                          Auth Required    Auth Type
+────────────────────────────────────────────────────────────
+GET  /health                      No               -
+GET  /api/stores                  No               -
+POST /api/stores                  Yes              Admin Key
+DELETE /api/stores/:store         Yes              Store API Key
+GET  /api/stores/:store/stats     Yes              Store API Key
+POST /api/stores/:store/data      Yes              Store API Key
+GET  /api/stores/:store/data/*    Yes              Store API Key
+GET  /api/stores/:store/schema    Yes              Store API Key
+PUT  /api/stores/:store/schema    Yes              Store API Key
+GET  /api/stores/:store/ws/*      Yes              Store API Key
+Unix Socket AUTH                  Yes              Store API Key
+```
+
 ## Summary
 
 | Component | Size | Purpose |
@@ -514,3 +632,5 @@ On successful reconnect:
 | Data Block | Configurable | Actual object data storage |
 | StoreMetadata | 64 bytes | Store configuration and pointers |
 | WSConnection | Variable | Outbound WebSocket connection config |
+| Admin Key | 20+ chars | Server-level authentication for store creation |
+| Store API Key | UUID format | Per-store authentication for data operations |

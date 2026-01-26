@@ -108,11 +108,14 @@ This design maintains security - key management requires container access, while
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `TSSTORE_ADMIN_KEY` | (required) | Admin key for store creation (min 20 chars) |
 | `TSSTORE_DATA_PATH` | `/data` | Base path for stores |
 | `TSSTORE_HOST` | `0.0.0.0` | Server bind address |
 | `TSSTORE_PORT` | `21080` | Server port |
 | `TSSTORE_MODE` | `release` | Gin mode (debug/release) |
 | `TSSTORE_SOCKET_PATH` | `/var/run/tsstore/tsstore.sock` | Unix socket path |
+| `TSSTORE_TLS_CERT` | (optional) | Path to TLS certificate file |
+| `TSSTORE_TLS_KEY` | (optional) | Path to TLS private key file |
 
 ## REST API Server
 
@@ -121,6 +124,8 @@ ts-store includes a lightweight REST API server designed for edge devices.
 ### Starting the Server
 
 ```bash
+# Admin key is required (prevents unauthorized store creation)
+export TSSTORE_ADMIN_KEY="your-secure-admin-key-here"
 ./tsstore serve
 ```
 
@@ -136,7 +141,12 @@ Create `config.json`:
     "host": "0.0.0.0",
     "port": 21080,
     "mode": "release",
-    "socket_path": "/var/run/tsstore/tsstore.sock"
+    "socket_path": "/var/run/tsstore/tsstore.sock",
+    "admin_key": "your-secure-admin-key-here",
+    "tls": {
+      "cert_file": "/path/to/cert.pem",
+      "key_file": "/path/to/key.pem"
+    }
   },
   "store": {
     "base_path": "./data",
@@ -148,21 +158,50 @@ Create `config.json`:
 ```
 
 Environment variables:
+- `TSSTORE_ADMIN_KEY` - Admin key for store creation (required, min 20 chars)
 - `TSSTORE_HOST` - Server host
 - `TSSTORE_PORT` - Server port
 - `TSSTORE_MODE` - "debug" or "release"
 - `TSSTORE_DATA_PATH` - Base path for stores
 - `TSSTORE_SOCKET_PATH` - Unix socket path (empty to disable)
+- `TSSTORE_TLS_CERT` - TLS certificate file (enables HTTPS when set with TLS_KEY)
+- `TSSTORE_TLS_KEY` - TLS private key file (enables HTTPS when set with TLS_CERT)
 - `TSSTORE_CONFIG` - Config file path
+
+### TLS/HTTPS
+
+To enable HTTPS, provide both certificate and key files:
+
+```bash
+export TSSTORE_ADMIN_KEY="your-secure-admin-key-here"
+export TSSTORE_TLS_CERT="/path/to/cert.pem"
+export TSSTORE_TLS_KEY="/path/to/key.pem"
+./tsstore serve
+```
+
+When TLS is enabled:
+- HTTP API uses HTTPS
+- WebSocket connections use WSS (secure WebSocket)
+- Server logs will show "(HTTPS)" instead of "(HTTP)"
+
+If TLS is not configured, the server falls back to HTTP/WS.
 
 ### Authentication
 
-Each store has its own API key. The key is generated when the store is created and shown only once. Store it securely.
+ts-store uses two types of authentication:
 
-Pass the API key via any of these methods (checked in order):
-- Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-- Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-- Query param: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+**Admin Key** (for store management):
+- Required for creating new stores
+- Configured at server startup via `TSSTORE_ADMIN_KEY` (min 20 characters)
+- Pass via `X-Admin-Key` header or `admin_key` query parameter
+
+**Store API Key** (for data operations):
+- Each store has its own API key, generated when the store is created
+- The key is shown only once - store it securely
+- Pass via any of these methods (checked in order):
+  - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+  - Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+  - Query param: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
 ### API Endpoints
 
@@ -172,9 +211,10 @@ GET /health
 ```
 Returns server health status. No authentication required.
 
-#### Create Store
+#### Create Store (requires admin key)
 ```
 POST /api/stores
+X-Admin-Key: <admin-key>
 Content-Type: application/json
 
 {
@@ -192,7 +232,7 @@ Content-Type: application/json
 - `json` - Arbitrary JSON objects (Content-Type: application/json) - default
 - `schema` - Schema-defined compact JSON (Content-Type: application/json)
 
-Returns the API key (shown only once):
+Returns the store API key (shown only once):
 ```json
 {
   "name": "my-store",
@@ -766,7 +806,9 @@ brew install websocat  # macOS
 # or: cargo install websocat
 
 # Test inbound read (stream data from store)
+# Use ws:// for HTTP, wss:// for HTTPS
 websocat "ws://localhost:21080/api/stores/my-store/ws/read?api_key=KEY&from=0"
+websocat -k "wss://localhost:21080/api/stores/my-store/ws/read?api_key=KEY&from=0"  # -k to skip cert verification
 
 # Test inbound write (send data to store)
 websocat "ws://localhost:21080/api/stores/my-store/ws/write?api_key=KEY"
