@@ -574,8 +574,8 @@ components:
       in: query
       schema:
         type: boolean
-        default: false
-      description: Include the actual data content in the response
+        default: true
+      description: Include the actual data content in the response (set to false to return metadata only)
 
     Filter:
       name: filter

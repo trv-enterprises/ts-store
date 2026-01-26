@@ -252,8 +252,8 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 		return
 	}
 
-	// For list operations, we can optionally include data
-	includeData := c.Query("include_data") == "true"
+	// For list operations, include data by default (set include_data=false to exclude)
+	includeData := c.Query("include_data") != "false"
 	expand := c.Query("format") != "compact"
 
 	objects := make([]DataResponse, 0, limit)
@@ -339,7 +339,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 		}
 	}
 
-	includeData := c.Query("include_data") == "true"
+	includeData := c.Query("include_data") != "false"
 	expand := c.Query("format") != "compact"
 
 	objects := make([]DataResponse, 0, limit)

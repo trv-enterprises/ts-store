@@ -309,26 +309,26 @@ X-API-Key: <api-key>
 
 #### List Oldest Data (requires auth)
 ```
-GET /api/stores/:store/data/oldest?limit=10&include_data=true
+GET /api/stores/:store/data/oldest?limit=10
 X-API-Key: <api-key>
 ```
-Returns handles for the N oldest objects (default 10). Add `include_data=true` to include data in response.
+Returns the N oldest objects with data (default 10). Add `include_data=false` to return metadata only.
 
 #### List Newest Data (requires auth)
 ```
 GET /api/stores/:store/data/newest?limit=10
-GET /api/stores/:store/data/newest?since=2h&limit=100&include_data=true
+GET /api/stores/:store/data/newest?since=2h&limit=100
 X-API-Key: <api-key>
 ```
-Returns handles for the N newest objects (default 10). Use `since` parameter for relative time queries.
+Returns the N newest objects with data (default 10). Use `since` parameter for relative time queries. Add `include_data=false` to return metadata only.
 
 #### Query Time Range (requires auth)
 ```
 GET /api/stores/:store/data/range?start_time=X&end_time=Y&limit=100
-GET /api/stores/:store/data/range?since=24h&limit=100&include_data=true
+GET /api/stores/:store/data/range?since=24h&limit=100
 X-API-Key: <api-key>
 ```
-Returns objects within the time range. Use `since` as an alternative to `start_time`/`end_time`.
+Returns objects within the time range with data. Use `since` as an alternative to `start_time`/`end_time`. Add `include_data=false` to return metadata only.
 
 **Supported duration formats:**
 - `30s` - 30 seconds
