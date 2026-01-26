@@ -209,8 +209,20 @@ func (l *Listener) handleConnection(conn net.Conn) {
 			continue
 		}
 
+		// For schema stores, validate and compact the data
+		data := []byte(line)
+		if st.DataType().String() == "schema" {
+			compactData, err := st.ValidateAndCompact(data)
+			if err != nil {
+				writer.WriteString(fmt.Sprintf("ERROR schema validation failed: %s\n", err.Error()))
+				writer.Flush()
+				continue
+			}
+			data = compactData
+		}
+
 		// Store the object
-		handle, err := st.PutObject(timestamp, []byte(line))
+		handle, err := st.PutObject(timestamp, data)
 		if err != nil {
 			writer.WriteString(fmt.Sprintf("ERROR store failed: %s\n", err.Error()))
 			writer.Flush()
