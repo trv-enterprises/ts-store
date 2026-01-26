@@ -95,6 +95,45 @@ func GetKeyEntry(c *gin.Context) *apikey.KeyEntry {
 	return nil
 }
 
+// AdminAuth creates middleware that validates the admin key for store management operations.
+// The admin key can be provided via X-Admin-Key header or admin_key query parameter.
+func AdminAuth(adminKey string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Get admin key from header or query param
+		providedKey := c.GetHeader("X-Admin-Key")
+		if providedKey == "" {
+			providedKey = c.Query("admin_key")
+		}
+
+		if providedKey == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "admin key required"})
+			c.Abort()
+			return
+		}
+
+		// Constant-time comparison to prevent timing attacks
+		if !secureCompare(providedKey, adminKey) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid admin key"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// secureCompare performs a constant-time string comparison to prevent timing attacks.
+func secureCompare(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var result byte
+	for i := 0; i < len(a); i++ {
+		result |= a[i] ^ b[i]
+	}
+	return result == 0
+}
+
 // CORS creates CORS middleware.
 func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {

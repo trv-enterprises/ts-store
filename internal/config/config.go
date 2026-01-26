@@ -23,6 +23,7 @@ type ServerConfig struct {
 	Port       int    `json:"port"`
 	Mode       string `json:"mode"`        // "debug" or "release"
 	SocketPath string `json:"socket_path"` // Unix socket path (empty to disable)
+	AdminKey   string `json:"admin_key"`   // Admin key for store management (min 20 chars)
 }
 
 // StoreConfig holds default store settings.
@@ -106,6 +107,9 @@ func (c *Config) LoadFromEnv() {
 	}
 	if socketPath := os.Getenv("TSSTORE_SOCKET_PATH"); socketPath != "" {
 		c.Server.SocketPath = socketPath
+	}
+	if adminKey := os.Getenv("TSSTORE_ADMIN_KEY"); adminKey != "" {
+		c.Server.AdminKey = adminKey
 	}
 }
 

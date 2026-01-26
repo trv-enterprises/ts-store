@@ -87,6 +87,11 @@ paths:
       description: |
         Creates a new store and returns the API key.
         **Important:** The API key is shown only once. Save it securely.
+
+        Requires admin authentication via `X-Admin-Key` header or `admin_key` query parameter.
+      security:
+        - AdminKeyHeader: []
+        - AdminKeyQuery: []
       requestBody:
         required: true
         content:
@@ -480,6 +485,16 @@ components:
       in: query
       name: api_key
       description: API key in query parameter
+    AdminKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Admin key for store management operations
+    AdminKeyQuery:
+      type: apiKey
+      in: query
+      name: admin_key
+      description: Admin key in query parameter
 
   parameters:
     StoreName:

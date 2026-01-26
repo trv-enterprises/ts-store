@@ -91,6 +91,7 @@ Options:
   --socket <path> Override Unix socket path
 
 Environment Variables:
+  TSSTORE_ADMIN_KEY    Admin key for store creation (required, min 20 chars)
   TSSTORE_HOST         Server host (default: 0.0.0.0)
   TSSTORE_PORT         Server port (default: 21080)
   TSSTORE_MODE         Server mode: debug or release (default: release)
@@ -174,6 +175,14 @@ func runServer(args []string) {
 		cfg.Server.SocketPath = socketPathOverride
 	}
 
+	// Validate admin key
+	if cfg.Server.AdminKey == "" {
+		log.Fatal("Admin key required: set TSSTORE_ADMIN_KEY environment variable or admin_key in config")
+	}
+	if len(cfg.Server.AdminKey) < 20 {
+		log.Fatal("Admin key must be at least 20 characters")
+	}
+
 	// Ensure data directory exists
 	if err := os.MkdirAll(cfg.Store.BasePath, 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
@@ -211,11 +220,11 @@ func runServer(args []string) {
 	// API routes
 	api := router.Group("/api")
 	{
-		// Store management (no auth for create, list)
+		// Store management
 		stores := api.Group("/stores")
 		{
-			stores.POST("", storeHandler.Create) // Create new store (returns API key)
-			stores.GET("", storeHandler.List)    // List open stores
+			stores.POST("", middleware.AdminAuth(cfg.Server.AdminKey), storeHandler.Create) // Create new store (requires admin key)
+			stores.GET("", storeHandler.List)                                               // List open stores (no auth)
 		}
 
 		// Store-specific operations (require auth)
