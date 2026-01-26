@@ -305,6 +305,8 @@ DELETE /api/stores/:store/data/time/:timestamp
 X-API-Key: <api-key>
 ```
 
+**Note:** This is a soft delete. The data is excluded from API responses and WebSocket streams, but remains on disk until the block is overwritten as the circular buffer wraps. This is sufficient for hiding accidental data entries from clients.
+
 #### List Oldest Data (requires auth)
 ```
 GET /api/stores/:store/data/oldest?limit=10&include_data=true
