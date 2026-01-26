@@ -380,6 +380,8 @@ Server sends messages:
 {"type": "error", "message": "..."}
 ```
 
+**Slow client behavior:** WebSocket readers poll the store every 100ms for new data. If a client falls behind and the circular buffer wraps (oldest data gets reclaimed), the client will silently skip to the current oldest available data. There is no gap notification - the client simply continues from wherever the store's tail currently is. For use cases requiring guaranteed delivery, size the store appropriately or use a persistent queue architecture.
+
 #### Inbound Write Stream
 ```
 GET /api/stores/:store/ws/write?api_key=<key>&format=full
