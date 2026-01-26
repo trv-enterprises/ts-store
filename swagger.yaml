@@ -5,8 +5,9 @@ info:
     Time series database API using a circular file architecture.
 
     ## Authentication
-    Most endpoints require an API key passed via:
+    Most endpoints require an API key passed via (checked in order):
     - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+    - Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
     - Query parameter: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
     API keys are generated when creating a store and shown only once.
@@ -122,6 +123,7 @@ paths:
       description: Permanently deletes a store and all its data.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -149,6 +151,7 @@ paths:
       description: Returns detailed statistics about the store.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -170,6 +173,7 @@ paths:
       description: Insert base64-encoded data with optional timestamp.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -203,6 +207,7 @@ paths:
       description: Retrieve data by its exact timestamp.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -227,6 +232,7 @@ paths:
       description: Retrieve all data within a time range.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -268,6 +274,7 @@ paths:
       description: Returns the oldest timestamp in the store.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -300,6 +307,7 @@ paths:
       description: Returns the newest timestamp in the store.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -332,6 +340,7 @@ paths:
       description: Store base64-encoded object data. Small objects are packed together, large objects span multiple blocks.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -365,6 +374,7 @@ paths:
       description: Retrieve an object by its exact timestamp.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -388,6 +398,7 @@ paths:
       description: Delete an object by its timestamp.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -416,6 +427,7 @@ paths:
       description: Returns handles for the N oldest objects (without data).
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -438,6 +450,7 @@ paths:
       description: Returns handles for the N newest objects (without data). Supports relative time queries with `since` parameter.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -467,6 +480,7 @@ paths:
       description: Returns handles for objects within a time range. Use `since` or `start_time`/`end_time`.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -508,6 +522,7 @@ paths:
       description: Store a JSON object directly (no base64 encoding needed).
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -547,6 +562,7 @@ paths:
       description: Retrieve a JSON object by its exact timestamp.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -585,6 +601,7 @@ paths:
       description: Returns the N oldest JSON objects with their data.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -607,6 +624,7 @@ paths:
       description: Returns the N newest JSON objects with their data. Supports relative time queries with `since` parameter.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -636,6 +654,7 @@ paths:
       description: Returns JSON objects within a time range. Use `since` or `start_time`/`end_time`.
       security:
         - ApiKeyHeader: []
+        - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
@@ -675,7 +694,11 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: API key in header
+      description: API key in X-API-Key header
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key in Authorization Bearer header
     ApiKeyQuery:
       type: apiKey
       in: query
