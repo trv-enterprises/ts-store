@@ -356,7 +356,7 @@ paths:
       tags:
         - Data
       summary: List oldest data objects
-      description: Returns the N oldest data objects. Use `include_data=true` to include the actual data content.
+      description: Returns the N oldest data objects with data. Use `include_data=false` to return metadata only.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -383,7 +383,7 @@ paths:
       tags:
         - Data
       summary: List newest data objects
-      description: Returns the N newest data objects. Supports relative time queries with `since` parameter. Use `include_data=true` to include the actual data content.
+      description: Returns the N newest data objects with data. Supports relative time queries with `since` parameter. Use `include_data=false` to return metadata only.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -748,7 +748,7 @@ components:
           example: 64
         data:
           description: |
-            Data content (only present if include_data=true).
+            Data content (omitted if include_data=false).
             Format depends on store type:
             - binary: base64-encoded string
             - text: UTF-8 string
