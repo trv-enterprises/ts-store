@@ -52,6 +52,7 @@ When the circular buffer is full, the oldest block (at tail) is automatically re
 - **Crash recovery** - Metadata is persisted after each operation
 - **REST API server** - HTTP API with per-store API key authentication
 - **WebSocket streaming** - Real-time data streaming with inbound and outbound modes
+- **Unix socket ingestion** - Low-latency local data ingestion for high-frequency sensors
 - **Edge-friendly** - Small footprint, no external database dependencies
 - **Flexible object sizes** - Small objects pack together, large objects span multiple blocks
 
@@ -111,6 +112,7 @@ This design maintains security - key management requires container access, while
 | `TSSTORE_HOST` | `0.0.0.0` | Server bind address |
 | `TSSTORE_PORT` | `21080` | Server port |
 | `TSSTORE_MODE` | `release` | Gin mode (debug/release) |
+| `TSSTORE_SOCKET_PATH` | `/var/run/tsstore/tsstore.sock` | Unix socket path |
 
 ## REST API Server
 
@@ -133,7 +135,8 @@ Create `config.json`:
   "server": {
     "host": "0.0.0.0",
     "port": 21080,
-    "mode": "release"
+    "mode": "release",
+    "socket_path": "/var/run/tsstore/tsstore.sock"
   },
   "store": {
     "base_path": "./data",
@@ -149,6 +152,7 @@ Environment variables:
 - `TSSTORE_PORT` - Server port
 - `TSSTORE_MODE` - "debug" or "release"
 - `TSSTORE_DATA_PATH` - Base path for stores
+- `TSSTORE_SOCKET_PATH` - Unix socket path (empty to disable)
 - `TSSTORE_CONFIG` - Config file path
 
 ### Authentication
@@ -458,6 +462,64 @@ X-API-Key: <api-key>
 ```
 
 Outbound connections automatically reconnect with exponential backoff (1s to 60s max) and resume from the last sent timestamp.
+
+### Unix Socket (Low-Latency Local Ingestion)
+
+For high-frequency local data ingestion with minimal overhead, ts-store provides a Unix domain socket interface. This eliminates HTTP overhead and is ideal for sensor data collection on edge devices.
+
+**Configuration:**
+
+By default, the socket is created at `/var/run/tsstore/tsstore.sock`. Override with:
+- Environment: `TSSTORE_SOCKET_PATH=/path/to/socket.sock`
+- Config: `{"server": {"socket_path": "/path/to/socket.sock"}}`
+- CLI: `tsstore serve --socket /path/to/socket.sock`
+- Disable: `tsstore serve --no-socket`
+
+**Protocol:**
+
+1. Connect to the Unix socket
+2. Send authentication: `AUTH <store-name> <api-key>\n`
+3. Receive response: `OK\n` or `ERROR <message>\n`
+4. Send JSON data lines: `{"field": "value"}\n`
+5. Receive per-line response: `OK <timestamp>\n` or `ERROR <message>\n`
+6. Send `QUIT\n` to disconnect
+
+**Example (using netcat):**
+```bash
+(
+echo "AUTH my-store tsstore_xxxx-xxxx-xxxx"
+echo '{"temp": 22.5, "humidity": 45.2}'
+echo '{"temp": 22.6, "humidity": 45.1}'
+echo "QUIT"
+) | nc -U /var/run/tsstore/tsstore.sock
+```
+
+**Example (Python):**
+```python
+import socket
+import json
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+sock.connect('/var/run/tsstore/tsstore.sock')
+
+# Authenticate
+sock.send(b'AUTH my-store tsstore_xxxx-xxxx-xxxx\n')
+response = sock.recv(1024)  # OK\n
+
+# Send data
+data = {"temp": 22.5, "humidity": 45.2}
+sock.send((json.dumps(data) + '\n').encode())
+response = sock.recv(1024)  # OK <timestamp>\n
+
+sock.send(b'QUIT\n')
+sock.close()
+```
+
+**Benefits over HTTP:**
+- ~10x lower latency (microseconds vs milliseconds)
+- No TCP/HTTP overhead
+- Persistent connection for streaming data
+- Ideal for high-frequency sensor sampling (100Hz+)
 
 ### CLI Store Management
 

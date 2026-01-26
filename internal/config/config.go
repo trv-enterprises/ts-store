@@ -19,9 +19,10 @@ type Config struct {
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
-	Mode string `json:"mode"` // "debug" or "release"
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	Mode       string `json:"mode"`        // "debug" or "release"
+	SocketPath string `json:"socket_path"` // Unix socket path (empty to disable)
 }
 
 // StoreConfig holds default store settings.
@@ -36,9 +37,10 @@ type StoreConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host: "0.0.0.0",
-			Port: 21080,
-			Mode: "release",
+			Host:       "0.0.0.0",
+			Port:       21080,
+			Mode:       "release",
+			SocketPath: "/var/run/tsstore/tsstore.sock",
 		},
 		Store: StoreConfig{
 			BasePath:       "./data",
@@ -101,6 +103,9 @@ func (c *Config) LoadFromEnv() {
 	}
 	if basePath := os.Getenv("TSSTORE_DATA_PATH"); basePath != "" {
 		c.Store.BasePath = basePath
+	}
+	if socketPath := os.Getenv("TSSTORE_SOCKET_PATH"); socketPath != "" {
+		c.Server.SocketPath = socketPath
 	}
 }
 

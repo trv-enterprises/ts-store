@@ -24,6 +24,7 @@ import (
 	"github.com/tviviano/ts-store/internal/handlers"
 	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/service"
+	"github.com/tviviano/ts-store/internal/unixsock"
 )
 
 const (
@@ -40,7 +41,7 @@ func main() {
 
 	switch command {
 	case "serve":
-		runServer()
+		runServer(os.Args[2:])
 	case "create":
 		runCreateCommand(os.Args[2:])
 	case "key":
@@ -77,6 +78,24 @@ Commands:
   version   Show version
 
 Use "tsstore <command> -h" for more information about a command.`)
+}
+
+func printServeUsage() {
+	fmt.Println(`tsstore serve - Start the API server
+
+Usage:
+  tsstore serve [options]
+
+Options:
+  --no-socket    Disable Unix socket listener
+  --socket <path> Override Unix socket path
+
+Environment Variables:
+  TSSTORE_HOST         Server host (default: 0.0.0.0)
+  TSSTORE_PORT         Server port (default: 21080)
+  TSSTORE_MODE         Server mode: debug or release (default: release)
+  TSSTORE_DATA_PATH    Base path for store data (default: ./data)
+  TSSTORE_SOCKET_PATH  Unix socket path (default: /var/run/tsstore/tsstore.sock)`)
 }
 
 func printCreateUsage() {
@@ -116,7 +135,26 @@ Examples:
   tsstore key revoke my-store a1b2c3d4`)
 }
 
-func runServer() {
+func runServer(args []string) {
+	// Parse serve options
+	noSocket := false
+	socketPathOverride := ""
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			printServeUsage()
+			return
+		case "--no-socket":
+			noSocket = true
+		case "--socket":
+			if i+1 < len(args) {
+				i++
+				socketPathOverride = args[i]
+			}
+		}
+	}
+
 	// Load configuration
 	configPath := defaultConfigPath
 	if envPath := os.Getenv("TSSTORE_CONFIG"); envPath != "" {
@@ -128,6 +166,13 @@ func runServer() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 	cfg.LoadFromEnv()
+
+	// Apply command-line overrides
+	if noSocket {
+		cfg.Server.SocketPath = ""
+	} else if socketPathOverride != "" {
+		cfg.Server.SocketPath = socketPathOverride
+	}
 
 	// Ensure data directory exists
 	if err := os.MkdirAll(cfg.Store.BasePath, 0755); err != nil {
@@ -225,7 +270,7 @@ func runServer() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start server in goroutine
+	// Start HTTP server in goroutine
 	go func() {
 		log.Printf("Starting tsstore server on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -233,12 +278,29 @@ func runServer() {
 		}
 	}()
 
+	// Start Unix socket listener if configured
+	var sockListener *unixsock.Listener
+	if cfg.Server.SocketPath != "" {
+		sockListener = unixsock.NewListener(cfg.Server.SocketPath, storeService, keyManager)
+		if err := sockListener.Start(); err != nil {
+			log.Printf("Warning: Unix socket listener failed to start: %v", err)
+			sockListener = nil
+		}
+	}
+
 	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down server...")
+
+	// Stop Unix socket listener
+	if sockListener != nil {
+		if err := sockListener.Stop(); err != nil {
+			log.Printf("Error stopping Unix socket listener: %v", err)
+		}
+	}
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
