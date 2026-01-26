@@ -96,7 +96,14 @@ Environment Variables:
   TSSTORE_PORT         Server port (default: 21080)
   TSSTORE_MODE         Server mode: debug or release (default: release)
   TSSTORE_DATA_PATH    Base path for store data (default: ./data)
-  TSSTORE_SOCKET_PATH  Unix socket path (default: /var/run/tsstore/tsstore.sock)`)
+  TSSTORE_SOCKET_PATH  Unix socket path (default: /var/run/tsstore/tsstore.sock)
+  TSSTORE_TLS_CERT     Path to TLS certificate file (enables HTTPS if set with TLS_KEY)
+  TSSTORE_TLS_KEY      Path to TLS private key file (enables HTTPS if set with TLS_CERT)
+
+TLS:
+  If both TSSTORE_TLS_CERT and TSSTORE_TLS_KEY are provided, the server will use
+  HTTPS. Otherwise, it falls back to HTTP. WebSocket connections (ws://, wss://)
+  automatically use the same protocol as the HTTP server.`)
 }
 
 func printCreateUsage() {
@@ -181,6 +188,20 @@ func runServer(args []string) {
 	}
 	if len(cfg.Server.AdminKey) < 20 {
 		log.Fatal("Admin key must be at least 20 characters")
+	}
+
+	// Validate TLS configuration if partially provided
+	if (cfg.Server.TLS.CertFile != "") != (cfg.Server.TLS.KeyFile != "") {
+		log.Fatal("TLS requires both cert and key: set both TSSTORE_TLS_CERT and TSSTORE_TLS_KEY")
+	}
+	if cfg.TLSEnabled() {
+		// Verify cert and key files exist
+		if _, err := os.Stat(cfg.Server.TLS.CertFile); os.IsNotExist(err) {
+			log.Fatalf("TLS certificate file not found: %s", cfg.Server.TLS.CertFile)
+		}
+		if _, err := os.Stat(cfg.Server.TLS.KeyFile); os.IsNotExist(err) {
+			log.Fatalf("TLS key file not found: %s", cfg.Server.TLS.KeyFile)
+		}
 	}
 
 	// Ensure data directory exists
@@ -279,11 +300,18 @@ func runServer(args []string) {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start HTTP server in goroutine
+	// Start server in goroutine (HTTPS if TLS configured, HTTP otherwise)
 	go func() {
-		log.Printf("Starting tsstore server on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+		if cfg.TLSEnabled() {
+			log.Printf("Starting tsstore server on %s (HTTPS)", addr)
+			if err := srv.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Server error: %v", err)
+			}
+		} else {
+			log.Printf("Starting tsstore server on %s (HTTP)", addr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Server error: %v", err)
+			}
 		}
 	}()
 

@@ -25,7 +25,9 @@ info:
 
 servers:
   - url: http://localhost:21080
-    description: Local development server
+    description: Local development server (HTTP)
+  - url: https://localhost:21080
+    description: Local development server (HTTPS, if TLS configured)
 
 tags:
   - name: Health

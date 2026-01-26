@@ -19,11 +19,18 @@ type Config struct {
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Mode       string `json:"mode"`        // "debug" or "release"
-	SocketPath string `json:"socket_path"` // Unix socket path (empty to disable)
-	AdminKey   string `json:"admin_key"`   // Admin key for store management (min 20 chars)
+	Host       string    `json:"host"`
+	Port       int       `json:"port"`
+	Mode       string    `json:"mode"`        // "debug" or "release"
+	SocketPath string    `json:"socket_path"` // Unix socket path (empty to disable)
+	AdminKey   string    `json:"admin_key"`   // Admin key for store management (min 20 chars)
+	TLS        TLSConfig `json:"tls"`         // TLS configuration (optional)
+}
+
+// TLSConfig holds TLS/HTTPS settings.
+type TLSConfig struct {
+	CertFile string `json:"cert_file"` // Path to TLS certificate file
+	KeyFile  string `json:"key_file"`  // Path to TLS private key file
 }
 
 // StoreConfig holds default store settings.
@@ -111,6 +118,17 @@ func (c *Config) LoadFromEnv() {
 	if adminKey := os.Getenv("TSSTORE_ADMIN_KEY"); adminKey != "" {
 		c.Server.AdminKey = adminKey
 	}
+	if tlsCert := os.Getenv("TSSTORE_TLS_CERT"); tlsCert != "" {
+		c.Server.TLS.CertFile = tlsCert
+	}
+	if tlsKey := os.Getenv("TSSTORE_TLS_KEY"); tlsKey != "" {
+		c.Server.TLS.KeyFile = tlsKey
+	}
+}
+
+// TLSEnabled returns true if TLS is configured with both cert and key files.
+func (c *Config) TLSEnabled() bool {
+	return c.Server.TLS.CertFile != "" && c.Server.TLS.KeyFile != ""
 }
 
 func parseEnvInt(s string, v *int) (int, error) {
