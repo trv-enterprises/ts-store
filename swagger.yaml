@@ -175,10 +175,13 @@ paths:
     post:
       tags:
         - Stores
-      summary: Reset store
+      summary: Reset store (soft reset)
       description: |
-        Clears all data from the store but keeps configuration, schema, and API keys.
+        Performs a soft reset of the store - clears all data but keeps configuration, schema, and API keys.
         Use this to start fresh without recreating the store.
+
+        **Note:** This is a soft reset. Old data remains on disk until overwritten by new data.
+        The reset operation is O(1) and completes instantly regardless of store size.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []

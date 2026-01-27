@@ -320,9 +320,11 @@ func (s *Store) Delete() error {
 	return os.RemoveAll(path)
 }
 
-// Reset clears all data from the store and reinitializes it.
+// Reset performs a soft reset of the store by resetting metadata pointers.
 // This is useful for recovering from clock issues or starting fresh.
-// All existing data will be lost.
+// Old data becomes inaccessible and will be overwritten as new data arrives.
+// Note: This is a SOFT reset - old data remains on disk until overwritten.
+// This is an O(1) operation - it only writes the metadata and clears block 0's index.
 func (s *Store) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -331,27 +333,16 @@ func (s *Store) Reset() error {
 		return ErrStoreClosed
 	}
 
-	// Reset metadata to initial state
+	// Reset metadata to initial state - this makes all existing data inaccessible
+	// The circular buffer will overwrite old blocks naturally as new data arrives
 	s.meta.HeadBlock = 0
 	s.meta.TailBlock = 0
 	s.meta.WriteOffset = 0
 
-	// Clear all index entries
+	// Clear block 0's index entry so readers don't see stale data
 	emptyEntry := make([]byte, block.IndexEntrySize)
-	for i := uint32(0); i < s.meta.NumBlocks; i++ {
-		offset := s.indexOffset(i)
-		if _, err := s.indexFile.WriteAt(emptyEntry, offset); err != nil {
-			return fmt.Errorf("failed to clear index entry %d: %w", i, err)
-		}
-	}
-
-	// Clear all block headers
-	emptyHeader := make([]byte, block.BlockHeaderSize)
-	for i := uint32(0); i < s.meta.NumBlocks; i++ {
-		offset := s.blockOffset(i)
-		if _, err := s.dataFile.WriteAt(emptyHeader, offset); err != nil {
-			return fmt.Errorf("failed to clear block header %d: %w", i, err)
-		}
+	if _, err := s.indexFile.WriteAt(emptyEntry, s.indexOffset(0)); err != nil {
+		return fmt.Errorf("failed to clear index entry: %w", err)
 	}
 
 	// Write updated metadata
@@ -360,10 +351,10 @@ func (s *Store) Reset() error {
 	}
 
 	// Sync files
-	if err := s.dataFile.Sync(); err != nil {
+	if err := s.indexFile.Sync(); err != nil {
 		return err
 	}
-	if err := s.indexFile.Sync(); err != nil {
+	if err := s.metaFile.Sync(); err != nil {
 		return err
 	}
 

@@ -879,16 +879,24 @@ This constraint has important implications:
 - Monitor for `ErrTimestampOutOfOrder` errors in production
 - Consider using `Reset()` to clear the store if clock issues corrupt the timeline
 
-## Reset Store
+## Reset Store (Soft Reset)
 
 If you need to clear all data from a store (e.g., after clock issues or for testing), use the Reset function:
 
 ```go
-// Reset clears all data and reinitializes the store
+// Reset performs a soft reset - clears pointers, old data remains until overwritten
 err := s.Reset()
 ```
 
-This clears all blocks and resets head/tail pointers, allowing inserts to start fresh.
+Or via the API:
+```bash
+curl -X POST "http://localhost:21080/api/stores/my-store/reset" \
+  -H "X-API-Key: <api-key>"
+```
+
+**Note:** This is a **soft reset**. It resets metadata pointers and clears the first block's index entry, making old data inaccessible. However, old data remains on disk until overwritten by new data. This is an O(1) operation that completes instantly regardless of store size.
+
+For a complete data wipe, delete and recreate the store.
 
 ## Limitations
 

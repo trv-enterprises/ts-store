@@ -8,7 +8,7 @@
 	"variable": [
 		{
 			"key": "baseUrl",
-			"value": "http://localhost:8080",
+			"value": "http://localhost:21080",
 			"type": "string"
 		},
 		{
@@ -19,6 +19,11 @@
 		{
 			"key": "apiKey",
 			"value": "tsstore_your-api-key-here",
+			"type": "string"
+		},
+		{
+			"key": "adminKey",
+			"value": "your-admin-key-min-20-chars",
 			"type": "string"
 		}
 	],
@@ -68,6 +73,10 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
+							},
+							{
+								"key": "X-Admin-Key",
+								"value": "{{adminKey}}"
 							}
 						],
 						"body": {
@@ -106,6 +115,10 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
+							},
+							{
+								"key": "X-Admin-Key",
+								"value": "{{adminKey}}"
 							}
 						],
 						"body": {
@@ -167,6 +180,24 @@
 							"path": ["api", "stores", "{{storeName}}"]
 						},
 						"description": "Delete a store and all its data"
+					}
+				},
+				{
+					"name": "Reset Store (Soft Reset)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/reset",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "reset"]
+						},
+						"description": "Soft reset - clears all data but keeps configuration, schema, and API keys. Old data remains on disk until overwritten. This is an O(1) operation."
 					}
 				}
 			]
@@ -286,7 +317,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/oldest?limit=10&include_data=true",
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/oldest?limit=10",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "data", "oldest"],
 							"query": [
@@ -297,7 +328,8 @@
 								{
 									"key": "include_data",
 									"value": "true",
-									"description": "Include data in response (default: false)"
+									"description": "Include data in response (default: true)",
+									"disabled": true
 								}
 							]
 						},
@@ -315,7 +347,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?limit=10&include_data=true",
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?limit=10",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "data", "newest"],
 							"query": [
@@ -325,7 +357,9 @@
 								},
 								{
 									"key": "include_data",
-									"value": "true"
+									"value": "true",
+									"description": "Include data in response (default: true)",
+									"disabled": true
 								}
 							]
 						},
@@ -343,7 +377,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?since=1h&limit=100&include_data=true",
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?since=1h&limit=100",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "data", "newest"],
 							"query": [
@@ -358,7 +392,9 @@
 								},
 								{
 									"key": "include_data",
-									"value": "true"
+									"value": "true",
+									"description": "Include data in response (default: true)",
+									"disabled": true
 								}
 							]
 						},
@@ -376,7 +412,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/range?start_time=1704067200000000000&end_time=1704153600000000000&limit=100&include_data=true",
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/range?start_time=1704067200000000000&end_time=1704153600000000000&limit=100",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "data", "range"],
 							"query": [
@@ -394,7 +430,9 @@
 								},
 								{
 									"key": "include_data",
-									"value": "true"
+									"value": "true",
+									"description": "Include data in response (default: true)",
+									"disabled": true
 								}
 							]
 						},
@@ -412,7 +450,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/range?since=24h&limit=100&include_data=true",
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/range?since=24h&limit=100",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "data", "range"],
 							"query": [
@@ -427,7 +465,9 @@
 								},
 								{
 									"key": "include_data",
-									"value": "true"
+									"value": "true",
+									"description": "Include data in response (default: true)",
+									"disabled": true
 								}
 							]
 						},
@@ -521,7 +561,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?limit=10&include_data=true&format=full",
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?limit=10&format=full",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "data", "newest"],
 							"query": [
@@ -531,7 +571,9 @@
 								},
 								{
 									"key": "include_data",
-									"value": "true"
+									"value": "true",
+									"description": "Include data in response (default: true)",
+									"disabled": true
 								},
 								{
 									"key": "format",
@@ -554,7 +596,7 @@
 							}
 						],
 						"url": {
-							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?limit=10&include_data=true&format=compact",
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/data/newest?limit=10&format=compact",
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "data", "newest"],
 							"query": [
@@ -564,7 +606,9 @@
 								},
 								{
 									"key": "include_data",
-									"value": "true"
+									"value": "true",
+									"description": "Include data in response (default: true)",
+									"disabled": true
 								},
 								{
 									"key": "format",
