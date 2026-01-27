@@ -455,11 +455,14 @@ Server responds:
 
 Create outbound connections where ts-store connects to remote servers.
 
+**Note:** This API only manages **outbound** connections (where ts-store initiates the connection to a remote server). **Inbound** connections (where clients connect to `/ws/read` or `/ws/write`) are not tracked or listed here - they remain open as long as the client maintains them.
+
 **List Connections:**
 ```
 GET /api/stores/:store/ws/connections
 X-API-Key: <api-key>
 ```
+Returns only outbound connections created via POST.
 
 **Create Connection:**
 ```
