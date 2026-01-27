@@ -207,50 +207,6 @@ func TestRangeQuery(t *testing.T) {
 	}
 }
 
-func TestReclaimByTimeRange(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfig()
-	cfg.Name = "test-store"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	baseTime := time.Now().UnixNano()
-
-	// Insert 20 entries
-	for i := 0; i < 20; i++ {
-		ts := baseTime + int64(i*1000000000)
-		_, err := s.Insert(ts, []byte("data"))
-		if err != nil {
-			t.Fatalf("Insert %d failed: %v", i, err)
-		}
-	}
-
-	// Reclaim entries 5-10
-	startTime := baseTime + int64(5*1000000000)
-	endTime := baseTime + int64(10*1000000000)
-
-	if err := s.ReclaimByTimeRange(startTime, endTime); err != nil {
-		t.Fatalf("Reclaim by time failed: %v", err)
-	}
-
-	// Verify blocks were reclaimed (tail advanced)
-	stats := s.Stats()
-	t.Logf("After reclaim: HeadBlock=%d, TailBlock=%d", stats.HeadBlock, stats.TailBlock)
-
-	// Verify entries are gone
-	_, err = s.FindBlockByTimeExact(baseTime + int64(7*1000000000))
-	if err != ErrTimestampNotFound {
-		t.Errorf("Expected reclaimed entry to be gone, got %v", err)
-	}
-}
-
 func TestDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 

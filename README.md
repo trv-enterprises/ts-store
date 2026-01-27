@@ -48,7 +48,6 @@ When the circular buffer is full, the oldest block (at tail) is automatically re
 - **Configurable block sizes** - Separate power-of-2 sizes for data blocks and index blocks
 - **Multiple stores per process** - Each store is fully independent
 - **Range queries** - Efficiently find all blocks within a time range
-- **Time-based or block-based reclaim** - Free specific ranges of data
 - **Crash recovery** - Metadata is persisted after each operation
 - **REST API server** - HTTP API with per-store API key authentication
 - **WebSocket streaming** - Real-time data streaming with inbound and outbound modes
@@ -692,19 +691,6 @@ for _, blockNum := range blocks {
     data, _ := s.ReadBlockData(blockNum)
     // process data...
 }
-```
-
-### Reclaiming Space
-
-```go
-// Reclaim by block number (clears index entry, tail advances when it reaches this block)
-s.Reclaim(blockNum)
-
-// Reclaim blocks up to a specific block number
-s.ReclaimUpTo(targetBlock)
-
-// Reclaim by time range (finds closest matches)
-s.ReclaimByTimeRange(startTime, endTime)
 ```
 
 ### Object API (High-Level)

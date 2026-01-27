@@ -100,60 +100,8 @@ func (s *Store) InsertNow(data []byte) (uint32, error) {
 	return s.Insert(time.Now().UnixNano(), data)
 }
 
-// ReclaimByTimeRange clears blocks within a time range.
-// In a circular buffer, this clears index entries. The blocks will be
-// reused when the tail advances to their positions.
-func (s *Store) ReclaimByTimeRange(startTime, endTime int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
-	}
-
-	if startTime > endTime {
-		return ErrInvalidTimestamp
-	}
-
-	count := s.activeBlockCount()
-	if count == 0 {
-		return nil
-	}
-
-	// Find start offset (first block >= startTime)
-	startOffset := s.findOffsetForTimeLocked(startTime, 0, count-1, true)
-
-	// Find end offset (last block <= endTime)
-	endOffset := s.findOffsetForTimeLocked(endTime, 0, count-1, false)
-
-	if startOffset > endOffset {
-		return nil
-	}
-
-	// Clear index entries for blocks from startOffset to endOffset
-	for offset := startOffset; offset <= endOffset; offset++ {
-		blockNum := s.blockNumFromOffset(offset)
-
-		entry, err := s.readIndexEntry(blockNum)
-		if err != nil {
-			continue
-		}
-
-		// Verify the block is within time range
-		if entry.Timestamp >= startTime && entry.Timestamp <= endTime {
-			if err := s.clearIndexEntry(blockNum); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Adjust tail if we cleared the tail blocks
-	s.adjustTailAfterReclaim()
-
-	return s.writeMetaLocked()
-}
-
 // adjustTailAfterReclaim moves the tail forward past any free/empty blocks.
+// Used by delete operations to advance tail when deleting from the oldest end.
 func (s *Store) adjustTailAfterReclaim() {
 	for {
 		entry, err := s.readIndexEntry(s.meta.TailBlock)
@@ -174,57 +122,4 @@ func (s *Store) adjustTailAfterReclaim() {
 		}
 		s.meta.TailBlock = nextTail
 	}
-}
-
-// Reclaim explicitly reclaims a block by block number.
-// In a circular buffer, this clears the index entry. The block will be
-// reused when the tail advances to this position.
-func (s *Store) Reclaim(blockNum uint32) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
-	}
-
-	if blockNum >= s.meta.NumBlocks {
-		return ErrBlockOutOfRange
-	}
-
-	// Clear the index entry
-	if err := s.clearIndexEntry(blockNum); err != nil {
-		return err
-	}
-
-	// If this was the tail block, advance the tail
-	s.adjustTailAfterReclaim()
-
-	return s.writeMetaLocked()
-}
-
-// ReclaimByTime reclaims the block closest to the given timestamp.
-// In a circular buffer, this clears the index entry. The block will be
-// reused when the tail advances to this position.
-func (s *Store) ReclaimByTime(timestamp int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
-	}
-
-	blockNum, err := s.findBlockByTimeLocked(timestamp)
-	if err != nil {
-		return err
-	}
-
-	// Clear the index entry
-	if err := s.clearIndexEntry(blockNum); err != nil {
-		return err
-	}
-
-	// If this was the tail block, advance the tail
-	s.adjustTailAfterReclaim()
-
-	return s.writeMetaLocked()
 }
