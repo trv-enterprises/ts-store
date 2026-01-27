@@ -252,6 +252,16 @@ func (s *StoreService) Stats(name string) (*store.StoreStats, error) {
 	return &stats, nil
 }
 
+// Reset clears all data from a store but keeps configuration and API keys.
+func (s *StoreService) Reset(name string) error {
+	st, err := s.GetOrOpen(name)
+	if err != nil {
+		return err
+	}
+
+	return st.Reset()
+}
+
 // CloseAll closes all open stores.
 func (s *StoreService) CloseAll() error {
 	s.mu.Lock()

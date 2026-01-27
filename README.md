@@ -252,6 +252,13 @@ DELETE /api/stores/:store
 X-API-Key: <api-key>
 ```
 
+#### Reset Store (requires auth)
+```
+POST /api/stores/:store/reset
+X-API-Key: <api-key>
+```
+Clears all data from the store but keeps configuration, schema, and API keys. Useful for starting fresh without recreating the store.
+
 #### Get Store Stats (requires auth)
 ```
 GET /api/stores/:store/stats

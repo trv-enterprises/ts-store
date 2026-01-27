@@ -171,6 +171,36 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/stores/{store}/reset:
+    post:
+      tags:
+        - Stores
+      summary: Reset store
+      description: |
+        Clears all data from the store but keeps configuration, schema, and API keys.
+        Use this to start fresh without recreating the store.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Store reset
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: store reset
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/stores/{store}/stats:
     get:
       tags:

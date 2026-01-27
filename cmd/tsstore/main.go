@@ -253,6 +253,7 @@ func runServer(args []string) {
 		storeRoutes.Use(middleware.Auth(keyManager))
 		{
 			storeRoutes.DELETE("", storeHandler.Delete)
+			storeRoutes.POST("/reset", storeHandler.Reset)
 			storeRoutes.GET("/stats", storeHandler.Stats)
 
 			// Unified data endpoint

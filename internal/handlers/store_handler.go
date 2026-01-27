@@ -74,3 +74,16 @@ func (h *StoreHandler) List(c *gin.Context) {
 	stores := h.storeService.ListOpen()
 	c.JSON(http.StatusOK, gin.H{"stores": stores})
 }
+
+// Reset handles POST /api/stores/:store/reset
+// Clears all data but keeps store configuration and API keys.
+func (h *StoreHandler) Reset(c *gin.Context) {
+	storeName := c.Param("store")
+
+	if err := h.storeService.Reset(storeName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "store reset"})
+}
