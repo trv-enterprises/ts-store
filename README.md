@@ -1,18 +1,24 @@
 # ts-store
 
-A time series database using a circular file architecture, inspired by work from 1978. Designed for fixed-size storage with predictable memory and disk usage.
+A lightweight, embedded time series database with a fixed storage footprint. Built for edge devices and IoT applications where you need file-based persistence without database infrastructure.
 
-## Overview
+## Why ts-store
 
-ts-store implements a circular buffer-based storage system optimized for time series data. The design ensures:
+Most time series databases fall into two camps: lightweight tools that aggregate your data (losing the raw readings), or full database engines that grow unbounded and require significant infrastructure.
 
-- **Fixed storage footprint** - Total size is determined at creation time
-- **Automatic reclamation** - Oldest data is automatically reclaimed when space is needed
-- **O(log n) time lookups** - Binary search on sorted timestamps
-- **Multi-object packing** - Multiple small objects can share a single block for efficiency
-- **Large object spanning** - Objects larger than a block automatically span multiple blocks
+ts-store takes a different approach:
 
-### Architecture
+- **Fixed storage footprint** - Total size is determined at creation time. No unbounded growth, no retention policies to tune, no midnight cleanup jobs.
+- **Raw data preservation** - No lossy downsampling or rollup aggregation. Every sensor reading is stored exactly as received. Critical for anomaly detection, ML training, and forensic analysis.
+- **Circular buffer architecture** - When storage is full, the oldest data is automatically overwritten. The store is always the same size whether it holds one reading or a million.
+- **Zero external dependencies** - No database server, no runtime, no configuration management. A single binary and flat files on disk.
+- **O(log n) time lookups** - Binary search on sorted timestamps for fast range queries, not just sequential access.
+
+ts-store is designed for environments where you care about the last N readings with exact values: edge sensors, embedded systems, Raspberry Pi deployments, or any application where predictable resource usage matters more than unbounded retention.
+
+## Architecture
+
+ts-store implements a circular buffer-based storage system optimized for time series data. Multiple small objects pack into a single block for efficiency, and objects larger than a block automatically span multiple blocks.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
