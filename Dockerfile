@@ -1,7 +1,7 @@
 # Copyright (c) 2026 TRV Enterprises LLC
 # Licensed under the PolyForm Noncommercial License 1.0.0
 
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
