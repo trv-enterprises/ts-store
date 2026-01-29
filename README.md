@@ -368,6 +368,8 @@ Only objects containing the filter substring are returned. When filtering is act
 
 Schema stores use a compact JSON format where field names are replaced with numeric indices. This reduces storage space significantly for structured data with known schemas.
 
+**Important:** Schema stores expect flat JSON with dot-notation field names. Nested JSON objects are not supported. Use field names like `"cpu.pct"` and `"memory.total"` instead of nested structures like `{"cpu": {"pct": 5}}`.
+
 #### Get Current Schema
 ```
 GET /api/stores/:store/schema
