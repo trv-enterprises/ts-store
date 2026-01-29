@@ -1,3 +1,6 @@
+# Environment (contains local settings)
+.env
+
 # Binaries
 *.exe
 *.exe~
@@ -5,6 +8,7 @@
 *.so
 *.dylib
 /tsstore
+tsstore-linux-*
 /bin/
 
 # Test binary, built with `go test -c`
