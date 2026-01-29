@@ -21,24 +21,24 @@ ts-store is designed for environments where you care about the last N readings w
 ts-store implements a circular buffer-based storage system optimized for time series data. Multiple small objects pack into a single block for efficiency, and objects larger than a block automatically span multiple blocks.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Circular Data Blocks                      │
+┌────────────────────────────────────────────────────────────┐
+│                    Circular Data Blocks                    │
 │  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐      │
 │  │  0  │──│  1  │──│  2  │──│  3  │──│  4  │──│  5  │──... │
 │  │     │  │     │  │     │  │     │  │     │  │     │      │
 │  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘      │
-│     ↑                                   ↑                    │
-│    tail                               head                   │
-│  (oldest)                           (newest)                 │
-└─────────────────────────────────────────────────────────────┘
+│     ↑                                   ↑                  │
+│    tail                               head                 │
+│  (oldest)                           (newest)               │
+└────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────┐
-│                    Circular Index                            │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │ [ts₀, blk₀] [ts₁, blk₁] [ts₂, blk₂] ... [tsₙ, blkₙ]  │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                    Binary search for O(log n) lookups        │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                    Circular Index                          │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ [ts₀, blk₀] [ts₁, blk₁] [ts₂, blk₂] ... [tsₙ, blkₙ]    │ │
+│  └───────────────────────────────────────────────────────┘ │
+│                    Binary search for O(log n) lookups      │
+└────────────────────────────────────────────────────────────┘
 ```
 
 **Key concepts:**

@@ -11,11 +11,11 @@ See LICENSE file for details.
 ```
 BlockHeader (24 bytes):
 +----------------------------------------------------------+
-| Timestamp (8 bytes)                                       |
+| Timestamp (8 bytes)                                      |
 +----------------------------------------------------------+
 | DataLen (4 bytes)    | Flags (4 bytes)                   |
 +----------------------------------------------------------+
-| Reserved (8 bytes)                                        |
+| Reserved (8 bytes)                                       |
 +----------------------------------------------------------+
 
 Flags:
@@ -32,7 +32,7 @@ Note: Block number is NOT stored - it's calculated from file offset:
 ```
 IndexEntry (16 bytes):
 +----------------------------------------------------------+
-| Timestamp (8 bytes)                                       |
+| Timestamp (8 bytes)                                      |
 +----------------------------------------------------------+
 | BlockNum (4 bytes)   | Reserved (4 bytes)                |
 +----------------------------------------------------------+
@@ -467,7 +467,8 @@ sensor-data/
 ├── index.tsdb
 ├── meta.tsdb
 ├── keys.json
-└── ws_connections.json    <-- WebSocket configs
+├── schema.json            <-- Schema (schema-type stores only)
+└── ws_connections.json    <-- WebSocket configs (only if configured)
 
 ws_connections.json:
 {
@@ -583,15 +584,16 @@ my-store/
 ├── data.tsdb
 ├── index.tsdb
 ├── meta.tsdb
-├── keys.json          <── API key hashes (bcrypt)
-└── ws_connections.json
+├── keys.json              <── API key hashes (SHA-256)
+├── schema.json            <── Schema definition (schema-type stores only)
+└── ws_connections.json    <── Outbound WS configs (only if configured)
 
 keys.json structure:
 {
   "keys": [
     {
       "id": "a1b2c3d4",           // Short ID for reference
-      "hash": "$2a$10$...",       // bcrypt hash (not plaintext)
+      "hash": "6644572f...",      // SHA-256 hash (not plaintext)
       "created_at": "2024-01-01T00:00:00Z"
     }
   ]
@@ -599,7 +601,7 @@ keys.json structure:
 
 Security notes:
   - API keys shown only once at creation
-  - Only bcrypt hashes stored on disk
+  - Only SHA-256 hashes stored on disk
   - Admin key never stored (config/env only)
   - Constant-time comparison prevents timing attacks
 ```
@@ -613,12 +615,15 @@ GET  /health                      No               -
 GET  /api/stores                  No               -
 POST /api/stores                  Yes              Admin Key
 DELETE /api/stores/:store         Yes              Store API Key
+POST /api/stores/:store/reset     Yes              Store API Key
 GET  /api/stores/:store/stats     Yes              Store API Key
 POST /api/stores/:store/data      Yes              Store API Key
 GET  /api/stores/:store/data/*    Yes              Store API Key
+DELETE /api/stores/:store/data/*  Yes              Store API Key
 GET  /api/stores/:store/schema    Yes              Store API Key
 PUT  /api/stores/:store/schema    Yes              Store API Key
 GET  /api/stores/:store/ws/*      Yes              Store API Key
+*/api/stores/:store/ws/conns/*    Yes              Store API Key
 Unix Socket AUTH                  Yes              Store API Key
 ```
 
