@@ -804,9 +804,17 @@ func runCalcCommand(args []string) {
 	for _, objSize := range objectSizes {
 		totalObjSize := objSize + objectHeaderSize
 		if totalObjSize > usablePerBlock {
-			// Object spans blocks - simplified: assume 1 object per block
-			fmt.Printf("  %5d bytes    %13s    %13s (spanning)\n",
-				objSize, "~1", formatNumber(uint64(numBlocks)))
+			// Object spans multiple blocks
+			// First block: usablePerBlock - objectHeaderSize bytes of data
+			// Continuation blocks: usablePerBlock bytes of data each
+			firstBlockData := usablePerBlock - objectHeaderSize
+			remaining := objSize - firstBlockData
+			// Number of continuation blocks needed
+			contBlocks := (remaining + usablePerBlock - 1) / usablePerBlock
+			blocksPerObject := 1 + contBlocks
+			totalObjects := uint64(numBlocks) / uint64(blocksPerObject)
+			fmt.Printf("  %5d bytes    %13s    %13s (spans %d blocks)\n",
+				objSize, "<1", formatNumber(totalObjects), blocksPerObject)
 		} else {
 			objectsPerBlock := usablePerBlock / totalObjSize
 			totalObjects := uint64(numBlocks) * uint64(objectsPerBlock)
