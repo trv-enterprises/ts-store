@@ -896,6 +896,30 @@ func formatBytes(bytes uint64) string {
 	}
 }
 
+// mqttConnectionForStatus is a minimal struct for reading MQTT config
+type mqttConnectionForStatus struct {
+	ID        string `json:"id"`
+	BrokerURL string `json:"broker_url"`
+	Topic     string `json:"topic"`
+}
+
+// loadMQTTConnections reads MQTT connections config from a store directory.
+func loadMQTTConnections(storePath string) []mqttConnectionForStatus {
+	configPath := filepath.Join(storePath, "mqtt_connections.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+
+	var config struct {
+		Connections []mqttConnectionForStatus `json:"connections"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil
+	}
+	return config.Connections
+}
+
 func printStatusUsage() {
 	fmt.Println(`tsstore status - Show status of all stores
 
@@ -905,17 +929,24 @@ Usage:
 Options:
   --path <dir>   Base directory for stores (default: ./data or TSSTORE_DATA_PATH)
   --json         Output in JSON format
+  --offline      Skip server check, only read files directly
+
+The command will attempt to connect to the running server (via config) to get
+runtime information like active connections. If the server is not running,
+it falls back to reading store files directly.
 
 Examples:
   tsstore status
   tsstore status --path /var/tsstore
-  tsstore status --json`)
+  tsstore status --json
+  tsstore status --offline`)
 }
 
 func runStatusCommand(args []string) {
 	// Parse options
 	basePath := ""
 	jsonOutput := false
+	offlineMode := false
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -929,6 +960,8 @@ func runStatusCommand(args []string) {
 			}
 		case "--json":
 			jsonOutput = true
+		case "--offline":
+			offlineMode = true
 		}
 	}
 
@@ -949,13 +982,220 @@ func runStatusCommand(args []string) {
 		cfg.Store.BasePath = basePath
 	}
 
+	// Try to get status from running server
+	if !offlineMode {
+		if statusFromServer(cfg, jsonOutput) {
+			return
+		}
+	}
+
+	// Fall back to reading files directly
+	statusFromFiles(cfg, jsonOutput)
+}
+
+// statusFromServer attempts to get status from the running server.
+// Returns true if successful, false if server is not reachable.
+func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
+	// Build server URL
+	scheme := "http"
+	if cfg.TLSEnabled() {
+		scheme = "https"
+	}
+	host := cfg.Server.Host
+	if host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	baseURL := fmt.Sprintf("%s://%s:%d", scheme, host, cfg.Server.Port)
+
+	// Check if server is running with a health check
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(baseURL + "/health")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	// Get list of stores
+	resp, err = client.Get(baseURL + "/api/stores")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var storesResp struct {
+		Stores []string `json:"stores"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&storesResp); err != nil {
+		return false
+	}
+
+	type connectionInfo struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		URL    string `json:"url,omitempty"`
+		Broker string `json:"broker_url,omitempty"`
+		Topic  string `json:"topic,omitempty"`
+	}
+
+	type storeStatus struct {
+		Name            string           `json:"name"`
+		DataType        string           `json:"data_type"`
+		NumBlocks       uint32           `json:"num_blocks"`
+		DataBlockSize   uint32           `json:"data_block_size"`
+		ActiveBlocks    uint32           `json:"active_blocks"`
+		UsagePercent    float64          `json:"usage_percent"`
+		OldestTime      string           `json:"oldest_time,omitempty"`
+		NewestTime      string           `json:"newest_time,omitempty"`
+		FileSizeBytes   uint64           `json:"file_size_bytes"`
+		FileSizeHuman   string           `json:"file_size_human"`
+		WSConnections   []connectionInfo `json:"ws_connections,omitempty"`
+		MQTTConnections []connectionInfo `json:"mqtt_connections,omitempty"`
+		Error           string           `json:"error,omitempty"`
+	}
+
+	stores := make([]storeStatus, 0)
+
+	// For each store, we need to read files for size (API doesn't expose this)
+	// and query API for stats and connections
+	for _, storeName := range storesResp.Stores {
+		status := storeStatus{Name: storeName}
+
+		// Get stats from API (requires auth, so read from files instead)
+		st, err := store.Open(cfg.Store.BasePath, storeName)
+		if err != nil {
+			status.Error = err.Error()
+			stores = append(stores, status)
+			continue
+		}
+
+		stats := st.Stats()
+		st.Close()
+
+		status.DataType = stats.DataType
+		status.NumBlocks = stats.NumBlocks
+		status.DataBlockSize = stats.DataBlockSize
+		status.ActiveBlocks = stats.ActiveBlocks
+		if stats.NumBlocks > 0 {
+			status.UsagePercent = float64(stats.ActiveBlocks) / float64(stats.NumBlocks) * 100
+		}
+		status.OldestTime = stats.OldestTime
+		status.NewestTime = stats.NewestTime
+
+		// Calculate file size
+		metaPath := filepath.Join(cfg.Store.BasePath, storeName, "meta.tsdb")
+		dataPath := filepath.Join(cfg.Store.BasePath, storeName, "data.tsdb")
+		indexPath := filepath.Join(cfg.Store.BasePath, storeName, "index.tsdb")
+		var totalSize uint64
+		if fi, err := os.Stat(dataPath); err == nil {
+			totalSize += uint64(fi.Size())
+		}
+		if fi, err := os.Stat(indexPath); err == nil {
+			totalSize += uint64(fi.Size())
+		}
+		if fi, err := os.Stat(metaPath); err == nil {
+			totalSize += uint64(fi.Size())
+		}
+		status.FileSizeBytes = totalSize
+		status.FileSizeHuman = formatBytes(totalSize)
+
+		// Load WS connections from file (API requires auth)
+		if wsConns, err := st.LoadWSConnections(); err == nil && wsConns != nil {
+			for _, conn := range wsConns.Connections {
+				status.WSConnections = append(status.WSConnections, connectionInfo{
+					ID:     conn.ID,
+					Status: "configured",
+					URL:    conn.URL,
+				})
+			}
+		}
+
+		// Load MQTT connections from file
+		mqttConns := loadMQTTConnections(filepath.Join(cfg.Store.BasePath, storeName))
+		for _, conn := range mqttConns {
+			status.MQTTConnections = append(status.MQTTConnections, connectionInfo{
+				ID:     conn.ID,
+				Status: "configured",
+				Broker: conn.BrokerURL,
+				Topic:  conn.Topic,
+			})
+		}
+
+		stores = append(stores, status)
+	}
+
+	if jsonOutput {
+		output, _ := json.MarshalIndent(struct {
+			ServerRunning bool          `json:"server_running"`
+			ServerURL     string        `json:"server_url"`
+			Stores        []storeStatus `json:"stores"`
+		}{
+			ServerRunning: true,
+			ServerURL:     baseURL,
+			Stores:        stores,
+		}, "", "  ")
+		fmt.Println(string(output))
+		return true
+	}
+
+	// Text output
+	fmt.Printf("=== Store Status ===\n")
+	fmt.Printf("Server: %s (running)\n\n", baseURL)
+
+	if len(stores) == 0 {
+		fmt.Println("No stores open")
+		return true
+	}
+
+	for _, s := range stores {
+		fmt.Printf("Store: %s\n", s.Name)
+		if s.Error != "" {
+			fmt.Printf("  Error: %s\n", s.Error)
+			fmt.Println()
+			continue
+		}
+		fmt.Printf("  Type:         %s\n", s.DataType)
+		fmt.Printf("  Blocks:       %s / %s (%.1f%% used)\n",
+			formatNumber(uint64(s.ActiveBlocks)),
+			formatNumber(uint64(s.NumBlocks)),
+			s.UsagePercent)
+		fmt.Printf("  Block size:   %s\n", formatBytes(uint64(s.DataBlockSize)))
+		fmt.Printf("  Total size:   %s\n", s.FileSizeHuman)
+		if s.OldestTime != "" {
+			fmt.Printf("  Time range:   %s to %s\n", s.OldestTime, s.NewestTime)
+		} else {
+			fmt.Printf("  Time range:   (empty)\n")
+		}
+		if len(s.WSConnections) > 0 {
+			fmt.Printf("  WS connections: %d\n", len(s.WSConnections))
+			for _, c := range s.WSConnections {
+				fmt.Printf("    - %s: %s\n", c.ID[:8], c.URL)
+			}
+		}
+		if len(s.MQTTConnections) > 0 {
+			fmt.Printf("  MQTT connections: %d\n", len(s.MQTTConnections))
+			for _, c := range s.MQTTConnections {
+				fmt.Printf("    - %s: %s -> %s\n", c.ID[:8], c.Broker, c.Topic)
+			}
+		}
+		fmt.Println()
+	}
+
+	return true
+}
+
+// statusFromFiles reads store status directly from files.
+func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 	// Discover stores by looking for directories with meta.tsdb
 	entries, err := os.ReadDir(cfg.Store.BasePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			if jsonOutput {
-				fmt.Println("[]")
+				fmt.Println(`{"server_running": false, "stores": []}`)
 			} else {
+				fmt.Printf("Server: not running\n")
 				fmt.Printf("No stores found (data path: %s)\n", cfg.Store.BasePath)
 			}
 			return
@@ -963,18 +1203,27 @@ func runStatusCommand(args []string) {
 		log.Fatalf("Failed to read data directory: %v", err)
 	}
 
+	type connectionInfo struct {
+		ID     string `json:"id"`
+		URL    string `json:"url,omitempty"`
+		Broker string `json:"broker_url,omitempty"`
+		Topic  string `json:"topic,omitempty"`
+	}
+
 	type storeStatus struct {
-		Name            string `json:"name"`
-		DataType        string `json:"data_type"`
-		NumBlocks       uint32 `json:"num_blocks"`
-		DataBlockSize   uint32 `json:"data_block_size"`
-		ActiveBlocks    uint32 `json:"active_blocks"`
-		UsagePercent    float64 `json:"usage_percent"`
-		OldestTime      string `json:"oldest_time,omitempty"`
-		NewestTime      string `json:"newest_time,omitempty"`
-		FileSizeBytes   uint64 `json:"file_size_bytes"`
-		FileSizeHuman   string `json:"file_size_human"`
-		Error           string `json:"error,omitempty"`
+		Name            string           `json:"name"`
+		DataType        string           `json:"data_type"`
+		NumBlocks       uint32           `json:"num_blocks"`
+		DataBlockSize   uint32           `json:"data_block_size"`
+		ActiveBlocks    uint32           `json:"active_blocks"`
+		UsagePercent    float64          `json:"usage_percent"`
+		OldestTime      string           `json:"oldest_time,omitempty"`
+		NewestTime      string           `json:"newest_time,omitempty"`
+		FileSizeBytes   uint64           `json:"file_size_bytes"`
+		FileSizeHuman   string           `json:"file_size_human"`
+		WSConnections   []connectionInfo `json:"ws_connections,omitempty"`
+		MQTTConnections []connectionInfo `json:"mqtt_connections,omitempty"`
+		Error           string           `json:"error,omitempty"`
 	}
 
 	stores := make([]storeStatus, 0)
@@ -1003,7 +1252,6 @@ func runStatusCommand(args []string) {
 		}
 
 		stats := st.Stats()
-		st.Close()
 
 		status.DataType = stats.DataType
 		status.NumBlocks = stats.NumBlocks
@@ -1031,23 +1279,50 @@ func runStatusCommand(args []string) {
 		status.FileSizeBytes = totalSize
 		status.FileSizeHuman = formatBytes(totalSize)
 
+		// Load WS connections from file
+		if wsConns, err := st.LoadWSConnections(); err == nil && wsConns != nil {
+			for _, conn := range wsConns.Connections {
+				status.WSConnections = append(status.WSConnections, connectionInfo{
+					ID:  conn.ID,
+					URL: conn.URL,
+				})
+			}
+		}
+
+		// Load MQTT connections from file
+		mqttConns := loadMQTTConnections(filepath.Join(cfg.Store.BasePath, storeName))
+		for _, conn := range mqttConns {
+			status.MQTTConnections = append(status.MQTTConnections, connectionInfo{
+				ID:     conn.ID,
+				Broker: conn.BrokerURL,
+				Topic:  conn.Topic,
+			})
+		}
+
+		st.Close()
 		stores = append(stores, status)
 	}
 
 	if jsonOutput {
-		// Output JSON
-		output, _ := json.MarshalIndent(stores, "", "  ")
+		output, _ := json.MarshalIndent(struct {
+			ServerRunning bool          `json:"server_running"`
+			Stores        []storeStatus `json:"stores"`
+		}{
+			ServerRunning: false,
+			Stores:        stores,
+		}, "", "  ")
 		fmt.Println(string(output))
 		return
 	}
 
 	// Text output
+	fmt.Printf("=== Store Status ===\n")
+	fmt.Printf("Server: not running\n\n")
+
 	if len(stores) == 0 {
 		fmt.Printf("No stores found (data path: %s)\n", cfg.Store.BasePath)
 		return
 	}
-
-	fmt.Printf("=== Store Status (%s) ===\n\n", cfg.Store.BasePath)
 
 	for _, s := range stores {
 		fmt.Printf("Store: %s\n", s.Name)
@@ -1067,6 +1342,18 @@ func runStatusCommand(args []string) {
 			fmt.Printf("  Time range:   %s to %s\n", s.OldestTime, s.NewestTime)
 		} else {
 			fmt.Printf("  Time range:   (empty)\n")
+		}
+		if len(s.WSConnections) > 0 {
+			fmt.Printf("  WS connections: %d (configured)\n", len(s.WSConnections))
+			for _, c := range s.WSConnections {
+				fmt.Printf("    - %s: %s\n", c.ID[:8], c.URL)
+			}
+		}
+		if len(s.MQTTConnections) > 0 {
+			fmt.Printf("  MQTT connections: %d (configured)\n", len(s.MQTTConnections))
+			for _, c := range s.MQTTConnections {
+				fmt.Printf("    - %s: %s -> %s\n", c.ID[:8], c.Broker, c.Topic)
+			}
 		}
 		fmt.Println()
 	}
