@@ -11,6 +11,7 @@ import (
 
 	"github.com/tviviano/ts-store/internal/apikey"
 	"github.com/tviviano/ts-store/internal/config"
+	"github.com/tviviano/ts-store/internal/mqtt"
 	"github.com/tviviano/ts-store/internal/ws"
 	"github.com/tviviano/ts-store/pkg/store"
 )
@@ -22,20 +23,22 @@ var (
 
 // StoreService manages store lifecycle and operations.
 type StoreService struct {
-	mu         sync.RWMutex
-	cfg        *config.Config
-	keyManager *apikey.Manager
-	stores     map[string]*store.Store  // storeName -> Store
-	wsManagers map[string]*ws.Manager   // storeName -> WS Manager
+	mu           sync.RWMutex
+	cfg          *config.Config
+	keyManager   *apikey.Manager
+	stores       map[string]*store.Store   // storeName -> Store
+	wsManagers   map[string]*ws.Manager    // storeName -> WS Manager
+	mqttManagers map[string]*mqtt.Manager  // storeName -> MQTT Manager
 }
 
 // NewStoreService creates a new store service.
 func NewStoreService(cfg *config.Config, keyManager *apikey.Manager) *StoreService {
 	return &StoreService{
-		cfg:        cfg,
-		keyManager: keyManager,
-		stores:     make(map[string]*store.Store),
-		wsManagers: make(map[string]*ws.Manager),
+		cfg:          cfg,
+		keyManager:   keyManager,
+		stores:       make(map[string]*store.Store),
+		wsManagers:   make(map[string]*ws.Manager),
+		mqttManagers: make(map[string]*mqtt.Manager),
 	}
 }
 
@@ -109,6 +112,11 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 	s.wsManagers[req.Name] = wsManager
 	go wsManager.LoadAndStart()
 
+	// Create and start MQTT manager for this store
+	mqttManager := mqtt.NewManager(st, req.Name)
+	s.mqttManagers[req.Name] = mqttManager
+	go mqttManager.LoadAndStart()
+
 	return &CreateStoreResponse{
 		Name:   req.Name,
 		APIKey: apiKey,
@@ -137,6 +145,11 @@ func (s *StoreService) Open(name string) error {
 	s.wsManagers[name] = wsManager
 	go wsManager.LoadAndStart()
 
+	// Create and start MQTT manager for this store
+	mqttManager := mqtt.NewManager(st, name)
+	s.mqttManagers[name] = mqttManager
+	go mqttManager.LoadAndStart()
+
 	return nil
 }
 
@@ -150,7 +163,13 @@ func (s *StoreService) Close(name string) error {
 		return ErrStoreNotOpen
 	}
 
-	// Stop WS manager first
+	// Stop MQTT manager first
+	if manager, ok := s.mqttManagers[name]; ok {
+		manager.Stop()
+		delete(s.mqttManagers, name)
+	}
+
+	// Stop WS manager
 	if manager, ok := s.wsManagers[name]; ok {
 		manager.Stop()
 		delete(s.wsManagers, name)
@@ -169,7 +188,13 @@ func (s *StoreService) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Stop WS manager first
+	// Stop MQTT manager first
+	if manager, ok := s.mqttManagers[name]; ok {
+		manager.Stop()
+		delete(s.mqttManagers, name)
+	}
+
+	// Stop WS manager
 	if manager, ok := s.wsManagers[name]; ok {
 		manager.Stop()
 		delete(s.wsManagers, name)
@@ -226,6 +251,11 @@ func (s *StoreService) GetOrOpen(name string) (*store.Store, error) {
 	s.wsManagers[name] = wsManager
 	go wsManager.LoadAndStart()
 
+	// Create and start MQTT manager for this store
+	mqttManager := mqtt.NewManager(st, name)
+	s.mqttManagers[name] = mqttManager
+	go mqttManager.LoadAndStart()
+
 	return st, nil
 }
 
@@ -267,7 +297,13 @@ func (s *StoreService) CloseAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Stop all WS managers first
+	// Stop all MQTT managers first
+	for name, manager := range s.mqttManagers {
+		manager.Stop()
+		delete(s.mqttManagers, name)
+	}
+
+	// Stop all WS managers
 	for name, manager := range s.wsManagers {
 		manager.Stop()
 		delete(s.wsManagers, name)
@@ -289,4 +325,11 @@ func (s *StoreService) GetWSManager(name string) *ws.Manager {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.wsManagers[name]
+}
+
+// GetMQTTManager returns the MQTT manager for a store.
+func (s *StoreService) GetMQTTManager(name string) *mqtt.Manager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.mqttManagers[name]
 }

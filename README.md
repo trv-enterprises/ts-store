@@ -57,6 +57,7 @@ When the circular buffer is full, the oldest block (at tail) is automatically re
 - **Crash recovery** - Metadata is persisted after each operation
 - **REST API server** - HTTP API with per-store API key authentication
 - **WebSocket streaming** - Real-time data streaming with inbound and outbound modes
+- **MQTT sink** - Built-in MQTT publishing with cursor persistence and backpressure handling
 - **Unix socket ingestion** - Low-latency local data ingestion for high-frequency sensors
 - **Edge-friendly** - Small footprint, no external database dependencies
 - **Flexible object sizes** - Small objects pack together, large objects span multiple blocks
@@ -523,6 +524,78 @@ X-API-Key: <api-key>
 ```
 
 Outbound connections automatically reconnect with exponential backoff (1s to 60s max) and resume from the last sent timestamp.
+
+### MQTT Sink
+
+ts-store can publish data directly to an MQTT broker, maintaining its own cursor for crash recovery and respecting broker backpressure.
+
+**List MQTT Connections:**
+```
+GET /api/stores/:store/mqtt/connections
+X-API-Key: <api-key>
+```
+
+**Create MQTT Connection:**
+```
+POST /api/stores/:store/mqtt/connections
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "broker_url": "tcp://mqtt-broker:1883",
+  "topic": "sensors/temperature",
+  "from": 0,
+  "include_timestamp": true,
+  "cursor_persist_interval": 30,
+  "username": "optional",
+  "password": "optional"
+}
+```
+
+**Connection parameters:**
+- `broker_url` - MQTT broker URL (tcp:// or ssl://)
+- `topic` - MQTT topic to publish to
+- `from` - Start timestamp: `0`=oldest, `-1`=now, or specific nanosecond timestamp
+- `include_timestamp` - Wrap data with `{"timestamp": ..., "data": ...}`
+- `cursor_persist_interval` - Cursor persistence in seconds (see below)
+- `client_id` - Custom MQTT client ID (default: tsstore-<store>-<id>)
+- `username` / `password` - MQTT authentication
+
+**Cursor persistence options (`cursor_persist_interval`):**
+- `> 0` - Persist cursor every N seconds (resume from cursor on restart)
+- `0` - In-memory only, auto-reconnect on failure (default)
+- `-1` - No persistence, no auto-reconnect (one-shot mode, stays dead on failure)
+
+**Get Connection Status:**
+```
+GET /api/stores/:store/mqtt/connections/:id
+X-API-Key: <api-key>
+```
+
+Returns:
+```json
+{
+  "id": "abc123",
+  "broker_url": "tcp://mqtt-broker:1883",
+  "topic": "sensors/temperature",
+  "status": "connected",
+  "last_timestamp": 1234567890,
+  "messages_sent": 5000,
+  "errors": 0
+}
+```
+
+**Delete Connection:**
+```
+DELETE /api/stores/:store/mqtt/connections/:id
+X-API-Key: <api-key>
+```
+
+**Behavior:**
+- Uses QoS 1 (at least once delivery)
+- Blocks on each publish until broker ACKs
+- Auto-reconnects with exponential backoff (1s to 60s) unless `cursor_persist_interval: -1`
+- Schema stores are automatically expanded to JSON
 
 ### Unix Socket (Low-Latency Local Ingestion)
 

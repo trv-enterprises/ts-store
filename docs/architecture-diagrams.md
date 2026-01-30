@@ -505,6 +505,109 @@ On successful reconnect:
   - No duplicate data sent
 ```
 
+## MQTT Sink Architecture
+
+ts-store can publish data directly to an MQTT broker for integration with IoT platforms and message queues.
+
+### MQTT Connection Flow
+
+```
++----------+         +--------+         +--------+
+|  Store   |         | Pusher |         | Broker |
++----+-----+         +----+---+         +----+---+
+     |                    |                  |
+     |                    | Connect          |
+     |                    |----------------->|
+     |                    |                  |
+     |                    |<-- CONNACK ------|
+     |                    |                  |
+     | GetObjectsInRange  |                  |
+     |<-------------------|                  |
+     |                    |                  |
+     |--- handles ------->|                  |
+     |                    |                  |
+     |                    | PUBLISH (QoS 1)  |
+     |                    |----------------->|
+     |                    |                  |
+     |                    |<-- PUBACK -------|
+     |                    |                  |
+     |                    | Advance cursor   |
+     |                    |                  |
+     |                    |   (repeat)       |
+```
+
+### Cursor Persistence Options
+
+```
+cursor_persist_interval values:
+
+  > 0   Persist cursor every N seconds
+        On restart: resume from persisted cursor
+
+  = 0   In-memory cursor only (default)
+        On restart: replay from 'from' timestamp
+        Auto-reconnect on failure
+
+  = -1  No persistence, no auto-reconnect
+        On failure: connection dies permanently
+        Status changes to "failed"
+```
+
+### Start Position Options
+
+```
+from values:
+
+  = 0         Start from oldest data in store
+  = -1        Start from "now" (skip existing data)
+  = <timestamp>  Start from specific nanosecond timestamp
+```
+
+### MQTT Config Persistence
+
+```
+Store Directory:
+sensor-data/
+├── data.tsdb
+├── index.tsdb
+├── meta.tsdb
+├── keys.json
+├── schema.json
+├── ws_connections.json
+└── mqtt_connections.json    <-- MQTT configs
+
+mqtt_connections.json:
+{
+  "connections": [
+    {
+      "id": "abc123",
+      "broker_url": "tcp://broker:1883",
+      "topic": "sensors/data",
+      "from": 0,
+      "include_timestamp": true,
+      "cursor_persist_interval": 30,
+      "created_at": "2024-01-01T00:00:00Z"
+    }
+  ]
+}
+
+Cursor file (if persistence enabled):
+└── mqtt_abc123.cursor       <-- Persisted cursor timestamp
+```
+
+### MQTT vs WebSocket Push
+
+```
+Feature              MQTT Sink              WebSocket Push
+────────────────────────────────────────────────────────────
+Protocol             MQTT (QoS 1)           WebSocket
+Delivery             At least once          Best effort
+Backpressure         Blocks on PUBACK       Drops on slow client
+Cursor persist       Optional (configurable) No
+Broker required      Yes                    No (direct connect)
+Use case             IoT platforms, queues  Real-time dashboards
+```
+
 ## Security Architecture
 
 ts-store uses a two-tier authentication model to protect both administrative and data operations.
@@ -637,5 +740,6 @@ Unix Socket AUTH                  Yes              Store API Key
 | Data Block | Configurable | Actual object data storage |
 | StoreMetadata | 64 bytes | Store configuration and pointers |
 | WSConnection | Variable | Outbound WebSocket connection config |
+| MQTTConnection | Variable | MQTT sink connection config |
 | Admin Key | 20+ chars | Server-level authentication for store creation |
 | Store API Key | UUID format | Per-store authentication for data operations |

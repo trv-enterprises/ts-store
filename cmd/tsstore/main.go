@@ -237,6 +237,7 @@ func runServer(args []string) {
 	schemaHandler := handlers.NewSchemaHandler(storeService)
 	wsHandler := handlers.NewWSHandler(storeService)
 	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManager)
+	mqttHandler := handlers.NewMQTTHandler(storeService.GetMQTTManager)
 
 	// API routes
 	api := router.Group("/api")
@@ -287,6 +288,15 @@ func runServer(args []string) {
 				wsConns.POST("", wsConnHandler.Create)
 				wsConns.GET("/:id", wsConnHandler.Get)
 				wsConns.DELETE("/:id", wsConnHandler.Delete)
+			}
+
+			// MQTT sink connections
+			mqttConns := storeRoutes.Group("/mqtt/connections")
+			{
+				mqttConns.GET("", mqttHandler.List)
+				mqttConns.POST("", mqttHandler.Create)
+				mqttConns.GET("/:id", mqttHandler.Get)
+				mqttConns.DELETE("/:id", mqttHandler.Delete)
 			}
 		}
 	}
