@@ -786,6 +786,34 @@ func runCalcCommand(args []string) {
 	fmt.Printf("  meta.tsdb:   %d bytes\n", metadataSize)
 	fmt.Println()
 	fmt.Printf("Total footprint: %s (%s)\n", formatNumber(totalSize), formatBytes(totalSize))
+
+	// Object capacity estimates
+	// Each object has a 24-byte ObjectHeader, and blocks have 24-byte BlockHeader
+	// Usable space per block = blockSize - 24 (BlockHeader)
+	// Each object needs: ObjectHeader (24) + data
+	const blockHeaderSize = 24
+	const objectHeaderSize = 24
+	usablePerBlock := blockSize - blockHeaderSize
+
+	fmt.Println()
+	fmt.Println("Estimated object capacity:")
+	fmt.Println("  Object Size    Objects/Block    Total Objects")
+	fmt.Println("  -----------    -------------    -------------")
+
+	objectSizes := []uint32{64, 128, 256, 512, 1024, 2048}
+	for _, objSize := range objectSizes {
+		totalObjSize := objSize + objectHeaderSize
+		if totalObjSize > usablePerBlock {
+			// Object spans blocks - simplified: assume 1 object per block
+			fmt.Printf("  %5d bytes    %13s    %13s (spanning)\n",
+				objSize, "~1", formatNumber(uint64(numBlocks)))
+		} else {
+			objectsPerBlock := usablePerBlock / totalObjSize
+			totalObjects := uint64(numBlocks) * uint64(objectsPerBlock)
+			fmt.Printf("  %5d bytes    %13d    %13s\n",
+				objSize, objectsPerBlock, formatNumber(totalObjects))
+		}
+	}
 }
 
 // formatNumber formats a number with comma separators
