@@ -1,0 +1,411 @@
+<mxfile host="app.diagrams.net" modified="2026-01-30T00:00:00.000Z" agent="Claude" version="22.0.0">
+  <diagram name="Architecture Overview" id="architecture-overview">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Main ts-store box -->
+        <mxCell id="main-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="300" y="120" width="500" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="main-title" value="ts-store" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="130" width="120" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Capabilities inside main box -->
+        <mxCell id="cap-circular" value="Circular Buffer&#xa;Storage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="320" y="180" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-index" value="Time-Based&#xa;Index" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="440" y="180" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-schema" value="Schema&#xa;Validation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="560" y="180" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-auth" value="API Key&#xa;Auth" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="680" y="180" width="100" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cap-range" value="Range&#xa;Queries" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="320" y="250" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-packed" value="Packed&#xa;Objects" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="440" y="250" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-spanning" value="Spanning&#xa;Objects" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="560" y="250" width="100" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-recovery" value="Crash&#xa;Recovery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="680" y="250" width="100" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cap-datatypes" value="Data Types&#xa;(binary/text/json/schema)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="380" y="320" width="160" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-multistore" value="Multi-Store&#xa;Management" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="560" y="320" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Input mechanisms (left side) -->
+        <mxCell id="input-http" value="HTTP REST API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="160" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="input-ws" value="WebSocket" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="220" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="input-socket" value="Unix Socket" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="280" width="120" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="input-cli" value="CLI Commands" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="80" y="340" width="120" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows from inputs to main box -->
+        <mxCell id="arrow-http" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.2;" edge="1" parent="1" source="input-http" target="main-box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-ws" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.4;" edge="1" parent="1" source="input-ws" target="main-box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-socket" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.6;" edge="1" parent="1" source="input-socket" target="main-box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-cli" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.8;" edge="1" parent="1" source="input-cli" target="main-box">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Output mechanisms (right side) -->
+        <mxCell id="output-wsout" value="WebSocket&#xa;Push/Pull" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="900" y="180" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="output-mqtt" value="MQTT&#xa;Sink" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="900" y="260" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="output-api" value="HTTP&#xa;Response" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="900" y="340" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows from main box to outputs -->
+        <mxCell id="arrow-wsout" style="endArrow=classic;html=1;exitX=1;exitY=0.25;entryX=0;entryY=0.5;" edge="1" parent="1" source="main-box" target="output-wsout">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-mqtt" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="main-box" target="output-mqtt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-api" style="endArrow=classic;html=1;exitX=1;exitY=0.75;entryX=0;entryY=0.5;" edge="1" parent="1" source="main-box" target="output-api">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Files (bottom) -->
+        <mxCell id="files-label" value="Store Files" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="470" width="120" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="file-data" value="data.tsdb&#xa;(circular buffer)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="240" y="500" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="file-index" value="index.tsdb&#xa;(time index)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="380" y="500" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="file-meta" value="meta.tsdb&#xa;(metadata)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="520" y="500" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="file-keys" value="keys.json&#xa;(API keys)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="660" y="500" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="file-schema" value="schema.json&#xa;(optional)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" vertex="1" parent="1">
+          <mxGeometry x="310" y="570" width="120" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="file-ws" value="ws_connections.json&#xa;(optional)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" vertex="1" parent="1">
+          <mxGeometry x="450" y="570" width="140" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="file-mqtt" value="mqtt_connections.json&#xa;(optional)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" vertex="1" parent="1">
+          <mxGeometry x="610" y="570" width="150" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows from main box to files -->
+        <mxCell id="arrow-files" style="endArrow=classic;startArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="main-box" target="file-meta">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend-box" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#666666;strokeDashArray=3 3;" vertex="1" parent="1">
+          <mxGeometry x="80" y="500" width="130" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-title" value="Legend" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="90" y="505" width="60" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-input" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="90" y="530" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-input-text" value="Input" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="115" y="527" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-output" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="90" y="550" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-output-text" value="Output" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="115" y="547" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-cap" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="90" y="570" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-cap-text" value="Capability" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="115" y="567" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-file" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="90" y="590" width="20" height="15" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-file-text" value="File" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="115" y="587" width="80" height="20" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="API Signatures" id="api-signatures">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Main ts-store box -->
+        <mxCell id="main-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="400" y="80" width="600" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="main-title" value="ts-store" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="90" width="120" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Store Management -->
+        <mxCell id="cap-stores" value="Store Management" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="420" y="130" width="140" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Data Operations -->
+        <mxCell id="cap-data" value="Data Operations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="580" y="130" width="140" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Schema -->
+        <mxCell id="cap-schema" value="Schema" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="740" y="130" width="100" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- WebSocket Streaming -->
+        <mxCell id="cap-wsstream" value="WebSocket Streaming" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="130" width="120" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Outbound Connections -->
+        <mxCell id="cap-outbound" value="Outbound Connections" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="420" y="400" width="560" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Input: HTTP REST API with signatures -->
+        <mxCell id="input-http" value="HTTP REST API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="300" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Store endpoints -->
+        <mxCell id="api-stores-list" value="GET /api/stores" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="120" width="140" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-stores-create" value="POST /api/stores" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="145" width="140" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-store-delete" value="DELETE /api/stores/:store" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="170" width="160" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-store-reset" value="POST /api/stores/:store/reset" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="195" width="180" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-store-stats" value="GET /api/stores/:store/stats" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="220" width="180" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Data endpoints -->
+        <mxCell id="api-data-post" value="POST /api/stores/:store/data" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="260" width="190" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-data-time" value="GET /api/stores/:store/data/time/:ts" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="285" width="220" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-data-time-del" value="DELETE /api/stores/:store/data/time/:ts" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="310" width="240" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-data-oldest" value="GET /api/stores/:store/data/oldest" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="335" width="220" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-data-newest" value="GET /api/stores/:store/data/newest" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="360" width="220" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-data-range" value="GET /api/stores/:store/data/range" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="385" width="220" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Schema endpoints -->
+        <mxCell id="api-schema-get" value="GET /api/stores/:store/schema" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="425" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-schema-put" value="PUT /api/stores/:store/schema" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="450" width="200" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- WebSocket streaming endpoints -->
+        <mxCell id="api-ws-read" value="GET /api/stores/:store/ws/read" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="490" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-ws-write" value="GET /api/stores/:store/ws/write" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="515" width="200" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- WS Connection management -->
+        <mxCell id="api-wsconn-list" value="GET /api/stores/:store/ws/connections" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="555" width="250" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-wsconn-create" value="POST /api/stores/:store/ws/connections" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="580" width="250" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-wsconn-get" value="GET /api/stores/:store/ws/connections/:id" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="605" width="260" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-wsconn-delete" value="DELETE /api/stores/:store/ws/connections/:id" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="630" width="280" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- MQTT Connection management -->
+        <mxCell id="api-mqtt-list" value="GET /api/stores/:store/mqtt/connections" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="670" width="260" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-mqtt-create" value="POST /api/stores/:store/mqtt/connections" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="695" width="260" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-mqtt-get" value="GET /api/stores/:store/mqtt/connections/:id" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="720" width="270" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="api-mqtt-delete" value="DELETE /api/stores/:store/mqtt/connections/:id" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="745" width="290" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Input: Unix Socket -->
+        <mxCell id="input-socket" value="Unix Socket" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="790" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="socket-auth" value="AUTH &lt;store&gt; &lt;key&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="820" width="140" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="socket-data" value="{json data}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="845" width="140" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="socket-quit" value="QUIT" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=5;" vertex="1" parent="1">
+          <mxGeometry x="40" y="870" width="140" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows from inputs to main box -->
+        <mxCell id="arrow-stores" style="endArrow=classic;html=1;entryX=0;entryY=0.15;" edge="1" parent="1" target="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="170" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-data" style="endArrow=classic;html=1;entryX=0;entryY=0.35;" edge="1" parent="1" target="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="320" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-schema" style="endArrow=classic;html=1;entryX=0;entryY=0.45;" edge="1" parent="1" target="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="437" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-wsstream" style="endArrow=classic;html=1;entryX=0;entryY=0.55;" edge="1" parent="1" target="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="502" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-wsconn" style="endArrow=classic;html=1;entryX=0;entryY=0.7;" edge="1" parent="1" target="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="592" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-mqttconn" style="endArrow=classic;html=1;entryX=0;entryY=0.85;" edge="1" parent="1" target="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="707" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-socket" style="endArrow=classic;html=1;entryX=0;entryY=0.95;" edge="1" parent="1" target="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="340" y="845" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Output: WebSocket Push/Pull -->
+        <mxCell id="output-ws" value="WebSocket&#xa;Push/Pull" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="200" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Output: MQTT Sink -->
+        <mxCell id="output-mqtt" value="MQTT&#xa;Broker" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="280" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Output: HTTP Response -->
+        <mxCell id="output-http" value="HTTP&#xa;Response" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="360" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows from main box to outputs -->
+        <mxCell id="arrow-out-ws" style="endArrow=classic;html=1;exitX=1;exitY=0.25;entryX=0;entryY=0.5;" edge="1" parent="1" source="main-box" target="output-ws">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-out-mqtt" style="endArrow=classic;html=1;exitX=1;exitY=0.4;entryX=0;entryY=0.5;" edge="1" parent="1" source="main-box" target="output-mqtt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-out-http" style="endArrow=classic;html=1;exitX=1;exitY=0.55;entryX=0;entryY=0.5;" edge="1" parent="1" source="main-box" target="output-http">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Files (bottom) -->
+        <mxCell id="files-label" value="Store Files (per store)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="600" y="620" width="200" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="file-data" value="data.tsdb" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="420" y="650" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="file-index" value="index.tsdb" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="510" y="650" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="file-meta" value="meta.tsdb" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="600" y="650" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="file-keys" value="keys.json" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="690" y="650" width="80" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="file-schema" value="schema.json" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;strokeDashArray=2 2;" vertex="1" parent="1">
+          <mxGeometry x="780" y="650" width="90" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="file-ws" value="ws_connections.json" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;strokeDashArray=2 2;" vertex="1" parent="1">
+          <mxGeometry x="880" y="650" width="120" height="30" as="geometry" />
+        </mxCell>
+
+        <mxCell id="file-mqtt" value="mqtt_connections.json" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;strokeDashArray=2 2;" vertex="1" parent="1">
+          <mxGeometry x="420" y="690" width="130" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="file-cursor" value="mqtt_&lt;id&gt;.cursor" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;strokeDashArray=2 2;" vertex="1" parent="1">
+          <mxGeometry x="560" y="690" width="110" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow from main to files -->
+        <mxCell id="arrow-files" style="endArrow=classic;startArrow=classic;html=1;exitX=0.5;exitY=1;" edge="1" parent="1" source="main-box">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="700" y="640" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
