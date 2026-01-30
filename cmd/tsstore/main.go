@@ -683,11 +683,13 @@ Options:
   --blocks <n>       Number of blocks (default: from config or 1024)
   --block-size <n>   Data block size in bytes (default: from config or 4096)
   --index-size <n>   Index block size in bytes (default: from config or 4096)
+  --object-size <n>  Calculate capacity for specific object size in bytes
 
 If no options provided, reads defaults from config file.
 
 Examples:
   tsstore calc --blocks 10000 --block-size 4096
+  tsstore calc --object-size 200
   tsstore calc`)
 }
 
@@ -696,6 +698,7 @@ func runCalcCommand(args []string) {
 	numBlocks := uint32(0)
 	blockSize := uint32(0)
 	indexBlockSize := uint32(0)
+	objectSize := uint32(0)
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -727,6 +730,15 @@ func runCalcCommand(args []string) {
 				fmt.Sscanf(args[i], "%d", &n)
 				if n > 0 {
 					indexBlockSize = uint32(n)
+				}
+			}
+		case "--object-size":
+			if i+1 < len(args) {
+				i++
+				var n int
+				fmt.Sscanf(args[i], "%d", &n)
+				if n > 0 {
+					objectSize = uint32(n)
 				}
 			}
 		}
@@ -795,31 +807,49 @@ func runCalcCommand(args []string) {
 	const objectHeaderSize = 24
 	usablePerBlock := blockSize - blockHeaderSize
 
+	// Object capacity calculation
 	fmt.Println()
-	fmt.Println("Estimated object capacity:")
-	fmt.Println("  Object Size    Objects/Block    Total Objects")
-	fmt.Println("  -----------    -------------    -------------")
-
-	objectSizes := []uint32{64, 128, 256, 512, 1024, 2048}
-	for _, objSize := range objectSizes {
-		totalObjSize := objSize + objectHeaderSize
+	if objectSize > 0 {
+		// Single object size specified
+		fmt.Printf("Object capacity for %d byte objects:\n", objectSize)
+		totalObjSize := objectSize + objectHeaderSize
 		if totalObjSize > usablePerBlock {
-			// Object spans multiple blocks
-			// First block: usablePerBlock - objectHeaderSize bytes of data
-			// Continuation blocks: usablePerBlock bytes of data each
 			firstBlockData := usablePerBlock - objectHeaderSize
-			remaining := objSize - firstBlockData
-			// Number of continuation blocks needed
+			remaining := objectSize - firstBlockData
 			contBlocks := (remaining + usablePerBlock - 1) / usablePerBlock
 			blocksPerObject := 1 + contBlocks
 			totalObjects := uint64(numBlocks) / uint64(blocksPerObject)
-			fmt.Printf("  %5d bytes    %13s    %13s (spans %d blocks)\n",
-				objSize, "<1", formatNumber(totalObjects), blocksPerObject)
+			fmt.Printf("  Blocks per object: %d\n", blocksPerObject)
+			fmt.Printf("  Total objects:     %s\n", formatNumber(totalObjects))
 		} else {
 			objectsPerBlock := usablePerBlock / totalObjSize
 			totalObjects := uint64(numBlocks) * uint64(objectsPerBlock)
-			fmt.Printf("  %5d bytes    %13d    %13s\n",
-				objSize, objectsPerBlock, formatNumber(totalObjects))
+			fmt.Printf("  Objects per block: %d\n", objectsPerBlock)
+			fmt.Printf("  Total objects:     %s\n", formatNumber(totalObjects))
+		}
+	} else {
+		// Show table of common sizes
+		fmt.Println("Estimated object capacity:")
+		fmt.Println("  Object Size    Objects/Block    Total Objects")
+		fmt.Println("  -----------    -------------    -------------")
+
+		objectSizes := []uint32{64, 128, 256, 512, 1024, 2048}
+		for _, objSize := range objectSizes {
+			totalObjSize := objSize + objectHeaderSize
+			if totalObjSize > usablePerBlock {
+				firstBlockData := usablePerBlock - objectHeaderSize
+				remaining := objSize - firstBlockData
+				contBlocks := (remaining + usablePerBlock - 1) / usablePerBlock
+				blocksPerObject := 1 + contBlocks
+				totalObjects := uint64(numBlocks) / uint64(blocksPerObject)
+				fmt.Printf("  %5d bytes    %13s    %13s (spans %d blocks)\n",
+					objSize, "<1", formatNumber(totalObjects), blocksPerObject)
+			} else {
+				objectsPerBlock := usablePerBlock / totalObjSize
+				totalObjects := uint64(numBlocks) * uint64(objectsPerBlock)
+				fmt.Printf("  %5d bytes    %13d    %13s\n",
+					objSize, objectsPerBlock, formatNumber(totalObjects))
+			}
 		}
 	}
 }
