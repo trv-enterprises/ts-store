@@ -52,10 +52,12 @@ func main() {
 		runKeyCommand(os.Args[2:])
 	case "swagger":
 		runSwaggerCommand()
+	case "calc":
+		runCalcCommand(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
-		fmt.Println("tsstore v0.1.0")
+		fmt.Println("tsstore v0.2.0")
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -73,6 +75,7 @@ Commands:
   serve     Start the API server
   create    Create a new store
   key       Manage API keys (requires device access)
+  calc      Calculate storage footprint
   swagger   Open Swagger UI in browser to explore the API
   help      Show this help message
   version   Show version
@@ -667,5 +670,157 @@ func openBrowser(url string) {
 
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("Failed to open browser: %v\nPlease open manually: %s\n", err, url)
+	}
+}
+
+func printCalcUsage() {
+	fmt.Println(`tsstore calc - Calculate storage footprint
+
+Usage:
+  tsstore calc [options]
+
+Options:
+  --blocks <n>       Number of blocks (default: from config or 1024)
+  --block-size <n>   Data block size in bytes (default: from config or 4096)
+  --index-size <n>   Index block size in bytes (default: from config or 4096)
+
+If no options provided, reads defaults from config file.
+
+Examples:
+  tsstore calc --blocks 10000 --block-size 4096
+  tsstore calc`)
+}
+
+func runCalcCommand(args []string) {
+	// Parse options
+	numBlocks := uint32(0)
+	blockSize := uint32(0)
+	indexBlockSize := uint32(0)
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			printCalcUsage()
+			return
+		case "--blocks":
+			if i+1 < len(args) {
+				i++
+				var n int
+				fmt.Sscanf(args[i], "%d", &n)
+				if n > 0 {
+					numBlocks = uint32(n)
+				}
+			}
+		case "--block-size":
+			if i+1 < len(args) {
+				i++
+				var n int
+				fmt.Sscanf(args[i], "%d", &n)
+				if n > 0 {
+					blockSize = uint32(n)
+				}
+			}
+		case "--index-size":
+			if i+1 < len(args) {
+				i++
+				var n int
+				fmt.Sscanf(args[i], "%d", &n)
+				if n > 0 {
+					indexBlockSize = uint32(n)
+				}
+			}
+		}
+	}
+
+	// Load config for defaults
+	configPath := defaultConfigPath
+	if envPath := os.Getenv("TSSTORE_CONFIG"); envPath != "" {
+		configPath = envPath
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	cfg.LoadFromEnv()
+
+	// Apply defaults from config if not specified
+	if numBlocks == 0 {
+		numBlocks = cfg.Store.NumBlocks
+	}
+	if blockSize == 0 {
+		blockSize = cfg.Store.DataBlockSize
+	}
+	if indexBlockSize == 0 {
+		indexBlockSize = cfg.Store.IndexBlockSize
+	}
+
+	// Constants
+	const indexEntrySize = 16 // 8-byte timestamp + 4-byte block num + 4-byte reserved
+	const metadataSize = 64   // meta.tsdb size
+
+	// Calculate sizes
+	dataFileSize := uint64(numBlocks) * uint64(blockSize)
+	indexFileSize := uint64(numBlocks) * uint64(indexEntrySize)
+	totalSize := dataFileSize + indexFileSize + metadataSize
+
+	// Print results
+	fmt.Println("=== Storage Footprint ===")
+	fmt.Println()
+	fmt.Printf("Configuration:\n")
+	fmt.Printf("  Blocks:           %s\n", formatNumber(uint64(numBlocks)))
+	fmt.Printf("  Data block size:  %s bytes\n", formatNumber(uint64(blockSize)))
+	fmt.Printf("  Index entry size: %d bytes\n", indexEntrySize)
+	fmt.Println()
+	fmt.Printf("Files:\n")
+	fmt.Printf("  data.tsdb:   %s × %s = %s (%s)\n",
+		formatNumber(uint64(numBlocks)),
+		formatNumber(uint64(blockSize)),
+		formatNumber(dataFileSize),
+		formatBytes(dataFileSize))
+	fmt.Printf("  index.tsdb:  %s × %d = %s (%s)\n",
+		formatNumber(uint64(numBlocks)),
+		indexEntrySize,
+		formatNumber(indexFileSize),
+		formatBytes(indexFileSize))
+	fmt.Printf("  meta.tsdb:   %d bytes\n", metadataSize)
+	fmt.Println()
+	fmt.Printf("Total footprint: %s (%s)\n", formatNumber(totalSize), formatBytes(totalSize))
+}
+
+// formatNumber formats a number with comma separators
+func formatNumber(n uint64) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+
+	var result []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, byte(c))
+	}
+	return string(result)
+}
+
+// formatBytes formats bytes as human-readable (KB, MB, GB)
+func formatBytes(bytes uint64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	switch {
+	case bytes >= GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(GB))
+	case bytes >= MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(MB))
+	case bytes >= KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
+	default:
+		return fmt.Sprintf("%d bytes", bytes)
 	}
 }
