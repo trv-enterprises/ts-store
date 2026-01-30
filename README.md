@@ -62,6 +62,9 @@ When the circular buffer is full, the oldest block (at tail) is automatically re
 - **Edge-friendly** - Small footprint, no external database dependencies
 - **Flexible object sizes** - Small objects pack together, large objects span multiple blocks
 
+[!NOTE]
+Additional logical and technical architecture diagrams can be found in ./docs
+
 ## Installation
 
 ```bash
