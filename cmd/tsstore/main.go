@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/service"
 	"github.com/tviviano/ts-store/internal/unixsock"
+	"github.com/tviviano/ts-store/pkg/store"
 )
 
 const (
@@ -54,6 +56,8 @@ func main() {
 		runSwaggerCommand()
 	case "calc":
 		runCalcCommand(os.Args[2:])
+	case "status":
+		runStatusCommand(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
@@ -74,6 +78,7 @@ Usage:
 Commands:
   serve     Start the API server
   create    Create a new store
+  status    Show status of all stores
   key       Manage API keys (requires device access)
   calc      Calculate storage footprint
   swagger   Open Swagger UI in browser to explore the API
@@ -888,5 +893,181 @@ func formatBytes(bytes uint64) string {
 		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(KB))
 	default:
 		return fmt.Sprintf("%d bytes", bytes)
+	}
+}
+
+func printStatusUsage() {
+	fmt.Println(`tsstore status - Show status of all stores
+
+Usage:
+  tsstore status [options]
+
+Options:
+  --path <dir>   Base directory for stores (default: ./data or TSSTORE_DATA_PATH)
+  --json         Output in JSON format
+
+Examples:
+  tsstore status
+  tsstore status --path /var/tsstore
+  tsstore status --json`)
+}
+
+func runStatusCommand(args []string) {
+	// Parse options
+	basePath := ""
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			printStatusUsage()
+			return
+		case "--path":
+			if i+1 < len(args) {
+				i++
+				basePath = args[i]
+			}
+		case "--json":
+			jsonOutput = true
+		}
+	}
+
+	// Load config for defaults
+	configPath := defaultConfigPath
+	if envPath := os.Getenv("TSSTORE_CONFIG"); envPath != "" {
+		configPath = envPath
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	cfg.LoadFromEnv()
+
+	// Override base path if specified
+	if basePath != "" {
+		cfg.Store.BasePath = basePath
+	}
+
+	// Discover stores by looking for directories with meta.tsdb
+	entries, err := os.ReadDir(cfg.Store.BasePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if jsonOutput {
+				fmt.Println("[]")
+			} else {
+				fmt.Printf("No stores found (data path: %s)\n", cfg.Store.BasePath)
+			}
+			return
+		}
+		log.Fatalf("Failed to read data directory: %v", err)
+	}
+
+	type storeStatus struct {
+		Name            string `json:"name"`
+		DataType        string `json:"data_type"`
+		NumBlocks       uint32 `json:"num_blocks"`
+		DataBlockSize   uint32 `json:"data_block_size"`
+		ActiveBlocks    uint32 `json:"active_blocks"`
+		UsagePercent    float64 `json:"usage_percent"`
+		OldestTime      string `json:"oldest_time,omitempty"`
+		NewestTime      string `json:"newest_time,omitempty"`
+		FileSizeBytes   uint64 `json:"file_size_bytes"`
+		FileSizeHuman   string `json:"file_size_human"`
+		Error           string `json:"error,omitempty"`
+	}
+
+	stores := make([]storeStatus, 0)
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		storeName := entry.Name()
+		metaPath := filepath.Join(cfg.Store.BasePath, storeName, "meta.tsdb")
+
+		// Check if this is a valid store directory
+		if _, err := os.Stat(metaPath); os.IsNotExist(err) {
+			continue
+		}
+
+		status := storeStatus{Name: storeName}
+
+		// Open the store to get stats
+		st, err := store.Open(cfg.Store.BasePath, storeName)
+		if err != nil {
+			status.Error = err.Error()
+			stores = append(stores, status)
+			continue
+		}
+
+		stats := st.Stats()
+		st.Close()
+
+		status.DataType = stats.DataType
+		status.NumBlocks = stats.NumBlocks
+		status.DataBlockSize = stats.DataBlockSize
+		status.ActiveBlocks = stats.ActiveBlocks
+		if stats.NumBlocks > 0 {
+			status.UsagePercent = float64(stats.ActiveBlocks) / float64(stats.NumBlocks) * 100
+		}
+		status.OldestTime = stats.OldestTime
+		status.NewestTime = stats.NewestTime
+
+		// Calculate file size
+		dataPath := filepath.Join(cfg.Store.BasePath, storeName, "data.tsdb")
+		indexPath := filepath.Join(cfg.Store.BasePath, storeName, "index.tsdb")
+		var totalSize uint64
+		if fi, err := os.Stat(dataPath); err == nil {
+			totalSize += uint64(fi.Size())
+		}
+		if fi, err := os.Stat(indexPath); err == nil {
+			totalSize += uint64(fi.Size())
+		}
+		if fi, err := os.Stat(metaPath); err == nil {
+			totalSize += uint64(fi.Size())
+		}
+		status.FileSizeBytes = totalSize
+		status.FileSizeHuman = formatBytes(totalSize)
+
+		stores = append(stores, status)
+	}
+
+	if jsonOutput {
+		// Output JSON
+		output, _ := json.MarshalIndent(stores, "", "  ")
+		fmt.Println(string(output))
+		return
+	}
+
+	// Text output
+	if len(stores) == 0 {
+		fmt.Printf("No stores found (data path: %s)\n", cfg.Store.BasePath)
+		return
+	}
+
+	fmt.Printf("=== Store Status (%s) ===\n\n", cfg.Store.BasePath)
+
+	for _, s := range stores {
+		fmt.Printf("Store: %s\n", s.Name)
+		if s.Error != "" {
+			fmt.Printf("  Error: %s\n", s.Error)
+			fmt.Println()
+			continue
+		}
+		fmt.Printf("  Type:         %s\n", s.DataType)
+		fmt.Printf("  Blocks:       %s / %s (%.1f%% used)\n",
+			formatNumber(uint64(s.ActiveBlocks)),
+			formatNumber(uint64(s.NumBlocks)),
+			s.UsagePercent)
+		fmt.Printf("  Block size:   %s\n", formatBytes(uint64(s.DataBlockSize)))
+		fmt.Printf("  Total size:   %s\n", s.FileSizeHuman)
+		if s.OldestTime != "" {
+			fmt.Printf("  Time range:   %s to %s\n", s.OldestTime, s.NewestTime)
+		} else {
+			fmt.Printf("  Time range:   (empty)\n")
+		}
+		fmt.Println()
 	}
 }
