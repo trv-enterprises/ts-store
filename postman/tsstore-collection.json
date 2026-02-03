@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "ts-store-api-collection",
 		"name": "TSStore API",
-		"description": "API collection for testing TSStore time series database.\n\nNote: WebSocket endpoints (/ws/read, /ws/write) cannot be tested directly in Postman. Use websocat or similar WebSocket clients.",
+		"description": "API collection for testing TSStore time series database.\n\nNote: WebSocket endpoint (/ws/write) cannot be tested directly in Postman. Use websocat or similar WebSocket clients.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"variable": [
@@ -624,7 +624,7 @@
 		},
 		{
 			"name": "WebSocket Connections",
-			"description": "Manage outbound WebSocket connections. Note: Inbound WebSocket endpoints (/ws/read, /ws/write) require a WebSocket client like websocat.",
+			"description": "Manage outbound WebSocket connections. Note: Inbound WebSocket endpoint (/ws/write) requires a WebSocket client like websocat.",
 			"item": [
 				{
 					"name": "List Connections",

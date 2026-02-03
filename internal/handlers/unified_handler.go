@@ -376,7 +376,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 }
 
 // ListRange handles GET /api/stores/:store/data/range
-// Supports ?start_time=X&end_time=Y or ?since=<duration>
+// Supports ?start_time=X&end_time=Y, ?since=<duration>, or ?after=<timestamp>
 func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -404,8 +404,10 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 
 	var handles []*store.ObjectHandle
 
-	// Check for since parameter first
+	// Check for since parameter first (relative duration)
 	sinceStr := c.Query("since")
+	afterStr := c.Query("after")
+
 	if sinceStr != "" {
 		duration, err := ParseDuration(sinceStr)
 		if err != nil {
@@ -417,25 +419,45 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+	} else if afterStr != "" {
+		// Cursor-based: get all records after the given timestamp
+		after, err := strconv.ParseInt(afterStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid after timestamp"})
+			return
+		}
+		// Use after+1 as start_time to exclude the cursor itself, 0 for unbounded end
+		handles, err = st.GetObjectsInRange(after+1, 0, fetchLimit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	} else {
-		// Use start_time/end_time
+		// Use start_time/end_time (both now optional, 0 means unbounded)
 		startTimeStr := c.Query("start_time")
 		endTimeStr := c.Query("end_time")
 
-		if startTimeStr == "" || endTimeStr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "start_time and end_time required (or use since parameter)"})
-			return
+		var startTime, endTime int64
+
+		if startTimeStr != "" {
+			startTime, err = strconv.ParseInt(startTimeStr, 10, 64)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
+				return
+			}
 		}
 
-		startTime, err := strconv.ParseInt(startTimeStr, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid start_time"})
-			return
+		if endTimeStr != "" {
+			endTime, err = strconv.ParseInt(endTimeStr, 10, 64)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+				return
+			}
 		}
 
-		endTime, err := strconv.ParseInt(endTimeStr, 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid end_time"})
+		// At least one parameter required
+		if startTimeStr == "" && endTimeStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "start_time, end_time, after, or since parameter required"})
 			return
 		}
 

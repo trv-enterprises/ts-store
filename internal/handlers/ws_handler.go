@@ -33,50 +33,6 @@ func NewWSHandler(storeService *service.StoreService) *WSHandler {
 	}
 }
 
-// Read handles GET /api/stores/:store/ws/read
-// Query params:
-//   - api_key: Required for authentication
-//   - from: Start point - Unix nanosecond timestamp or "now" (default: "now")
-//   - format: For schema stores - "compact" or "full" (default: "full")
-//   - filter: Substring to match in data (optional)
-//   - filter_ignore_case: "true" for case-insensitive matching (default: "false")
-func (h *WSHandler) Read(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Get query parameters
-	from := c.DefaultQuery("from", "now")
-	format := c.DefaultQuery("format", "full")
-	filter := c.Query("filter")
-	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
-
-	// Upgrade to WebSocket
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		// Upgrade already sends an error response
-		return
-	}
-
-	// Create and run reader
-	reader, err := newWSReader(conn, st, from, format, filter, filterIgnoreCase)
-	if err != nil {
-		conn.WriteJSON(WSReadMessage{
-			Type:    "error",
-			Message: err.Error(),
-		})
-		conn.Close()
-		return
-	}
-
-	// Run in the current goroutine (blocking)
-	reader.run()
-}
-
 // Write handles GET /api/stores/:store/ws/write
 // Query params:
 //   - api_key: Required for authentication

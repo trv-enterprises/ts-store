@@ -284,6 +284,7 @@ func (s *Store) GetObjectsSince(d time.Duration, limit int) ([]*ObjectHandle, er
 }
 
 // GetObjectsInRange returns objects with timestamps in [startTime, endTime].
+// Pass 0 for startTime to start from oldest, 0 for endTime to go until now.
 // Returns handles only, not data.
 func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*ObjectHandle, error) {
 	s.mu.RLock()
@@ -293,13 +294,27 @@ func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*Objec
 		return nil, ErrStoreClosed
 	}
 
-	if startTime > endTime {
-		return nil, ErrInvalidTimestamp
-	}
-
 	count := s.activeBlockCount()
 	if count == 0 {
 		return nil, nil
+	}
+
+	// Handle unbounded start time
+	if startTime == 0 {
+		oldest, err := s.getOldestTimestampLocked()
+		if err != nil {
+			return nil, nil // Empty store
+		}
+		startTime = oldest
+	}
+
+	// Handle unbounded end time
+	if endTime == 0 {
+		endTime = time.Now().UnixNano()
+	}
+
+	if startTime > endTime {
+		return nil, ErrInvalidTimestamp
 	}
 
 	// Find start block position

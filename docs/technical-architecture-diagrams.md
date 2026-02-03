@@ -344,7 +344,7 @@ Search for T=500:
 
 ## WebSocket Architecture
 
-ts-store supports real-time data streaming via WebSocket connections in both inbound and outbound modes.
+ts-store supports real-time data via WebSocket connections in both inbound and outbound modes.
 
 ### Connection Modes
 
@@ -353,50 +353,16 @@ INBOUND MODE:                         OUTBOUND MODE:
 
 Client ──WS──► ts-store               ts-store ──WS──► Remote Server
   │              │                       │                  │
-  │◄── data ─────┤ (read)               │─── data ────────►│ (push)
-  │─── data ────►│ (write)              │◄── data ─────────│ (pull)
+  │─── data ────►│ (write)              │─── data ────────►│ (push)
+                                         │◄── data ─────────│ (pull)
 ```
 
 **Inbound connections** - Clients connect to ts-store:
-- **Read**: Client receives real-time data stream from store
 - **Write**: Client sends data to store
 
 **Outbound connections** - ts-store connects to external servers:
 - **Push**: ts-store sends store data to remote server
 - **Pull**: ts-store receives data from remote server into store
-
-### WebSocket Message Flow (Inbound Read)
-
-```
-+--------+         +---------+         +-------+
-| Client |         | Handler |         | Store |
-+---+----+         +----+----+         +---+---+
-    |                   |                  |
-    | WS Connect        |                  |
-    | /ws/read?from=0   |                  |
-    |------------------>|                  |
-    |                   |                  |
-    |                   | GetObjectsInRange|
-    |                   |----------------->|
-    |                   |                  |
-    |                   |<-- handles ------|
-    |                   |                  |
-    | {"type":"data",   |                  |
-    |  "timestamp":..., |                  |
-    |  "data":...}      |                  |
-    |<------------------|                  |
-    |     (repeat for   |                  |
-    |      each object) |                  |
-    |                   |                  |
-    | {"type":          |                  |
-    |  "caught_up"}     |                  |
-    |<------------------|                  |
-    |                   |                  |
-    |    ... live       |                  |
-    |    streaming ...  | Poll for new    |
-    |                   |----------------->|
-    |                   |                  |
-```
 
 ### WebSocket Message Flow (Inbound Write)
 

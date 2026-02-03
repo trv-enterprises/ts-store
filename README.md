@@ -274,101 +274,7 @@ GET /api/stores/:store/stats
 X-API-Key: <api-key>
 ```
 
-### Data Endpoint
-
-The unified `/data` endpoint handles all data operations. Content-Type header must match the store's data type.
-
-#### Insert Data (requires auth)
-```
-POST /api/stores/:store/data
-X-API-Key: <api-key>
-Content-Type: application/json
-
-{
-  "timestamp": 1704067200000000000,
-  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
-}
-```
-Timestamp is optional (defaults to current time).
-
-Returns:
-```json
-{
-  "timestamp": 1704067200000000000,
-  "block_num": 5,
-  "size": 64
-}
-```
-
-#### Get Data by Timestamp (requires auth)
-```
-GET /api/stores/:store/data/time/:timestamp
-X-API-Key: <api-key>
-```
-Returns:
-```json
-{
-  "timestamp": 1704067200000000000,
-  "block_num": 5,
-  "size": 64,
-  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
-}
-```
-
-#### Delete Data by Timestamp (requires auth)
-```
-DELETE /api/stores/:store/data/time/:timestamp
-X-API-Key: <api-key>
-```
-
-**Note:** This is a soft delete. The data is excluded from API responses and WebSocket streams, but remains on disk until the block is overwritten as the circular buffer wraps. This is sufficient for hiding accidental data entries from clients.
-
-#### List Oldest Data (requires auth)
-```
-GET /api/stores/:store/data/oldest?limit=10
-X-API-Key: <api-key>
-```
-Returns the N oldest objects with data (default 10). Add `include_data=false` to return metadata only.
-
-#### List Newest Data (requires auth)
-```
-GET /api/stores/:store/data/newest?limit=10
-GET /api/stores/:store/data/newest?since=2h&limit=100
-X-API-Key: <api-key>
-```
-Returns the N newest objects with data (default 10). Use `since` parameter for relative time queries. Add `include_data=false` to return metadata only.
-
-#### Query Time Range (requires auth)
-```
-GET /api/stores/:store/data/range?start_time=X&end_time=Y&limit=100
-GET /api/stores/:store/data/range?since=24h&limit=100
-X-API-Key: <api-key>
-```
-Returns objects within the time range with data. Use `since` as an alternative to `start_time`/`end_time`. Add `include_data=false` to return metadata only.
-
-**Supported duration formats:**
-- `30s` - 30 seconds
-- `15m` - 15 minutes
-- `2h` - 2 hours
-- `7d` - 7 days
-- `1w` - 1 week
-
-#### Filtering Results
-
-All list endpoints (`/data/oldest`, `/data/newest`, `/data/range`) support substring filtering:
-
-```
-GET /api/stores/:store/data/newest?filter=sensor:01&include_data=true
-GET /api/stores/:store/data/range?since=1h&filter=BUILDING+A&filter_ignore_case=true
-```
-
-**Filter parameters:**
-- `filter` - Substring to match in the object data
-- `filter_ignore_case` - Set to `true` for case-insensitive matching (default: `false`)
-
-Only objects containing the filter substring are returned. When filtering is active, all objects are scanned to find matches up to the specified limit.
-
-### Schema Endpoint (for schema-type stores)
+### Schema Configuration (for schema-type stores)
 
 Schema stores use a compact JSON format where field names are replaced with numeric indices. This reduces storage space significantly for structured data with known schemas.
 
@@ -416,33 +322,35 @@ Content-Type: application/json
 
 When retrieving data, the compact format is automatically expanded to full field names (default) or returned in compact format with `?format=compact`.
 
-### WebSocket Endpoints
+---
 
-ts-store supports real-time data streaming via WebSocket connections.
+### Data Input (Writing to Store)
 
-#### Inbound Read Stream
+Multiple methods for adding data to a store. Content-Type header must match the store's data type.
+
+#### REST API: Insert Data
 ```
-GET /api/stores/:store/ws/read?api_key=<key>&from=now&format=full
-GET /api/stores/:store/ws/read?api_key=<key>&from=0&filter=sensor:01
+POST /api/stores/:store/data
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "timestamp": 1704067200000000000,
+  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
+}
 ```
+Timestamp is optional (defaults to current time).
 
-Query parameters:
-- `api_key` - Required for authentication
-- `from` - Start point: Unix nanosecond timestamp or `now` (default: `now`)
-- `format` - For schema stores: `compact` or `full` (default: `full`)
-- `filter` - Substring to match in data (optional)
-- `filter_ignore_case` - `true` for case-insensitive matching (default: `false`)
-
-Server sends messages:
+Returns:
 ```json
-{"type": "data", "timestamp": 1234567890, "block_num": 5, "size": 64, "data": {...}}
-{"type": "caught_up"}
-{"type": "error", "message": "..."}
+{
+  "timestamp": 1704067200000000000,
+  "block_num": 5,
+  "size": 64
+}
 ```
 
-**Slow client behavior:** WebSocket readers poll the store every 100ms for new data. If a client falls behind and the circular buffer wraps (oldest data gets reclaimed), the client will silently skip to the current oldest available data. There is no gap notification - the client simply continues from wherever the store's tail currently is. For use cases requiring guaranteed delivery, size the store appropriately or use a persistent queue architecture.
-
-#### Inbound Write Stream
+#### WebSocket: Streaming Write
 ```
 GET /api/stores/:store/ws/write?api_key=<key>&format=full
 ```
@@ -462,147 +370,9 @@ Server responds:
 {"type": "error", "message": "..."}
 ```
 
-#### Outbound Connection Management
+#### Unix Socket: Low-Latency Local Ingestion
 
-Create outbound connections where ts-store connects to remote servers.
-
-**Note:** This API only manages **outbound** connections (where ts-store initiates the connection to a remote server). **Inbound** connections (where clients connect to `/ws/read` or `/ws/write`) are not tracked or listed here - they remain open as long as the client maintains them.
-
-**List Connections:**
-```
-GET /api/stores/:store/ws/connections
-X-API-Key: <api-key>
-```
-Returns only outbound connections created via POST.
-
-**Create Connection:**
-```
-POST /api/stores/:store/ws/connections
-X-API-Key: <api-key>
-Content-Type: application/json
-
-{
-  "mode": "push",
-  "url": "wss://remote.example.com/data",
-  "from": 0,
-  "format": "compact",
-  "headers": {"Authorization": "Bearer token"},
-  "filter": "building:north",
-  "filter_ignore_case": true
-}
-```
-
-**Connection parameters:**
-- `mode` - `push` (ts-store sends to remote) or `pull` (ts-store receives from remote)
-- `url` - WebSocket URL to connect to
-- `from` - Start timestamp for push mode (0 = from beginning)
-- `format` - `compact` or `full` for schema stores
-- `headers` - Custom HTTP headers for connection
-- `filter` - Substring to match in data (push mode only)
-- `filter_ignore_case` - `true` for case-insensitive matching
-
-**Get Connection Status:**
-```
-GET /api/stores/:store/ws/connections/:id
-X-API-Key: <api-key>
-```
-
-Returns:
-```json
-{
-  "id": "abc123",
-  "mode": "push",
-  "url": "wss://remote.example.com/data",
-  "status": "connected",
-  "last_timestamp": 1234567890,
-  "messages_sent": 1000,
-  "errors": 0
-}
-```
-
-**Delete Connection:**
-```
-DELETE /api/stores/:store/ws/connections/:id
-X-API-Key: <api-key>
-```
-
-Outbound connections automatically reconnect with exponential backoff (1s to 60s max) and resume from the last sent timestamp.
-
-### MQTT Sink
-
-ts-store can publish data directly to an MQTT broker, maintaining its own cursor for crash recovery and respecting broker backpressure.
-
-**List MQTT Connections:**
-```
-GET /api/stores/:store/mqtt/connections
-X-API-Key: <api-key>
-```
-
-**Create MQTT Connection:**
-```
-POST /api/stores/:store/mqtt/connections
-X-API-Key: <api-key>
-Content-Type: application/json
-
-{
-  "broker_url": "tcp://mqtt-broker:1883",
-  "topic": "sensors/temperature",
-  "from": 0,
-  "include_timestamp": true,
-  "cursor_persist_interval": 30,
-  "username": "optional",
-  "password": "optional"
-}
-```
-
-**Connection parameters:**
-- `broker_url` - MQTT broker URL (tcp:// or ssl://)
-- `topic` - MQTT topic to publish to
-- `from` - Start timestamp: `0`=oldest, `-1`=now, or specific nanosecond timestamp
-- `include_timestamp` - Wrap data with `{"timestamp": ..., "data": ...}`
-- `cursor_persist_interval` - Cursor persistence in seconds (see below)
-- `client_id` - Custom MQTT client ID (default: tsstore-<store>-<id>)
-- `username` / `password` - MQTT authentication
-
-**Cursor persistence options (`cursor_persist_interval`):**
-- `> 0` - Persist cursor every N seconds (resume from cursor on restart)
-- `0` - In-memory only, auto-reconnect on failure (default)
-- `-1` - No persistence, no auto-reconnect (one-shot mode, stays dead on failure)
-
-**Get Connection Status:**
-```
-GET /api/stores/:store/mqtt/connections/:id
-X-API-Key: <api-key>
-```
-
-Returns:
-```json
-{
-  "id": "abc123",
-  "broker_url": "tcp://mqtt-broker:1883",
-  "topic": "sensors/temperature",
-  "status": "connected",
-  "last_timestamp": 1234567890,
-  "messages_sent": 5000,
-  "errors": 0
-}
-```
-
-**Delete Connection:**
-```
-DELETE /api/stores/:store/mqtt/connections/:id
-X-API-Key: <api-key>
-```
-
-**Behavior:**
-- Uses QoS 1 (at least once delivery)
-- Blocks on each publish until broker ACKs
-- Auto-reconnects with exponential backoff (1s to 60s) unless `cursor_persist_interval: -1`
-- Schema stores are automatically expanded to JSON
-
-### Unix Socket (Low-Latency Local Ingestion)
-
-For high-frequency local data ingestion with minimal overhead, ts-store provides a Unix domain socket interface. This eliminates HTTP overhead and is ideal for sensor data collection on edge devices.
+For high-frequency local data ingestion with minimal overhead. Eliminates HTTP overhead and is ideal for sensor data collection on edge devices.
 
 **Configuration:**
 
@@ -657,6 +427,260 @@ sock.close()
 - No TCP/HTTP overhead
 - Persistent connection for streaming data
 - Ideal for high-frequency sensor sampling (100Hz+)
+
+#### Outbound Pull: Receive from Remote Server
+
+ts-store can connect to a remote WebSocket server and receive data from it.
+
+```
+POST /api/stores/:store/ws/connections
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "mode": "pull",
+  "url": "wss://remote.example.com/data",
+  "format": "full",
+  "headers": {"Authorization": "Bearer token"}
+}
+```
+
+**Connection parameters:**
+- `mode` - `pull` (ts-store receives data from remote server)
+- `url` - WebSocket URL to connect to
+- `format` - `compact` or `full` for schema stores
+- `headers` - Custom HTTP headers for connection
+
+---
+
+### Data Output (Reading from Store)
+
+Multiple methods for retrieving data from a store.
+
+#### REST API: Query Endpoints
+
+**Get Data by Timestamp:**
+```
+GET /api/stores/:store/data/time/:timestamp
+X-API-Key: <api-key>
+```
+Returns:
+```json
+{
+  "timestamp": 1704067200000000000,
+  "block_num": 5,
+  "size": 64,
+  "data": {"temperature": 72.5, "humidity": 45, "sensor": "living-room"}
+}
+```
+
+**List Oldest Data:**
+```
+GET /api/stores/:store/data/oldest?limit=10
+X-API-Key: <api-key>
+```
+Returns the N oldest objects with data (default 10). Add `include_data=false` to return metadata only.
+
+**List Newest Data:**
+```
+GET /api/stores/:store/data/newest?limit=10
+GET /api/stores/:store/data/newest?since=2h&limit=100
+X-API-Key: <api-key>
+```
+Returns the N newest objects with data (default 10). Use `since` parameter for relative time queries. Add `include_data=false` to return metadata only.
+
+**Query Time Range:**
+```
+GET /api/stores/:store/data/range?start_time=X&end_time=Y&limit=100
+GET /api/stores/:store/data/range?since=24h&limit=100
+GET /api/stores/:store/data/range?after=<timestamp>&limit=100
+GET /api/stores/:store/data/range?start_time=X&limit=100
+X-API-Key: <api-key>
+```
+Returns objects within the time range. Add `include_data=true` to include object data.
+
+**Query parameters (use one of these approaches):**
+- `since` - Relative duration from now (e.g., `24h`, `7d`)
+- `after` - Cursor-based: all records after this timestamp (exclusive), useful for polling
+- `start_time` / `end_time` - Explicit bounds (either or both optional; 0 or omitted = unbounded)
+
+**Supported duration formats for `since`:**
+- `30s` - 30 seconds
+- `15m` - 15 minutes
+- `2h` - 2 hours
+- `7d` - 7 days
+- `1w` - 1 week
+
+**Filtering Results:**
+
+All list endpoints (`/data/oldest`, `/data/newest`, `/data/range`) support substring filtering:
+
+```
+GET /api/stores/:store/data/newest?filter=sensor:01&include_data=true
+GET /api/stores/:store/data/range?since=1h&filter=BUILDING+A&filter_ignore_case=true
+```
+
+- `filter` - Substring to match in the object data
+- `filter_ignore_case` - Set to `true` for case-insensitive matching (default: `false`)
+
+Only objects containing the filter substring are returned.
+
+#### Outbound Push: WebSocket to Remote Server
+
+ts-store can connect to a remote WebSocket server and push data to it.
+
+```
+POST /api/stores/:store/ws/connections
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "mode": "push",
+  "url": "wss://remote.example.com/data",
+  "from": 0,
+  "format": "compact",
+  "headers": {"Authorization": "Bearer token"},
+  "filter": "building:north",
+  "filter_ignore_case": true
+}
+```
+
+**Connection parameters:**
+- `mode` - `push` (ts-store sends data to remote server)
+- `url` - WebSocket URL to connect to
+- `from` - Start timestamp (0 = from beginning)
+- `format` - `compact` or `full` for schema stores
+- `headers` - Custom HTTP headers for connection
+- `filter` - Substring to match in data
+- `filter_ignore_case` - `true` for case-insensitive matching
+
+Outbound connections automatically reconnect with exponential backoff (1s to 60s max) and resume from the last sent timestamp.
+
+#### MQTT Sink: Publish to Broker
+
+ts-store can publish data directly to an MQTT broker, maintaining its own cursor for crash recovery and respecting broker backpressure.
+
+```
+POST /api/stores/:store/mqtt/connections
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "broker_url": "tcp://mqtt-broker:1883",
+  "topic": "sensors/temperature",
+  "from": 0,
+  "include_timestamp": true,
+  "cursor_persist_interval": 30,
+  "username": "optional",
+  "password": "optional"
+}
+```
+
+**Connection parameters:**
+- `broker_url` - MQTT broker URL (tcp:// or ssl://)
+- `topic` - MQTT topic to publish to
+- `from` - Start timestamp: `0`=oldest, `-1`=now, or specific nanosecond timestamp
+- `include_timestamp` - Wrap data with `{"timestamp": ..., "data": ...}`
+- `cursor_persist_interval` - Cursor persistence in seconds (see below)
+- `client_id` - Custom MQTT client ID (default: tsstore-<store>-<id>)
+- `username` / `password` - MQTT authentication
+
+**Cursor persistence options (`cursor_persist_interval`):**
+- `> 0` - Persist cursor every N seconds (resume from cursor on restart)
+- `0` - In-memory only, auto-reconnect on failure (default)
+- `-1` - No persistence, no auto-reconnect (one-shot mode, stays dead on failure)
+
+**Behavior:**
+- Uses QoS 1 (at least once delivery)
+- Blocks on each publish until broker ACKs
+- Auto-reconnects with exponential backoff (1s to 60s) unless `cursor_persist_interval: -1`
+- Schema stores are automatically expanded to JSON
+
+---
+
+### Connection Management
+
+Manage outbound WebSocket and MQTT connections.
+
+#### WebSocket Connections
+
+**List Connections:**
+```
+GET /api/stores/:store/ws/connections
+X-API-Key: <api-key>
+```
+
+**Get Connection Status:**
+```
+GET /api/stores/:store/ws/connections/:id
+X-API-Key: <api-key>
+```
+
+Returns:
+```json
+{
+  "id": "abc123",
+  "mode": "push",
+  "url": "wss://remote.example.com/data",
+  "status": "connected",
+  "last_timestamp": 1234567890,
+  "messages_sent": 1000,
+  "errors": 0
+}
+```
+
+**Delete Connection:**
+```
+DELETE /api/stores/:store/ws/connections/:id
+X-API-Key: <api-key>
+```
+
+#### MQTT Connections
+
+**List Connections:**
+```
+GET /api/stores/:store/mqtt/connections
+X-API-Key: <api-key>
+```
+
+**Get Connection Status:**
+```
+GET /api/stores/:store/mqtt/connections/:id
+X-API-Key: <api-key>
+```
+
+Returns:
+```json
+{
+  "id": "abc123",
+  "broker_url": "tcp://mqtt-broker:1883",
+  "topic": "sensors/temperature",
+  "status": "connected",
+  "last_timestamp": 1234567890,
+  "messages_sent": 5000,
+  "errors": 0
+}
+```
+
+**Delete Connection:**
+```
+DELETE /api/stores/:store/mqtt/connections/:id
+X-API-Key: <api-key>
+```
+
+---
+
+### Data Deletion
+
+#### Delete Data by Timestamp
+```
+DELETE /api/stores/:store/data/time/:timestamp
+X-API-Key: <api-key>
+```
+
+**Note:** This is a soft delete. The data is excluded from API responses and output streams, but remains on disk until the block is overwritten as the circular buffer wraps. This is sufficient for hiding accidental data entries from clients.
+
+---
 
 ### CLI Store Management
 
@@ -887,13 +911,10 @@ Use `websocat` or similar tools to test WebSocket endpoints:
 brew install websocat  # macOS
 # or: cargo install websocat
 
-# Test inbound read (stream data from store)
-# Use ws:// for HTTP, wss:// for HTTPS
-websocat "ws://localhost:21080/api/stores/my-store/ws/read?api_key=KEY&from=0"
-websocat -k "wss://localhost:21080/api/stores/my-store/ws/read?api_key=KEY&from=0"  # -k to skip cert verification
-
 # Test inbound write (send data to store)
+# Use ws:// for HTTP, wss:// for HTTPS
 websocat "ws://localhost:21080/api/stores/my-store/ws/write?api_key=KEY"
+websocat -k "wss://localhost:21080/api/stores/my-store/ws/write?api_key=KEY"  # -k to skip cert verification
 # Then type: {"data": {"temp": 72.5}}
 
 # Test outbound push (start a test server first)

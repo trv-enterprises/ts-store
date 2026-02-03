@@ -266,6 +266,21 @@ func (s *Store) getNewestTimestampLocked() (int64, error) {
 	return entry.Timestamp, nil
 }
 
+// getOldestTimestampLocked returns the oldest timestamp without acquiring lock.
+// Lock must be held.
+func (s *Store) getOldestTimestampLocked() (int64, error) {
+	entry, err := s.readIndexEntry(s.meta.TailBlock)
+	if err != nil {
+		return 0, err
+	}
+
+	if entry.Timestamp == 0 {
+		return 0, ErrEmptyStore
+	}
+
+	return entry.Timestamp, nil
+}
+
 // GetBlockHeader returns the header information for a block.
 func (s *Store) GetBlockHeader(blockNum uint32) (*block.BlockHeader, error) {
 	s.mu.RLock()

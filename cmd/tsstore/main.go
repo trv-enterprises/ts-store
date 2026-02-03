@@ -284,9 +284,8 @@ func runServer(args []string) {
 			storeRoutes.GET("/schema", schemaHandler.Get)
 			storeRoutes.PUT("/schema", schemaHandler.Put)
 
-			// WebSocket endpoints (inbound connections)
+			// WebSocket endpoint (inbound connections)
 			// Auth is via query param for WebSocket connections
-			storeRoutes.GET("/ws/read", wsHandler.Read)
 			storeRoutes.GET("/ws/write", wsHandler.Write)
 
 			// Outbound connection management
