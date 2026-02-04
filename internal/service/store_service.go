@@ -7,6 +7,8 @@ package service
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/tviviano/ts-store/internal/apikey"
@@ -259,7 +261,7 @@ func (s *StoreService) GetOrOpen(name string) (*store.Store, error) {
 	return st, nil
 }
 
-// List returns names of all open stores.
+// ListOpen returns names of all currently open stores.
 func (s *StoreService) ListOpen() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -267,6 +269,27 @@ func (s *StoreService) ListOpen() []string {
 	names := make([]string, 0, len(s.stores))
 	for name := range s.stores {
 		names = append(names, name)
+	}
+	return names
+}
+
+// ListAll returns names of all stores on disk by scanning the data directory
+// for subdirectories containing a meta.tsdb file.
+func (s *StoreService) ListAll() []string {
+	entries, err := os.ReadDir(s.cfg.Store.BasePath)
+	if err != nil {
+		return s.ListOpen()
+	}
+
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		metaPath := filepath.Join(s.cfg.Store.BasePath, entry.Name(), "meta.tsdb")
+		if _, err := os.Stat(metaPath); err == nil {
+			names = append(names, entry.Name())
+		}
 	}
 	return names
 }

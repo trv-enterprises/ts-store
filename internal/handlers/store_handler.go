@@ -69,9 +69,9 @@ func (h *StoreHandler) Stats(c *gin.Context) {
 }
 
 // List handles GET /api/stores
-// Returns list of open stores.
+// Returns list of all stores on disk.
 func (h *StoreHandler) List(c *gin.Context) {
-	stores := h.storeService.ListOpen()
+	stores := h.storeService.ListAll()
 	c.JSON(http.StatusOK, gin.H{"stores": stores})
 }
 
