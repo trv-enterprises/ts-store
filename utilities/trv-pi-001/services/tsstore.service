@@ -1,0 +1,15 @@
+[Unit]
+Description=TSStore Time Series Database
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tviviano
+ExecStart=/home/tviviano/bin/tsstore serve --data-path /home/tviviano/data --socket /home/tviviano/run/tsstore.sock
+Restart=always
+RestartSec=5
+Environment=TSSTORE_MODE=release
+Environment=TSSTORE_ADMIN_KEY=tsstore_admin_c97f7d36-cb6d-4aa2-b64b-fa708e6fed55
+
+[Install]
+WantedBy=default.target
