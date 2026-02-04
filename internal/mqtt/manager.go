@@ -34,6 +34,9 @@ type MQTTConnection struct {
 	From                  int64     `json:"from"`                    // Start timestamp (0=oldest, -1=now)
 	IncludeTimestamp      bool      `json:"include_timestamp"`       // Wrap data with timestamp
 	CursorPersistInterval int       `json:"cursor_persist_interval"` // Seconds: >0=persist, 0=memory only, -1=no auto-reconnect
+	AggWindow             string    `json:"agg_window,omitempty"`    // Aggregation window (e.g., "1m", "30s")
+	AggFields             string    `json:"agg_fields,omitempty"`    // Per-field functions (e.g., "cpu:avg,mem:max")
+	AggDefault            string    `json:"agg_default,omitempty"`   // Default aggregation function
 	CreatedAt             time.Time `json:"created_at"`
 }
 
@@ -147,6 +150,9 @@ type CreateConnectionRequest struct {
 	From                  int64  `json:"from"`                    // Start timestamp (0=oldest, -1=now)
 	IncludeTimestamp      bool   `json:"include_timestamp"`       // Wrap data with timestamp
 	CursorPersistInterval *int   `json:"cursor_persist_interval"` // Seconds: >0=persist, 0=memory only, -1=no auto-reconnect (default: 0)
+	AggWindow             string `json:"agg_window,omitempty"`    // Aggregation window (e.g., "1m")
+	AggFields             string `json:"agg_fields,omitempty"`    // Per-field functions
+	AggDefault            string `json:"agg_default,omitempty"`   // Default aggregation function
 }
 
 // CreateConnection creates and starts a new MQTT connection.
@@ -177,6 +183,9 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 		From:                  req.From,
 		IncludeTimestamp:      req.IncludeTimestamp,
 		CursorPersistInterval: cursorInterval,
+		AggWindow:             req.AggWindow,
+		AggFields:             req.AggFields,
+		AggDefault:            req.AggDefault,
 		CreatedAt:             time.Now().UTC(),
 	}
 

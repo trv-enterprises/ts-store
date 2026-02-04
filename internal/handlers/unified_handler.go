@@ -14,10 +14,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tviviano/ts-store/internal/aggregation"
+	"github.com/tviviano/ts-store/internal/duration"
 	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/service"
 	"github.com/tviviano/ts-store/pkg/store"
 )
+
+const maxRawRecordsForAgg = 100000
 
 // UnifiedHandler handles the unified /data endpoint.
 // Content-Type header determines encoding:
@@ -291,6 +295,7 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 
 // ListNewest handles GET /api/stores/:store/data/newest
 // Supports optional ?since=<duration> parameter (e.g., since=2h, since=30m, since=7d)
+// Supports aggregation with ?agg_window=<duration> (e.g., agg_window=1m)
 func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -310,10 +315,14 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	filter := c.Query("filter")
 	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
 
-	// When filtering, we need to fetch more than limit since some may be filtered out
+	// Check for aggregation
+	aggWindowStr := c.Query("agg_window")
+	hasAgg := aggWindowStr != ""
+
+	// When filtering or aggregating, fetch all records
 	fetchLimit := limit
-	if filter != "" {
-		fetchLimit = 0 // Fetch all, filter in loop
+	if filter != "" || hasAgg {
+		fetchLimit = 0
 	}
 
 	var handles []*store.ObjectHandle
@@ -321,12 +330,12 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	// Check for since parameter
 	sinceStr := c.Query("since")
 	if sinceStr != "" {
-		duration, err := ParseDuration(sinceStr)
+		dur, err := ParseDuration(sinceStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
 			return
 		}
-		handles, err = st.GetObjectsSince(duration, fetchLimit)
+		handles, err = st.GetObjectsSince(dur, fetchLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -337,6 +346,12 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+	}
+
+	// Aggregation path
+	if hasAgg {
+		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit)
+		return
 	}
 
 	includeData := c.Query("include_data") != "false"
@@ -377,6 +392,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 
 // ListRange handles GET /api/stores/:store/data/range
 // Supports ?start_time=X&end_time=Y, ?since=<duration>, or ?after=<timestamp>
+// Supports aggregation with ?agg_window=<duration> (e.g., agg_window=1m)
 func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -396,10 +412,14 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	filter := c.Query("filter")
 	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
 
-	// When filtering, we need to fetch more than limit since some may be filtered out
+	// Check for aggregation
+	aggWindowStr := c.Query("agg_window")
+	hasAgg := aggWindowStr != ""
+
+	// When filtering or aggregating, fetch all records in range
 	fetchLimit := limit
-	if filter != "" {
-		fetchLimit = 0 // Fetch all in range, filter in loop
+	if filter != "" || hasAgg {
+		fetchLimit = 0
 	}
 
 	var handles []*store.ObjectHandle
@@ -409,12 +429,12 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	afterStr := c.Query("after")
 
 	if sinceStr != "" {
-		duration, err := ParseDuration(sinceStr)
+		dur, err := ParseDuration(sinceStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since duration: " + err.Error()})
 			return
 		}
-		handles, err = st.GetObjectsSince(duration, fetchLimit)
+		handles, err = st.GetObjectsSince(dur, fetchLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -466,6 +486,12 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
+	}
+
+	// Aggregation path
+	if hasAgg {
+		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit)
+		return
 	}
 
 	includeData := c.Query("include_data") == "true"
@@ -537,6 +563,146 @@ func (h *UnifiedHandler) formatData(data []byte, dataType store.DataType, st *st
 	default:
 		return base64.StdEncoding.EncodeToString(data)
 	}
+}
+
+// aggregateAndRespond reads raw records, applies filtering, runs batch aggregation,
+// and writes the aggregated response. Only valid for JSON and schema stores.
+func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, handles []*store.ObjectHandle, filter string, filterIgnoreCase bool, aggWindowStr string, limit int) {
+	dataType := st.DataType()
+	if dataType != store.DataTypeJSON && dataType != store.DataTypeSchema {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "aggregation is only supported for json and schema stores"})
+		return
+	}
+
+	// Parse aggregation config
+	aggWindow, err := duration.ParseDuration(aggWindowStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid agg_window: " + err.Error()})
+		return
+	}
+
+	aggFieldsStr := c.Query("agg_fields")
+	aggFields, err := aggregation.ParseFieldAggs(aggFieldsStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid agg_fields: " + err.Error()})
+		return
+	}
+
+	aggDefault := aggregation.AggFunc(c.Query("agg_default"))
+
+	numericMap := aggregation.BuildNumericMap(st.GetSchemaSet())
+
+	aggConfig, err := aggregation.NewConfig(aggWindow, aggFields, aggDefault, numericMap)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Safety cap on raw records
+	if len(handles) > maxRawRecordsForAgg {
+		handles = handles[:maxRawRecordsForAgg]
+	}
+
+	// Build timestamped records, applying filter and expanding data
+	records := make([]aggregation.TimestampedRecord, 0, len(handles))
+	for _, handle := range handles {
+		rawData, err := st.GetObject(handle)
+		if err != nil {
+			continue
+		}
+
+		if !store.MatchesFilter(rawData, filter, filterIgnoreCase) {
+			continue
+		}
+
+		// Expand to full field names for schema stores
+		var jsonData []byte
+		if dataType == store.DataTypeSchema {
+			expanded, err := st.ExpandData(rawData, 0)
+			if err != nil {
+				continue
+			}
+			jsonData = expanded
+		} else {
+			jsonData = rawData
+		}
+
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(jsonData, &parsed); err != nil {
+			continue
+		}
+
+		records = append(records, aggregation.TimestampedRecord{
+			Timestamp: handle.Timestamp,
+			Data:      parsed,
+		})
+	}
+
+	// Run batch aggregation
+	results := aggregation.AggregateBatch(records, aggConfig)
+
+	// Apply user limit to aggregated windows
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	// Build response — check for compact format
+	compact := c.Query("format") == "compact"
+
+	objects := make([]DataResponse, 0, len(results))
+
+	if compact && dataType == store.DataTypeSchema {
+		// Build schema mapping for compact response
+		schemaMap := make(map[string]string)
+		ss := st.GetSchemaSet()
+		if ss != nil && ss.CurrentVersion > 0 {
+			if s, err := ss.GetCurrentSchema(); err == nil {
+				for _, f := range s.Fields {
+					schemaMap[strconv.Itoa(f.Index)] = f.Name
+				}
+			}
+		}
+		// First object is the schema header
+		schemaBytes, _ := json.Marshal(schemaMap)
+		objects = append(objects, DataResponse{
+			Data: json.RawMessage(`{"_schema":` + string(schemaBytes) + `}`),
+		})
+
+		// Subsequent objects use compact indices (reversed)
+		nameToIndex := make(map[string]string)
+		for idx, name := range schemaMap {
+			nameToIndex[name] = idx
+		}
+		for _, res := range results {
+			compactData := make(map[string]interface{})
+			for field, val := range res.Data {
+				if idx, ok := nameToIndex[field]; ok {
+					compactData[idx] = val
+				} else {
+					compactData[field] = val
+				}
+			}
+			dataBytes, _ := json.Marshal(compactData)
+			objects = append(objects, DataResponse{
+				Timestamp: res.Timestamp,
+				Data:      json.RawMessage(dataBytes),
+			})
+		}
+	} else {
+		// Expanded format (default)
+		for _, res := range results {
+			dataBytes, _ := json.Marshal(res.Data)
+			objects = append(objects, DataResponse{
+				Timestamp: res.Timestamp,
+				Data:      json.RawMessage(dataBytes),
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, DataListResponse{
+		Objects: objects,
+		Count:   len(objects),
+	})
 }
 
 // validateContentType checks if content type is compatible with store data type.

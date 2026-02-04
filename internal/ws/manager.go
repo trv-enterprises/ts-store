@@ -29,6 +29,9 @@ type ConnectionStatus struct {
 	Format           string    `json:"format"`
 	Filter           string    `json:"filter,omitempty"`
 	FilterIgnoreCase bool      `json:"filter_ignore_case,omitempty"`
+	AggWindow        string    `json:"agg_window,omitempty"`
+	AggFields        string    `json:"agg_fields,omitempty"`
+	AggDefault       string    `json:"agg_default,omitempty"`
 	Status           string    `json:"status"` // connecting, connected, disconnected, error
 	CreatedAt        time.Time `json:"created_at"`
 	LastTimestamp    int64     `json:"last_timestamp,omitempty"`
@@ -92,13 +95,16 @@ func (m *Manager) LoadAndStart() error {
 
 // CreateConnectionRequest holds parameters for creating a new connection.
 type CreateConnectionRequest struct {
-	Mode             string            `json:"mode"`              // "push" or "pull"
-	URL              string            `json:"url"`               //
-	From             int64             `json:"from"`              // Start timestamp (push mode)
-	Format           string            `json:"format"`            // "compact" or "full"
-	Headers          map[string]string `json:"headers"`           // Custom headers
-	Filter           string            `json:"filter"`            // Substring filter
+	Mode             string            `json:"mode"`               // "push" or "pull"
+	URL              string            `json:"url"`                //
+	From             int64             `json:"from"`               // Start timestamp (push mode)
+	Format           string            `json:"format"`             // "compact" or "full"
+	Headers          map[string]string `json:"headers"`            // Custom headers
+	Filter           string            `json:"filter"`             // Substring filter
 	FilterIgnoreCase bool              `json:"filter_ignore_case"` // Case-insensitive matching
+	AggWindow        string            `json:"agg_window"`         // Aggregation window (e.g., "1m")
+	AggFields        string            `json:"agg_fields"`         // Per-field functions
+	AggDefault       string            `json:"agg_default"`        // Default aggregation function
 }
 
 // CreateConnection creates and starts a new outbound connection.
@@ -131,6 +137,9 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 		Headers:          req.Headers,
 		Filter:           req.Filter,
 		FilterIgnoreCase: req.FilterIgnoreCase,
+		AggWindow:        req.AggWindow,
+		AggFields:        req.AggFields,
+		AggDefault:       req.AggDefault,
 		CreatedAt:        time.Now().UTC(),
 	}
 

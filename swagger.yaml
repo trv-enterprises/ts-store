@@ -344,6 +344,10 @@ paths:
         Retrieve data within a time range. Use either:
         - `since` parameter for relative time (e.g., `since=2h`)
         - `start_time` and `end_time` for absolute timestamps
+        - `after` parameter for cursor-based pagination
+
+        **Aggregation:** Add `agg_window` to aggregate data into time windows.
+        Only supported for JSON and schema stores.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -364,10 +368,19 @@ paths:
             type: integer
             format: int64
           description: End timestamp (Unix nanoseconds). Required if `since` not provided.
+        - name: after
+          in: query
+          schema:
+            type: integer
+            format: int64
+          description: Cursor-based pagination - return records after this timestamp.
         - $ref: '#/components/parameters/IncludeData'
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/FilterIgnoreCase'
         - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/AggWindow'
+        - $ref: '#/components/parameters/AggFields'
+        - $ref: '#/components/parameters/AggDefault'
       responses:
         '200':
           description: Data in range
@@ -416,7 +429,12 @@ paths:
       tags:
         - Data
       summary: List newest data objects
-      description: Returns the N newest data objects with data. Supports relative time queries with `since` parameter. Use `include_data=false` to return metadata only.
+      description: |
+        Returns the N newest data objects with data. Supports relative time queries with `since` parameter.
+        Use `include_data=false` to return metadata only.
+
+        **Aggregation:** Add `agg_window` to aggregate data into time windows.
+        Only supported for JSON and schema stores.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -429,6 +447,9 @@ paths:
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/FilterIgnoreCase'
         - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/AggWindow'
+        - $ref: '#/components/parameters/AggFields'
+        - $ref: '#/components/parameters/AggDefault'
       responses:
         '200':
           description: List of data objects
@@ -633,6 +654,35 @@ components:
         enum: [compact, expanded]
         default: expanded
       description: For schema stores, 'compact' returns numeric field indices, 'expanded' returns field names
+
+    AggWindow:
+      name: agg_window
+      in: query
+      schema:
+        type: string
+      description: |
+        Aggregation window duration (e.g., 30s, 1m, 5m, 1h). When set, records are
+        aggregated into time windows. Only supported for JSON and schema stores.
+      example: 1m
+
+    AggFields:
+      name: agg_fields
+      in: query
+      schema:
+        type: string
+      description: |
+        Per-field aggregation functions as comma-separated field:function pairs.
+        Valid functions: sum, avg, max, min, count, last.
+      example: "cpu.pct:avg,memory.used:max"
+
+    AggDefault:
+      name: agg_default
+      in: query
+      schema:
+        type: string
+        enum: [sum, avg, max, min, count, last]
+      description: Default aggregation function for numeric fields not listed in agg_fields. Non-numeric fields always use 'last'.
+      example: avg
 
   schemas:
     Error:

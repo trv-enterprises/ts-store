@@ -18,6 +18,8 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/tviviano/ts-store/internal/aggregation"
+	"github.com/tviviano/ts-store/internal/duration"
 	"github.com/tviviano/ts-store/pkg/store"
 )
 
@@ -34,6 +36,9 @@ type Pusher struct {
 	messagesSent  int64
 	errors        int64
 	lastError     string
+
+	accumulator *aggregation.Accumulator // nil if no aggregation
+	aggConfig   *aggregation.Config      // nil if no aggregation
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -61,7 +66,38 @@ func NewPusher(st *store.Store, storeName string, config MQTTConnection) *Pusher
 		p.loadCursor()
 	}
 
+	// Initialize aggregation if configured
+	if config.AggWindow != "" {
+		if err := p.initAggregation(); err != nil {
+			log.Printf("MQTT sink %s: aggregation init failed: %v (continuing without aggregation)", config.ID, err)
+		}
+	}
+
 	return p
+}
+
+// initAggregation sets up the accumulator from config.
+func (p *Pusher) initAggregation() error {
+	window, err := duration.ParseDuration(p.config.AggWindow)
+	if err != nil {
+		return err
+	}
+
+	fields, err := aggregation.ParseFieldAggs(p.config.AggFields)
+	if err != nil {
+		return err
+	}
+
+	numericMap := aggregation.BuildNumericMap(p.store.GetSchemaSet())
+
+	cfg, err := aggregation.NewConfig(window, fields, aggregation.AggFunc(p.config.AggDefault), numericMap)
+	if err != nil {
+		return err
+	}
+
+	p.aggConfig = cfg
+	p.accumulator = aggregation.NewAccumulator(cfg)
+	return nil
 }
 
 // ID returns the connection ID.
@@ -81,7 +117,7 @@ func (p *Pusher) Status() ConnectionStatus {
 		From:          p.config.From,
 		Status:        p.status,
 		CreatedAt:     p.config.CreatedAt,
-		LastTimestamp: p.lastTimestamp,
+		LastTimestamp:  p.lastTimestamp,
 		MessagesSent:  p.messagesSent,
 		Errors:        p.errors,
 		LastError:     p.lastError,
@@ -101,6 +137,12 @@ func (p *Pusher) Stop() error {
 	p.wg.Wait()
 
 	p.mu.Lock()
+	// Flush any remaining aggregated data
+	if p.accumulator != nil && p.client != nil && p.client.IsConnected() {
+		if result := p.accumulator.Flush(); result != nil {
+			p.publishAggResult(result)
+		}
+	}
 	if p.client != nil && p.client.IsConnected() {
 		p.client.Disconnect(1000)
 		p.client = nil
@@ -251,12 +293,32 @@ func (p *Pusher) pushLoop() error {
 		defer persistTicker.Stop()
 	}
 
+	// Set up aggregation flush ticker if configured
+	var flushTicker *time.Ticker
+	var flushCh <-chan time.Time
+	if p.accumulator != nil {
+		flushTicker = time.NewTicker(p.accumulator.WindowDuration())
+		flushCh = flushTicker.C
+		defer flushTicker.Stop()
+	}
+
 	for {
 		select {
 		case <-p.stopCh:
 			return nil
 		case <-persistCh:
 			p.persistCursor()
+		case <-flushCh:
+			p.mu.Lock()
+			if p.accumulator != nil {
+				if result := p.accumulator.Flush(); result != nil {
+					if err := p.publishAggResult(result); err != nil {
+						p.mu.Unlock()
+						return err
+					}
+				}
+			}
+			p.mu.Unlock()
 		case <-ticker.C:
 			if err := p.sendNewData(); err != nil {
 				return err
@@ -303,6 +365,15 @@ func (p *Pusher) sendNewData() error {
 			continue
 		}
 
+		// Aggregation path: feed to accumulator
+		if p.accumulator != nil {
+			if err := p.feedToAccumulator(handle, data); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Non-aggregation path: publish directly
 		// Format payload based on store type
 		var payload []byte
 		if p.store.DataType() == store.DataTypeSchema {
@@ -343,6 +414,77 @@ func (p *Pusher) sendNewData() error {
 		p.mu.Unlock()
 	}
 
+	return nil
+}
+
+// feedToAccumulator parses data and feeds it to the accumulator,
+// publishing any completed window result via MQTT.
+func (p *Pusher) feedToAccumulator(handle *store.ObjectHandle, rawData []byte) error {
+	// Expand schema data
+	var jsonData []byte
+	if p.store.DataType() == store.DataTypeSchema {
+		expanded, err := p.store.ExpandData(rawData, 0)
+		if err != nil {
+			jsonData = rawData
+		} else {
+			jsonData = expanded
+		}
+	} else {
+		jsonData = rawData
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(jsonData, &parsed); err != nil {
+		// Skip unparseable records but advance cursor
+		p.mu.Lock()
+		p.lastTimestamp = handle.Timestamp
+		p.mu.Unlock()
+		return nil
+	}
+
+	p.mu.Lock()
+	result := p.accumulator.Add(handle.Timestamp, parsed)
+	p.lastTimestamp = handle.Timestamp
+	p.mu.Unlock()
+
+	if result != nil {
+		p.mu.Lock()
+		err := p.publishAggResult(result)
+		p.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// publishAggResult publishes an aggregation result via MQTT. Caller must hold p.mu.
+func (p *Pusher) publishAggResult(result *aggregation.AggResult) error {
+	if p.client == nil || !p.client.IsConnected() {
+		return nil
+	}
+
+	var payload []byte
+	if p.config.IncludeTimestamp {
+		msg := struct {
+			Timestamp int64                  `json:"timestamp"`
+			Data      map[string]interface{} `json:"data"`
+		}{
+			Timestamp: result.Timestamp,
+			Data:      result.Data,
+		}
+		payload, _ = json.Marshal(msg)
+	} else {
+		payload, _ = json.Marshal(result.Data)
+	}
+
+	token := p.client.Publish(p.config.Topic, 1, false, payload)
+	token.Wait()
+	if token.Error() != nil {
+		return token.Error()
+	}
+	atomic.AddInt64(&p.messagesSent, 1)
 	return nil
 }
 

@@ -51,6 +51,9 @@ type CreateRequest struct {
 	Headers          map[string]string `json:"headers,omitempty"`
 	Filter           string            `json:"filter,omitempty"`
 	FilterIgnoreCase bool              `json:"filter_ignore_case,omitempty"`
+	AggWindow        string            `json:"agg_window,omitempty"`
+	AggFields        string            `json:"agg_fields,omitempty"`
+	AggDefault       string            `json:"agg_default,omitempty"`
 }
 
 // Create handles POST /api/stores/:store/ws/connections
@@ -77,6 +80,9 @@ func (h *WSConnectionsHandler) Create(c *gin.Context) {
 		Headers:          req.Headers,
 		Filter:           req.Filter,
 		FilterIgnoreCase: req.FilterIgnoreCase,
+		AggWindow:        req.AggWindow,
+		AggFields:        req.AggFields,
+		AggDefault:       req.AggDefault,
 	})
 	if err != nil {
 		if err == ws.ErrInvalidMode {

@@ -23,6 +23,9 @@ type WSConnection struct {
 	Headers          map[string]string `json:"headers"`                      // Custom headers
 	Filter           string            `json:"filter,omitempty"`             // Substring filter
 	FilterIgnoreCase bool              `json:"filter_ignore_case,omitempty"` // Case-insensitive matching
+	AggWindow        string            `json:"agg_window,omitempty"`         // Aggregation window (e.g., "1m", "30s")
+	AggFields        string            `json:"agg_fields,omitempty"`         // Per-field functions (e.g., "cpu:avg,mem:max")
+	AggDefault       string            `json:"agg_default,omitempty"`        // Default aggregation function
 	CreatedAt        time.Time         `json:"created_at"`
 }
 
