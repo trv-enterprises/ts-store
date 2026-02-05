@@ -4,27 +4,37 @@ tsstore can push data to downstream systems over WebSocket connections. This doc
 
 ## Overview
 
-When you configure an outbound WebSocket connection, **tsstore acts as the WebSocket client**. It dials out to your downstream server, which must be running a WebSocket server to accept the connection.
+The downstream system initiates the data flow by calling the tsstore API to create a connection configuration. Once configured, **tsstore acts as the WebSocket client** — it dials out to the downstream's WebSocket server and pushes data.
 
 ```
-┌─────────────────┐                        ┌─────────────────┐
-│                 │   tsstore initiates    │                 │
-│    TSSTORE      │ ────────────────────>  │   DOWNSTREAM    │
-│                 │   WebSocket Dial()     │                 │
-│  (WS CLIENT)    │                        │  (WS SERVER)    │
-│                 │ ─────────────────────> │                 │
-│  Pushes data    │   sends JSON messages  │  Receives data  │
-│                 │                        │                 │
-└─────────────────┘                        └─────────────────┘
+┌─────────────────┐                           ┌─────────────────┐
+│                 │                           │                 │
+│    TSSTORE      │  1. POST /ws/connections  │   DOWNSTREAM    │
+│                 │ <─────────────────────────│                 │
+│                 │   (create connection)     │  (initiates)    │
+│                 │                           │                 │
+│                 │  2. WebSocket Dial()      │                 │
+│  (WS CLIENT)    │ ─────────────────────────>│  (WS SERVER)    │
+│                 │                           │                 │
+│                 │  3. JSON data messages    │                 │
+│  Pushes data    │ ─────────────────────────>│  Receives data  │
+│                 │                           │                 │
+└─────────────────┘                           └─────────────────┘
 ```
+
+**Connection flow:**
+1. Downstream calls `POST /api/stores/{store}/ws/connections` to register its WebSocket server URL
+2. tsstore dials out to that URL (tsstore is the WebSocket **client**)
+3. tsstore pushes JSON data messages as new records arrive
 
 The downstream system must:
+- Call the tsstore API to create the connection (providing its WS server URL)
 - Run a WebSocket server (listen on a port)
 - Accept the incoming connection from tsstore
 - Read JSON messages as they arrive
 - Process/store/display the data
 
-The downstream does **not** need to send anything back. It's a one-way data push with automatic reconnection on failure.
+The downstream does **not** need to send anything back over the WebSocket. It's a one-way data push with automatic reconnection on failure.
 
 ## Creating a Connection
 
