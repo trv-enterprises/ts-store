@@ -34,19 +34,21 @@ var ValidAggFuncs = map[AggFunc]bool{
 	AggCount: true, AggLast: true,
 }
 
-// FieldAgg maps a field name to an aggregation function.
+// FieldAgg maps a field name to one or more aggregation functions.
 type FieldAgg struct {
-	Field    string
-	Function AggFunc
+	Field     string
+	Function  AggFunc   // single function (for backward compat)
+	Functions []AggFunc // multiple functions (new)
 }
 
 // Config holds aggregation configuration.
 type Config struct {
 	Window     time.Duration
 	Fields     []FieldAgg
-	Default    AggFunc
+	Default    AggFunc   // deprecated: use Defaults
+	Defaults   []AggFunc // multiple default functions
 	NumericMap map[string]bool // field name -> is numeric (pre-computed)
-	fieldFuncs map[string]AggFunc
+	fieldFuncs map[string][]AggFunc
 }
 
 // AggResult represents the output of one aggregation window.
@@ -64,27 +66,51 @@ type TimestampedRecord struct {
 }
 
 // NewConfig creates and validates an aggregation config.
+// defaultFunc can be a single function or comma-separated list (e.g., "avg,sum,min,max").
 func NewConfig(window time.Duration, fields []FieldAgg, defaultFunc AggFunc, numericMap map[string]bool) (*Config, error) {
 	if window <= 0 {
 		return nil, fmt.Errorf("aggregation window must be positive")
 	}
 
-	if defaultFunc != "" && !ValidAggFuncs[defaultFunc] {
-		return nil, fmt.Errorf("invalid default aggregation function: %s", string(defaultFunc))
+	// Parse default functions (comma-separated)
+	var defaults []AggFunc
+	if defaultFunc != "" {
+		for _, part := range strings.Split(string(defaultFunc), ",") {
+			fn := AggFunc(strings.TrimSpace(part))
+			if !ValidAggFuncs[fn] {
+				return nil, fmt.Errorf("invalid default aggregation function: %s", string(fn))
+			}
+			defaults = append(defaults, fn)
+		}
 	}
 
-	fieldFuncs := make(map[string]AggFunc)
+	fieldFuncs := make(map[string][]AggFunc)
 	for _, fa := range fields {
-		if !ValidAggFuncs[fa.Function] {
-			return nil, fmt.Errorf("invalid aggregation function for field %s: %s", fa.Field, string(fa.Function))
+		var funcs []AggFunc
+		if len(fa.Functions) > 0 {
+			funcs = fa.Functions
+		} else if fa.Function != "" {
+			funcs = []AggFunc{fa.Function}
 		}
-		fieldFuncs[fa.Field] = fa.Function
+		for _, fn := range funcs {
+			if !ValidAggFuncs[fn] {
+				return nil, fmt.Errorf("invalid aggregation function for field %s: %s", fa.Field, string(fn))
+			}
+		}
+		fieldFuncs[fa.Field] = funcs
+	}
+
+	// Keep Default for backward compat (first function if multiple)
+	var singleDefault AggFunc
+	if len(defaults) > 0 {
+		singleDefault = defaults[0]
 	}
 
 	return &Config{
 		Window:     window,
 		Fields:     fields,
-		Default:    defaultFunc,
+		Default:    singleDefault,
+		Defaults:   defaults,
 		NumericMap: numericMap,
 		fieldFuncs: fieldFuncs,
 	}, nil
@@ -92,17 +118,25 @@ func NewConfig(window time.Duration, fields []FieldAgg, defaultFunc AggFunc, num
 
 // FuncForField returns the aggregation function for a given field.
 // Priority: explicit field config > default > "last" for non-numeric.
+// Deprecated: use FuncsForField for multi-function support.
 func (c *Config) FuncForField(field string, isNumeric bool) AggFunc {
-	if fn, ok := c.fieldFuncs[field]; ok {
-		return fn
-	}
-	if isNumeric && c.Default != "" {
-		return c.Default
-	}
-	if isNumeric {
-		return AggLast
+	funcs := c.FuncsForField(field, isNumeric)
+	if len(funcs) > 0 {
+		return funcs[0]
 	}
 	return AggLast
+}
+
+// FuncsForField returns all aggregation functions for a given field.
+// Priority: explicit field config > defaults > "last" for non-numeric.
+func (c *Config) FuncsForField(field string, isNumeric bool) []AggFunc {
+	if funcs, ok := c.fieldFuncs[field]; ok && len(funcs) > 0 {
+		return funcs
+	}
+	if isNumeric && len(c.Defaults) > 0 {
+		return c.Defaults
+	}
+	return []AggFunc{AggLast}
 }
 
 // IsNumeric checks whether a field is numeric, using the pre-computed map
@@ -121,7 +155,10 @@ func (c *Config) IsNumeric(field string, value interface{}) bool {
 	return false
 }
 
-// ParseFieldAggs parses "field1:func1,field2:func2" into []FieldAgg.
+// ParseFieldAggs parses field aggregation strings into []FieldAgg.
+// Format: "field1:func1,field2:func2" for single functions
+// or "field1:func1+func2+func3,field2:func4" for multiple functions per field.
+// Comma separates fields, plus separates functions within a field.
 func ParseFieldAggs(s string) ([]FieldAgg, error) {
 	if s == "" {
 		return nil, nil
@@ -138,11 +175,23 @@ func ParseFieldAggs(s string) ([]FieldAgg, error) {
 			return nil, fmt.Errorf("invalid field aggregation: %q (expected field:function)", part)
 		}
 		field := strings.TrimSpace(pieces[0])
-		fn := AggFunc(strings.TrimSpace(pieces[1]))
-		if !ValidAggFuncs[fn] {
-			return nil, fmt.Errorf("invalid aggregation function %q for field %q", fn, field)
+		funcStr := strings.TrimSpace(pieces[1])
+
+		// Parse functions (+ separated for multiple)
+		var funcs []AggFunc
+		for _, fnPart := range strings.Split(funcStr, "+") {
+			fn := AggFunc(strings.TrimSpace(fnPart))
+			if !ValidAggFuncs[fn] {
+				return nil, fmt.Errorf("invalid aggregation function %q for field %q", fn, field)
+			}
+			funcs = append(funcs, fn)
 		}
-		result = append(result, FieldAgg{Field: field, Function: fn})
+
+		fa := FieldAgg{Field: field, Functions: funcs}
+		if len(funcs) == 1 {
+			fa.Function = funcs[0] // backward compat
+		}
+		result = append(result, fa)
 	}
 	return result, nil
 }
@@ -247,6 +296,31 @@ func (fs *fieldState) result(partial bool) interface{} {
 		return nil
 	}
 	switch fs.fn {
+	case AggSum:
+		if partial {
+			return nil // partial sum is misleading
+		}
+		return fs.sum
+	case AggAvg:
+		return fs.sum / float64(fs.count)
+	case AggMax:
+		return fs.max
+	case AggMin:
+		return fs.min
+	case AggCount:
+		return fs.count
+	case AggLast:
+		return fs.last
+	}
+	return fs.last
+}
+
+// resultFor returns the result for a specific aggregation function.
+func (fs *fieldState) resultFor(fn AggFunc, partial bool) interface{} {
+	if fs.count == 0 {
+		return nil
+	}
+	switch fn {
 	case AggSum:
 		if partial {
 			return nil // partial sum is misleading

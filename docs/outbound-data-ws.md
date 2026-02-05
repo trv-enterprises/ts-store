@@ -62,8 +62,8 @@ curl -X POST "http://localhost:21080/api/stores/my-store/ws/connections" \
 | `filter` | string | Optional substring filter — only send matching records |
 | `filter_ignore_case` | bool | Case-insensitive filter matching |
 | `agg_window` | string | Optional aggregation window (e.g., `"1m"`, `"5m"`, `"1h"`) |
-| `agg_fields` | string | Per-field aggregation functions (e.g., `"temp:avg,count:sum"`) |
-| `agg_default` | string | Default aggregation function (`avg`, `sum`, `min`, `max`, `first`, `last`, `count`) |
+| `agg_fields` | string | Per-field aggregation functions. Single: `"temp:avg,count:sum"`. Multi: `"temp:avg+min+max"` |
+| `agg_default` | string | Default aggregation function(s). Single: `"avg"`. Multi: `"avg,sum,min,max"` |
 
 ### Response
 
@@ -180,6 +180,43 @@ With aggregation enabled:
 - At window boundaries, a single aggregated message is sent
 - Numeric fields use the specified aggregation function
 - Non-numeric fields use `first` or `last`
+
+### Multi-function aggregation
+
+You can apply multiple aggregation functions to get statistics in a single output:
+
+```bash
+curl -X POST "http://localhost:21080/api/stores/sensor-data/ws/connections" \
+  -H "X-API-Key: <store-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "push",
+    "url": "ws://dashboard:8080/metrics",
+    "agg_window": "1m",
+    "agg_default": "avg,sum,min,max"
+  }'
+```
+
+With `agg_default: "avg,sum,min,max"`, numeric fields produce multiple output values:
+
+```json
+{
+  "temperature_avg": 72.5,
+  "temperature_sum": 7250,
+  "temperature_min": 68.0,
+  "temperature_max": 78.0,
+  "humidity_avg": 45.2,
+  "humidity_sum": 4520,
+  "humidity_min": 40.0,
+  "humidity_max": 50.0
+}
+```
+
+For per-field multi-function, use `+` to separate functions:
+
+```bash
+"agg_fields": "temperature:avg+min+max,events:sum"
+```
 
 ## Example: Simple WebSocket Server (Python)
 

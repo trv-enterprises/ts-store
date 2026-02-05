@@ -15,6 +15,7 @@ type Accumulator struct {
 	windowStart int64                    // start of current window (nanoseconds)
 	windowEnd   int64                    // end of current window (nanoseconds)
 	fields      map[string]*fieldState   // field name -> running state
+	fieldFuncs  map[string][]AggFunc     // field name -> functions to apply
 	knownFields map[string]bool          // tracks which fields we've seen (for type sniffing)
 	count       int
 }
@@ -25,6 +26,7 @@ func NewAccumulator(config *Config) *Accumulator {
 		config:      config,
 		windowNanos: config.Window.Nanoseconds(),
 		fields:      make(map[string]*fieldState),
+		fieldFuncs:  make(map[string][]AggFunc),
 		knownFields: make(map[string]bool),
 	}
 }
@@ -74,6 +76,7 @@ func (a *Accumulator) initWindow(timestamp int64) {
 	a.windowStart = (timestamp / a.windowNanos) * a.windowNanos
 	a.windowEnd = a.windowStart + a.windowNanos
 	a.fields = make(map[string]*fieldState)
+	a.fieldFuncs = make(map[string][]AggFunc)
 	a.count = 0
 }
 
@@ -90,7 +93,10 @@ func (a *Accumulator) accumulate(data map[string]interface{}) {
 					a.knownFields[field] = true
 				}
 			}
-			fn := a.config.FuncForField(field, isNumeric)
+			funcs := a.config.FuncsForField(field, isNumeric)
+			a.fieldFuncs[field] = funcs
+			// Use first function for fieldState.fn (for backward compat with result())
+			fn := funcs[0]
 			fs = newFieldState(fn)
 			a.fields[field] = fs
 		}
@@ -106,7 +112,17 @@ func (a *Accumulator) emit(partial bool) *AggResult {
 
 	data := make(map[string]interface{})
 	for field, fs := range a.fields {
-		data[field] = fs.result(partial)
+		funcs := a.fieldFuncs[field]
+		if len(funcs) == 1 {
+			// Single function: use original field name
+			data[field] = fs.resultFor(funcs[0], partial)
+		} else {
+			// Multiple functions: emit suffixed field names
+			for _, fn := range funcs {
+				key := field + "_" + string(fn)
+				data[key] = fs.resultFor(fn, partial)
+			}
+		}
 	}
 
 	result := &AggResult{
@@ -118,6 +134,7 @@ func (a *Accumulator) emit(partial bool) *AggResult {
 
 	// Reset for next window
 	a.fields = make(map[string]*fieldState)
+	a.fieldFuncs = make(map[string][]AggFunc)
 	a.count = 0
 	return result
 }
