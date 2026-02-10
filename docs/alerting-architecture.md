@@ -69,15 +69,17 @@ Parses and evaluates condition expressions against data records.
 condition     = simple_cond | compound_cond
 simple_cond   = field operator value
 compound_cond = simple_cond ("AND" | "OR") simple_cond [("AND" | "OR") simple_cond ...]
-operator      = ">" | ">=" | "<" | "<=" | "==" | "!="
+operator      = ">" | ">=" | "<" | "<=" | "==" | "!=" | "contains"
 value         = number | quoted_string | boolean
 ```
 
 **Examples:**
 - `temperature > 80`
 - `status == "error"`
+- `message contains "ERROR"` - substring match (case-sensitive)
 - `temperature > 80 AND humidity < 30`
 - `level == "warn" OR level == "error"`
+- `log contains "FATAL" OR log contains "CRITICAL"`
 
 **Implementation:**
 - Regex-based parser for simple conditions
