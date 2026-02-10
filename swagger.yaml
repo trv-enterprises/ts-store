@@ -53,6 +53,8 @@ tags:
     description: Unified data operations (Content-Type determines format)
   - name: Schema
     description: Schema management for schema-type stores
+  - name: WebSocket
+    description: Outbound WebSocket connection management with optional alerting
 
 paths:
   /health:
@@ -550,6 +552,124 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/stores/{store}/ws/connections:
+    get:
+      tags:
+        - WebSocket
+      summary: List WebSocket connections
+      description: Returns all outbound WebSocket connections for the store.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: List of connections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connections:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WSConnectionStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - WebSocket
+      summary: Create WebSocket connection
+      description: |
+        Create an outbound WebSocket connection. ts-store will dial the specified URL
+        and push data (push mode) or receive data (pull mode).
+
+        **Alerting:** Optionally configure rules to trigger alerts when data matches conditions.
+        Alerts are sent over the WebSocket and/or to configured webhooks.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWSConnectionRequest'
+      responses:
+        '201':
+          description: Connection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WSConnectionStatus'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/ws/connections/{connId}:
+    get:
+      tags:
+        - WebSocket
+      summary: Get connection status
+      description: Returns detailed status of a WebSocket connection.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Connection status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WSConnectionStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - WebSocket
+      summary: Delete connection
+      description: Stop and remove a WebSocket connection.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Connection deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: connection deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     ApiKeyHeader:
@@ -596,6 +716,15 @@ components:
         format: int64
       description: Unix timestamp in nanoseconds
       example: 1704067200000000000
+
+    ConnectionId:
+      name: connId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: WebSocket connection ID
+      example: abc123
 
     Limit:
       name: limit
@@ -898,6 +1027,129 @@ components:
           items:
             $ref: '#/components/schemas/SchemaField'
           description: Schema fields
+
+    CreateWSConnectionRequest:
+      type: object
+      required:
+        - mode
+        - url
+      properties:
+        mode:
+          type: string
+          enum: [push, pull]
+          description: Connection mode - push (send data) or pull (receive data)
+        url:
+          type: string
+          description: WebSocket URL to connect to
+          example: ws://remote-server:8080/data
+        from:
+          type: integer
+          format: int64
+          description: Start timestamp for push mode (0 = from beginning)
+          default: 0
+        format:
+          type: string
+          enum: [compact, full]
+          default: full
+          description: Data format for schema stores
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Custom HTTP headers for WebSocket handshake
+        filter:
+          type: string
+          description: Substring filter - only send matching records
+        filter_ignore_case:
+          type: boolean
+          default: false
+          description: Case-insensitive filter matching
+        agg_window:
+          type: string
+          description: Aggregation window (e.g., "1m", "5m", "1h")
+        agg_fields:
+          type: string
+          description: Per-field aggregation functions (e.g., "temp:avg,count:sum")
+        agg_default:
+          type: string
+          description: Default aggregation function(s) (e.g., "avg" or "avg,sum,min,max")
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRule'
+          description: Optional alert rules
+
+    AlertRule:
+      type: object
+      required:
+        - name
+        - condition
+      properties:
+        name:
+          type: string
+          description: Rule name/identifier
+          example: high_temp
+        condition:
+          type: string
+          description: |
+            Condition expression. Syntax:
+            - Simple: "temperature > 80", "status == \"error\""
+            - Compound: "temp > 80 AND humidity < 30", "level == \"warn\" OR level == \"error\""
+          example: temperature > 80
+        webhook:
+          type: string
+          description: Webhook URL to call when rule fires
+          example: https://alerts.example.com/notify
+        webhook_headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Headers for webhook HTTP POST
+        cooldown:
+          type: string
+          description: Minimum time between alerts (e.g., "5m", "1h")
+          example: 5m
+
+    WSConnectionStatus:
+      type: object
+      properties:
+        id:
+          type: string
+          example: abc123
+        mode:
+          type: string
+          enum: [push, pull]
+        url:
+          type: string
+          example: ws://remote-server:8080/data
+        status:
+          type: string
+          enum: [connecting, connected, disconnected, error]
+        created_at:
+          type: string
+          format: date-time
+        last_timestamp:
+          type: integer
+          format: int64
+          description: Last processed timestamp
+        messages_sent:
+          type: integer
+          format: int64
+        messages_received:
+          type: integer
+          format: int64
+        rules_count:
+          type: integer
+          description: Number of configured alert rules
+        alerts_fired:
+          type: integer
+          format: int64
+          description: Total alerts fired
+        errors:
+          type: integer
+          format: int64
+        last_error:
+          type: string
 
   responses:
     Unauthorized:

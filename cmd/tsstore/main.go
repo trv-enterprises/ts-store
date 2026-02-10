@@ -61,7 +61,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
-		fmt.Println("tsstore v0.3.0-rc2")
+		fmt.Println("tsstore v0.3.0-rc3")
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()

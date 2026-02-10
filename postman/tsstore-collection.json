@@ -667,7 +667,33 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["api", "stores", "{{storeName}}", "ws", "connections"]
 						},
-						"description": "Create an outbound push connection. ts-store will connect to the remote server and send data.\n\nParameters:\n- mode: \"push\" (send data) or \"pull\" (receive data)\n- url: WebSocket URL to connect to\n- from: Start timestamp (0 = from beginning, for push mode)\n- format: \"full\" or \"compact\" (for schema stores)\n- headers: Custom headers for the connection"
+						"description": "Create an outbound push connection. ts-store will connect to the remote server and send data.\n\nParameters:\n- mode: \"push\" (send data) or \"pull\" (receive data)\n- url: WebSocket URL to connect to\n- from: Start timestamp (0 = from beginning, for push mode)\n- format: \"full\" or \"compact\" (for schema stores)\n- headers: Custom headers for the connection\n- rules: Optional array of alert rules (see Create Push with Alerts)"
+					}
+				},
+				{
+					"name": "Create Push Connection with Alerts",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "X-API-Key",
+								"value": "{{apiKey}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"mode\": \"push\",\n    \"url\": \"ws://localhost:9000\",\n    \"from\": 0,\n    \"format\": \"full\",\n    \"rules\": [\n        {\n            \"name\": \"high_temp\",\n            \"condition\": \"temperature > 80\",\n            \"webhook\": \"https://alerts.example.com/notify\",\n            \"webhook_headers\": {\n                \"Authorization\": \"Bearer webhook-token\"\n            },\n            \"cooldown\": \"5m\"\n        },\n        {\n            \"name\": \"critical_status\",\n            \"condition\": \"status == \\\"error\\\" OR status == \\\"critical\\\"\",\n            \"cooldown\": \"1m\"\n        }\n    ]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/stores/{{storeName}}/ws/connections",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "stores", "{{storeName}}", "ws", "connections"]
+						},
+						"description": "Create a push connection with alert rules.\n\nRules are evaluated against each record. When a condition matches:\n- An alert message is sent over the WebSocket\n- If webhook is configured, an HTTP POST is sent\n\nRule parameters:\n- name: Rule identifier\n- condition: Expression like \"field > 80\" or \"status == \\\"error\\\"\"\n- webhook: Optional URL for HTTP notifications\n- webhook_headers: Optional headers for webhook\n- cooldown: Minimum time between alerts (e.g., \"5m\")\n\nCondition syntax:\n- Comparisons: >, >=, <, <=, ==, !=\n- Logical: AND, OR\n- String values must be quoted"
 					}
 				},
 				{

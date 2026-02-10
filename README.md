@@ -57,6 +57,7 @@ When the circular buffer is full, the oldest block (at tail) is automatically re
 - **Crash recovery** - Metadata is persisted after each operation
 - **REST API server** - HTTP API with per-store API key authentication
 - **WebSocket streaming** - Real-time data streaming with inbound and outbound modes
+- **Rule-based alerting** - Configurable rules with webhook notifications and cooldown
 - **MQTT sink** - Built-in MQTT publishing with cursor persistence and backpressure handling
 - **Unix socket ingestion** - Low-latency local data ingestion for high-frequency sensors
 - **Edge-friendly** - Small footprint, no external database dependencies
@@ -555,6 +556,34 @@ Content-Type: application/json
 - `filter_ignore_case` - `true` for case-insensitive matching
 
 Outbound connections automatically reconnect with exponential backoff (1s to 60s max) and resume from the last sent timestamp.
+
+**Alerting:** Push connections can include alert rules that trigger when data matches conditions:
+
+```
+POST /api/stores/:store/ws/connections
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "mode": "push",
+  "url": "wss://dashboard.example.com/data",
+  "rules": [
+    {
+      "name": "high_temp",
+      "condition": "temperature > 80",
+      "webhook": "https://alerts.example.com/notify",
+      "cooldown": "5m"
+    }
+  ]
+}
+```
+
+When a rule fires:
+- An alert message is sent over the WebSocket (`{"type": "alert", ...}`)
+- If `webhook` is configured, an HTTP POST is sent to the URL
+- `cooldown` prevents alert storms (minimum time between alerts per rule)
+
+See [docs/outbound-data-ws.md](docs/outbound-data-ws.md) and [docs/alerting-architecture.md](docs/alerting-architecture.md) for details.
 
 #### MQTT Sink: Publish to Broker
 
