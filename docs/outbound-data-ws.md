@@ -64,6 +64,7 @@ curl -X POST "http://localhost:21080/api/stores/my-store/ws/connections" \
 | `agg_window` | string | Optional aggregation window (e.g., `"1m"`, `"5m"`, `"1h"`) |
 | `agg_fields` | string | Per-field aggregation functions. Single: `"temp:avg,count:sum"`. Multi: `"temp:avg+min+max"` |
 | `agg_default` | string | Default aggregation function(s). Single: `"avg"`. Multi: `"avg,sum,min,max"` |
+| `rules` | array | Optional alert rules (see [Alerting](#alerting) section) |
 
 ### Response
 
@@ -261,6 +262,109 @@ console.log('WebSocket server listening on ws://0.0.0.0:8080');
 ## Persistence
 
 Connection configurations are persisted to `ws_connections.json` in the store's data directory. Connections are automatically restored and restarted when tsstore starts.
+
+## Alerting
+
+You can configure rules to trigger alerts when data matches specific conditions. Alerts can be sent over the WebSocket connection and/or to a webhook endpoint.
+
+### Creating a Connection with Alerts
+
+```bash
+curl -X POST "http://localhost:21080/api/stores/sensor-data/ws/connections" \
+  -H "X-API-Key: <store-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "push",
+    "url": "ws://dashboard:8080/metrics",
+    "rules": [
+      {
+        "name": "high_temp",
+        "condition": "temperature > 80",
+        "webhook": "https://alerts.example.com/notify",
+        "webhook_headers": {"Authorization": "Bearer xxx"},
+        "cooldown": "5m"
+      },
+      {
+        "name": "critical_status",
+        "condition": "status == \"error\" OR status == \"critical\"",
+        "cooldown": "1m"
+      }
+    ]
+  }'
+```
+
+### Rule Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | string | Rule name/identifier (appears in alert messages) |
+| `condition` | string | Condition expression (see syntax below) |
+| `webhook` | string | Optional webhook URL to call when rule fires |
+| `webhook_headers` | object | Optional HTTP headers for webhook (e.g., auth tokens) |
+| `cooldown` | string | Minimum time between alerts for this rule (e.g., `"5m"`, `"1h"`) |
+
+### Condition Syntax
+
+Simple conditions:
+- `temperature > 80` - field greater than value
+- `temperature >= 80` - greater than or equal
+- `temperature < 80` - less than
+- `temperature <= 80` - less than or equal
+- `status == "error"` - string equality (use quotes)
+- `count != 0` - not equal
+
+Compound conditions:
+- `temperature > 80 AND humidity < 30` - both must be true
+- `status == "error" OR status == "critical"` - either can be true
+
+### Alert Message Format
+
+When a rule fires, an alert message is sent over the WebSocket:
+
+```json
+{
+  "type": "alert",
+  "timestamp": 1707012345678901234,
+  "alert": {
+    "rule_name": "high_temp",
+    "condition": "temperature > 80",
+    "timestamp": 1707012345678901234,
+    "data": {
+      "temperature": 85.5,
+      "humidity": 45.2
+    },
+    "store_name": "sensor-data"
+  }
+}
+```
+
+### Webhook Payload
+
+If a webhook URL is configured, an HTTP POST is sent with the same alert payload:
+
+```json
+{
+  "rule_name": "high_temp",
+  "condition": "temperature > 80",
+  "timestamp": 1707012345678901234,
+  "data": {
+    "temperature": 85.5,
+    "humidity": 45.2
+  },
+  "store_name": "sensor-data"
+}
+```
+
+### Cooldown
+
+The `cooldown` parameter prevents alert storms. After a rule fires, it won't fire again until the cooldown period elapses. For example, with `"cooldown": "5m"`, if temperature exceeds 80 at 10:00, the next alert for that rule won't fire until after 10:05 (even if temperature stays above 80).
+
+### Performance
+
+Rules are evaluated asynchronously in a separate goroutine, outside the data path's lock window. This ensures:
+- Data streaming is not blocked by rule evaluation
+- Webhook calls don't slow down the main data flow
+- High-frequency data can be processed efficiently
 
 ## Connection Status Values
 

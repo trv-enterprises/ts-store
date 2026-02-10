@@ -26,7 +26,17 @@ type WSConnection struct {
 	AggWindow        string            `json:"agg_window,omitempty"`         // Aggregation window (e.g., "1m", "30s")
 	AggFields        string            `json:"agg_fields,omitempty"`         // Per-field functions (e.g., "cpu:avg,mem:max")
 	AggDefault       string            `json:"agg_default,omitempty"`        // Default aggregation function
+	Rules            []AlertRuleConfig `json:"rules,omitempty"`              // Alert rules (optional)
 	CreatedAt        time.Time         `json:"created_at"`
+}
+
+// AlertRuleConfig defines an alert rule with optional webhook.
+type AlertRuleConfig struct {
+	Name           string            `json:"name"`                      // Rule name/identifier
+	Condition      string            `json:"condition"`                 // e.g., "temperature > 80"
+	Webhook        string            `json:"webhook,omitempty"`         // Webhook URL to call on alert
+	WebhookHeaders map[string]string `json:"webhook_headers,omitempty"` // Headers for webhook
+	Cooldown       string            `json:"cooldown,omitempty"`        // Min time between alerts (e.g., "5m")
 }
 
 // WSConnectionsConfig holds all outbound connection configurations for a store.

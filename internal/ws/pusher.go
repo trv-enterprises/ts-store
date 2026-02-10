@@ -15,6 +15,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tviviano/ts-store/internal/aggregation"
 	"github.com/tviviano/ts-store/internal/duration"
+	"github.com/tviviano/ts-store/internal/notify"
+	"github.com/tviviano/ts-store/internal/rules"
 	"github.com/tviviano/ts-store/pkg/store"
 )
 
@@ -35,6 +37,9 @@ type Pusher struct {
 	accumulator *aggregation.Accumulator // nil if no aggregation
 	aggConfig   *aggregation.Config      // nil if no aggregation
 
+	evaluator   *rules.Evaluator // nil if no rules configured
+	alertsFired int64
+
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 }
@@ -54,6 +59,13 @@ func NewPusher(st *store.Store, storeName string, config store.WSConnection) *Pu
 	if config.AggWindow != "" {
 		if err := p.initAggregation(); err != nil {
 			log.Printf("WS push %s: aggregation init failed: %v (continuing without aggregation)", config.ID, err)
+		}
+	}
+
+	// Initialize rules evaluator if configured
+	if len(config.Rules) > 0 {
+		if err := p.initRules(); err != nil {
+			log.Printf("WS push %s: rules init failed: %v (continuing without rules)", config.ID, err)
 		}
 	}
 
@@ -84,6 +96,85 @@ func (p *Pusher) initAggregation() error {
 	return nil
 }
 
+// initRules sets up the rules evaluator from config.
+func (p *Pusher) initRules() error {
+	var alertRules []rules.AlertRule
+
+	for _, rc := range p.config.Rules {
+		rule, err := rules.Parse(rc.Name, rc.Condition)
+		if err != nil {
+			log.Printf("WS push %s: skipping invalid rule %q: %v", p.config.ID, rc.Name, err)
+			continue
+		}
+
+		ar := rules.AlertRule{
+			Rule: rule,
+		}
+
+		// Parse cooldown if specified
+		if rc.Cooldown != "" {
+			cooldown, err := duration.ParseDuration(rc.Cooldown)
+			if err != nil {
+				log.Printf("WS push %s: invalid cooldown %q for rule %q: %v", p.config.ID, rc.Cooldown, rc.Name, err)
+			} else {
+				ar.Cooldown = cooldown
+			}
+		}
+
+		// Set up webhook if configured
+		if rc.Webhook != "" {
+			ar.Webhook = notify.NewWebhook(notify.WebhookConfig{
+				URL:     rc.Webhook,
+				Headers: rc.WebhookHeaders,
+				Timeout: 10 * time.Second,
+			})
+		}
+
+		alertRules = append(alertRules, ar)
+	}
+
+	if len(alertRules) == 0 {
+		return nil
+	}
+
+	// Create evaluator with callback to send alerts over WS
+	p.evaluator = rules.NewEvaluator(p.storeName, alertRules, func(alert notify.Alert) {
+		p.sendAlert(alert)
+	})
+
+	return nil
+}
+
+// sendAlert sends an alert message over the WebSocket.
+func (p *Pusher) sendAlert(alert notify.Alert) {
+	p.mu.RLock()
+	conn := p.conn
+	p.mu.RUnlock()
+
+	if conn == nil {
+		return
+	}
+
+	msg := struct {
+		Type      string       `json:"type"`
+		Timestamp int64        `json:"timestamp"`
+		Alert     notify.Alert `json:"alert"`
+	}{
+		Type:      "alert",
+		Timestamp: alert.Timestamp,
+		Alert:     alert,
+	}
+
+	p.mu.Lock()
+	err := p.conn.WriteJSON(msg)
+	if err != nil {
+		log.Printf("WS push %s: failed to send alert: %v", p.config.ID, err)
+	} else {
+		atomic.AddInt64(&p.alertsFired, 1)
+	}
+	p.mu.Unlock()
+}
+
 // ID returns the connection ID.
 func (p *Pusher) ID() string {
 	return p.config.ID
@@ -105,9 +196,11 @@ func (p *Pusher) Status() ConnectionStatus {
 		AggWindow:        p.config.AggWindow,
 		AggFields:        p.config.AggFields,
 		AggDefault:       p.config.AggDefault,
+		RulesCount:       len(p.config.Rules),
+		AlertsFired:      atomic.LoadInt64(&p.alertsFired),
 		Status:           p.status,
 		CreatedAt:        p.config.CreatedAt,
-		LastTimestamp:     p.lastTimestamp,
+		LastTimestamp:    p.lastTimestamp,
 		MessagesSent:     p.messagesSent,
 		Errors:           p.errors,
 		LastError:        p.lastError,
@@ -116,6 +209,11 @@ func (p *Pusher) Status() ConnectionStatus {
 
 // Start begins the push connection with auto-reconnect.
 func (p *Pusher) Start() error {
+	// Start rules evaluator if configured
+	if p.evaluator != nil {
+		p.evaluator.Start()
+	}
+
 	p.wg.Add(1)
 	go p.runLoop()
 	return nil
@@ -125,6 +223,11 @@ func (p *Pusher) Start() error {
 func (p *Pusher) Stop() error {
 	close(p.stopCh)
 	p.wg.Wait()
+
+	// Stop rules evaluator
+	if p.evaluator != nil {
+		p.evaluator.Stop()
+	}
 
 	p.mu.Lock()
 	// Flush any remaining aggregated data
@@ -324,15 +427,27 @@ func (p *Pusher) sendNewData() error {
 		// Non-aggregation path: send immediately
 		// Format the data based on config
 		var payload any
+		var jsonData []byte
 		if p.config.Format == "compact" || p.store.DataType() != store.DataTypeSchema {
 			payload = json.RawMessage(data)
+			jsonData = data
 		} else {
 			// Expand schema data
 			expanded, err := p.store.ExpandData(data, 0)
 			if err == nil {
 				payload = json.RawMessage(expanded)
+				jsonData = expanded
 			} else {
 				payload = json.RawMessage(data)
+				jsonData = data
+			}
+		}
+
+		// Feed to rules evaluator (async, non-blocking, outside lock)
+		if p.evaluator != nil {
+			var parsed map[string]interface{}
+			if json.Unmarshal(jsonData, &parsed) == nil {
+				p.evaluator.Evaluate(handle.Timestamp, parsed)
 			}
 		}
 
@@ -383,6 +498,11 @@ func (p *Pusher) feedToAccumulator(handle *store.ObjectHandle, rawData []byte) e
 		p.lastTimestamp = handle.Timestamp
 		p.mu.Unlock()
 		return nil
+	}
+
+	// Feed to rules evaluator (async, non-blocking, outside lock)
+	if p.evaluator != nil {
+		p.evaluator.Evaluate(handle.Timestamp, parsed)
 	}
 
 	p.mu.Lock()

@@ -32,6 +32,8 @@ type ConnectionStatus struct {
 	AggWindow        string    `json:"agg_window,omitempty"`
 	AggFields        string    `json:"agg_fields,omitempty"`
 	AggDefault       string    `json:"agg_default,omitempty"`
+	RulesCount       int       `json:"rules_count,omitempty"`
+	AlertsFired      int64     `json:"alerts_fired,omitempty"`
 	Status           string    `json:"status"` // connecting, connected, disconnected, error
 	CreatedAt        time.Time `json:"created_at"`
 	LastTimestamp    int64     `json:"last_timestamp,omitempty"`
