@@ -168,6 +168,33 @@ func TestEvaluate_String(t *testing.T) {
 	}
 }
 
+func TestEvaluate_Contains(t *testing.T) {
+	tests := []struct {
+		condition string
+		data      map[string]interface{}
+		want      bool
+	}{
+		{"message contains \"ERROR\"", map[string]interface{}{"message": "ERROR: something failed"}, true},
+		{"message contains \"ERROR\"", map[string]interface{}{"message": "error: something failed"}, false}, // case-sensitive
+		{"message contains \"ERROR\"", map[string]interface{}{"message": "all good"}, false},
+		{"message contains \"fail\"", map[string]interface{}{"message": "Operation failed successfully"}, true},
+		{"log contains \"WARNING\"", map[string]interface{}{"log": "2026-02-10 WARNING: low disk"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.condition, func(t *testing.T) {
+			rule, err := Parse("test", tt.condition)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			got := rule.Evaluate(tt.data)
+			if got != tt.want {
+				t.Errorf("Evaluate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEvaluate_MissingField(t *testing.T) {
 	rule, _ := Parse("test", "temperature > 80")
 	data := map[string]interface{}{"humidity": 50.0}

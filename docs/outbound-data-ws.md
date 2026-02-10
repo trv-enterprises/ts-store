@@ -312,10 +312,12 @@ Simple conditions:
 - `temperature <= 80` - less than or equal
 - `status == "error"` - string equality (use quotes)
 - `count != 0` - not equal
+- `message contains "ERROR"` - substring match (case-sensitive)
 
 Compound conditions:
 - `temperature > 80 AND humidity < 30` - both must be true
 - `status == "error" OR status == "critical"` - either can be true
+- `message contains "ERROR" OR message contains "FATAL"` - text matching
 
 ### Alert Message Format
 

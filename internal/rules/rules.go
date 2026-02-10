@@ -17,12 +17,13 @@ import (
 type Operator string
 
 const (
-	OpEq  Operator = "=="
-	OpNe  Operator = "!="
-	OpGt  Operator = ">"
-	OpGe  Operator = ">="
-	OpLt  Operator = "<"
-	OpLe  Operator = "<="
+	OpEq       Operator = "=="
+	OpNe       Operator = "!="
+	OpGt       Operator = ">"
+	OpGe       Operator = ">="
+	OpLt       Operator = "<"
+	OpLe       Operator = "<="
+	OpContains Operator = "contains"
 )
 
 // Condition represents a single field comparison.
@@ -40,8 +41,8 @@ type Rule struct {
 }
 
 // conditionPattern matches: field operator value
-// Examples: "temperature > 80", "status == \"error\"", "count >= 100"
-var conditionPattern = regexp.MustCompile(`^\s*(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)\s*$`)
+// Examples: "temperature > 80", "status == \"error\"", "count >= 100", "message contains \"ERROR\""
+var conditionPattern = regexp.MustCompile(`^\s*(\w+)\s*(==|!=|>=|<=|>|<|contains)\s*(.+)\s*$`)
 
 // Parse parses a condition string into a Rule.
 // Supports:
@@ -194,6 +195,13 @@ func (c *Condition) Evaluate(data map[string]interface{}) bool {
 
 // compare compares two values using the given operator.
 func compare(fieldValue interface{}, op Operator, ruleValue interface{}) bool {
+	// Handle contains operator (string only)
+	if op == OpContains {
+		fieldStr := toString(fieldValue)
+		ruleStr := toString(ruleValue)
+		return strings.Contains(fieldStr, ruleStr)
+	}
+
 	// Convert field value to float64 if possible for numeric comparison
 	fieldFloat, fieldIsNum := toFloat64(fieldValue)
 	ruleFloat, ruleIsNum := toFloat64(ruleValue)
