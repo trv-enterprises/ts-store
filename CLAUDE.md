@@ -2,20 +2,45 @@
 
 ## Release Process
 
-Before building binaries for a new release:
+Use the Makefile for releases:
 
-1. **Update the version number** in `cmd/tsstore/main.go` (search for `fmt.Println("tsstore v`)
-2. Commit the version bump
-3. Create and push the git tag
-4. Build binaries: `GOOS=linux GOARCH=amd64 go build -o tsstore-linux-amd64 ./cmd/tsstore`
-5. Create the GitHub release and upload binaries
+```bash
+make release VERSION=v0.3.1
+```
+
+This will:
+1. Update the version in `cmd/tsstore/main.go`
+2. Build Linux binaries (amd64 + arm64)
+3. Commit the version bump
+4. Create and push the git tag
+5. Push to origin (triggers Docker image build via GitHub Actions)
+
+The Docker image is automatically published to `ghcr.io/trv-enterprises/ts-store`.
+
+To create a GitHub release with binaries:
+```bash
+gh release create v0.3.1 dist/tsstore-v0.3.1-*
+```
 
 ## Build Commands
 
 ```bash
-# Linux AMD64
-GOOS=linux GOARCH=amd64 go build -o tsstore-linux-amd64 ./cmd/tsstore
+# Build both architectures
+make build
 
-# Linux ARM64
-GOOS=linux GOARCH=arm64 go build -o tsstore-linux-arm64 ./cmd/tsstore
+# Build for local development
+make build-local
+
+# Run tests
+make test
+
+# See all targets
+make help
+```
+
+## Deploy to Pi
+
+```bash
+# Requires .env with PI_HOST, PI_BINARY_PATH, PI_SERVICE
+make deploy-pi
 ```
