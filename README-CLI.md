@@ -18,7 +18,22 @@ go build -o tsstore ./cmd/tsstore
 
 ## Docker
 
-Build and run with Docker:
+### Using Pre-built Image (recommended)
+
+```bash
+# Pull from GitHub Container Registry
+docker pull ghcr.io/trv-enterprises/ts-store:latest
+
+# Run the container
+docker run -d \
+  -v tsstore-data:/data \
+  -p 21080:21080 \
+  -e TSSTORE_ADMIN_KEY="your-secure-admin-key-here" \
+  --name tsstore \
+  ghcr.io/trv-enterprises/ts-store:latest
+```
+
+### Building Locally
 
 ```bash
 # Build the image
@@ -28,7 +43,7 @@ docker build -t tsstore .
 docker run -d -v tsstore-data:/data -p 21080:21080 --name tsstore tsstore
 ```
 
-Or use Docker Compose:
+### Docker Compose
 
 ```bash
 docker compose up -d
