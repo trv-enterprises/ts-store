@@ -29,7 +29,7 @@ GO = go
 LDFLAGS = -s -w -X main.Version=$(VERSION)
 
 .PHONY: all build build-arm64 build-amd64 build-local clean test test-verbose help
-.PHONY: version-bump release release-tag
+.PHONY: version-bump release release-binaries
 
 all: build
 
@@ -79,19 +79,6 @@ release-binaries: build ## Create release binaries in dist/
 	done
 	@echo "✓ Release binaries created:"
 	@ls -lh $(DIST_DIR)/$(BINARY_NAME)-$(VERSION)-*
-
-release-tag: ## Create git tag (use with VERSION=vX.Y.Z)
-	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
-		echo "Error: VERSION must be set (e.g., make release-tag VERSION=v0.3.0)"; \
-		exit 1; \
-	fi
-	@if git rev-parse "$(VERSION)" >/dev/null 2>&1; then \
-		echo "Error: Tag $(VERSION) already exists"; \
-		exit 1; \
-	fi
-	@echo "Creating tag $(VERSION)..."
-	git tag -a "$(VERSION)" -m "Release $(VERSION)"
-	@echo "✓ Tag $(VERSION) created"
 
 release: ## Full release: bump version, build, commit, tag, push (use with VERSION=vX.Y.Z)
 	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
