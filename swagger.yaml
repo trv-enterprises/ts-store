@@ -34,7 +34,8 @@ info:
     The `since` parameter accepts durations like: `30s`, `15m`, `2h`, `7d`, `1w`
   version: 0.1.0
   license:
-    name: Business Source License 1.1
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
   contact:
     name: TRV Enterprises LLC
 

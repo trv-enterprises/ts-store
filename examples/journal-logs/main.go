@@ -1,5 +1,5 @@
 // Copyright (c) 2026 TRV Enterprises LLC
-// Licensed under the Business Source License 1.1
+// SPDX-License-Identifier: Apache-2.0
 // See LICENSE file for details.
 
 // journal-logs streams journalctl output to ts-store via Unix socket.
