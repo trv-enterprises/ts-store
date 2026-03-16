@@ -106,7 +106,12 @@ func AdminAuth(adminKey string) gin.HandlerFunc {
 		}
 
 		if providedKey == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "admin key required"})
+			// Check if they sent X-API-Key instead, and give a helpful hint
+			if c.GetHeader("X-API-Key") != "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "store creation requires X-Admin-Key header, not X-API-Key"})
+			} else {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "admin key required (provide via X-Admin-Key header)"})
+			}
 			c.Abort()
 			return
 		}
@@ -144,7 +149,7 @@ func CORS() gin.HandlerFunc {
 
 		c.Header("Access-Control-Allow-Origin", origin)
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, X-API-Key, Authorization")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, X-API-Key, X-Admin-Key, Authorization")
 		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 
