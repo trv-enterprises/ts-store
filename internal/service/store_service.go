@@ -50,7 +50,10 @@ type CreateStoreRequest struct {
 	NumBlocks      uint32 `json:"num_blocks,omitempty"`
 	DataBlockSize  uint32 `json:"data_block_size,omitempty"`
 	IndexBlockSize uint32 `json:"index_block_size,omitempty"`
-	DataType       string `json:"data_type,omitempty"` // binary, text, json, schema (default: json)
+	DataType       string `json:"data_type,omitempty"`    // binary, text, json, schema (default: json)
+	NumPartitions  uint32 `json:"num_partitions,omitempty"` // V2: number of partitions (default: 6)
+	TotalSize      int64  `json:"total_size,omitempty"`     // V2: total size in bytes
+	StorageType    string `json:"storage_type,omitempty"`   // "v1" or "v2" (default: v2)
 }
 
 // CreateStoreResponse contains the result of store creation.
@@ -72,7 +75,9 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 		NumBlocks:      s.cfg.Store.NumBlocks,
 		DataBlockSize:  s.cfg.Store.DataBlockSize,
 		IndexBlockSize: s.cfg.Store.IndexBlockSize,
-		DataType:       store.DataTypeJSON, // default
+		DataType:       store.DataTypeJSON,            // default
+		StorageType:    store.StorageTypeV2Partitioned, // default to V2
+		NumPartitions:  6,                             // default partitions
 	}
 
 	// Override with request values if provided
@@ -91,6 +96,17 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 			return nil, err
 		}
 		cfg.DataType = dataType
+	}
+
+	// V2 partitioned storage options
+	if req.StorageType == "v1" {
+		cfg.StorageType = store.StorageTypeV1Circular
+	}
+	if req.NumPartitions > 0 {
+		cfg.NumPartitions = req.NumPartitions
+	}
+	if req.TotalSize > 0 {
+		cfg.TotalSize = req.TotalSize
 	}
 
 	// Create the store

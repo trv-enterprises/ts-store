@@ -12,12 +12,15 @@ import (
 )
 
 var (
-	ErrInvalidNumBlocks = errors.New("number of blocks must be greater than 0")
-	ErrNameRequired     = errors.New("store name is required")
-	ErrPathRequired     = errors.New("store path is required")
-	ErrInvalidDataType  = errors.New("invalid data type: must be binary, text, json, or schema")
-	ErrSchemaRequired   = errors.New("schema is required for schema data type")
-	ErrDataTypeMismatch = errors.New("data does not match store's data type")
+	ErrInvalidNumBlocks       = errors.New("number of blocks must be greater than 0")
+	ErrNameRequired           = errors.New("store name is required")
+	ErrPathRequired           = errors.New("store path is required")
+	ErrInvalidDataType        = errors.New("invalid data type: must be binary, text, json, or schema")
+	ErrSchemaRequired         = errors.New("schema is required for schema data type")
+	ErrDataTypeMismatch       = errors.New("data does not match store's data type")
+	ErrTooManyPartitions      = errors.New("number of partitions cannot exceed 16")
+	ErrPartitionFull          = errors.New("partition is full")
+	ErrDeleteNotSupportedV2   = errors.New("individual object deletion not supported in V2 partitioned stores")
 )
 
 // DataType represents the type of data stored in a store.
@@ -62,24 +65,52 @@ func ParseDataType(s string) (DataType, error) {
 	}
 }
 
+// StorageType represents the storage format version.
+type StorageType uint8
+
+const (
+	StorageTypeV1Circular    StorageType = 1 // V1: Single circular buffer
+	StorageTypeV2Partitioned StorageType = 2 // V2: Partitioned storage
+)
+
 // Config defines the configuration for creating a new store.
 type Config struct {
 	Name           string   // Unique name for this store
 	Path           string   // Directory path where store files will be created
-	NumBlocks      uint32   // Number of primary blocks in the circular buffer
+	NumBlocks      uint32   // Number of primary blocks in the circular buffer (V1)
 	DataBlockSize  uint32   // Size of each data block (must be power of 2, >= 64)
 	IndexBlockSize uint32   // Size of each index block (must be power of 2, >= 64)
 	DataType       DataType // Type of data stored (binary, text, json, schema)
+
+	// V2 Partitioned storage fields
+	StorageType   StorageType // V1 (circular) or V2 (partitioned), default: V2
+	NumPartitions uint32      // Number of partitions (default: 6, max: 16)
+	TotalSize     int64       // Total size in bytes (used to calculate blocks per partition)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 // Name and Path must still be set.
 func DefaultConfig() Config {
 	return Config{
-		NumBlocks:      1024,         // 1K primary blocks
-		DataBlockSize:  4096,         // 4KB data blocks
-		IndexBlockSize: 4096,         // 4KB index blocks
-		DataType:       DataTypeJSON, // JSON by default
+		NumBlocks:      1024,                    // 1K primary blocks (V1)
+		DataBlockSize:  4096,                    // 4KB data blocks
+		IndexBlockSize: 4096,                    // 4KB index blocks
+		DataType:       DataTypeJSON,            // JSON by default
+		StorageType:    StorageTypeV2Partitioned, // V2 partitioned by default
+		NumPartitions:  6,                       // 6 partitions
+		TotalSize:      0,                       // 0 = use NumBlocks for sizing
+	}
+}
+
+// DefaultConfigV1 returns a Config for V1 circular buffer storage.
+// Name and Path must still be set.
+func DefaultConfigV1() Config {
+	return Config{
+		NumBlocks:      1024,                 // 1K primary blocks
+		DataBlockSize:  4096,                 // 4KB data blocks
+		IndexBlockSize: 4096,                 // 4KB index blocks
+		DataType:       DataTypeJSON,         // JSON by default
+		StorageType:    StorageTypeV1Circular, // V1 circular buffer
 	}
 }
 
@@ -91,16 +122,49 @@ func (c *Config) Validate() error {
 	if c.Path == "" {
 		return ErrPathRequired
 	}
-	if c.NumBlocks == 0 {
-		return ErrInvalidNumBlocks
-	}
 	if err := block.ValidateBlockSize(c.DataBlockSize); err != nil {
 		return err
 	}
 	if err := block.ValidateBlockSize(c.IndexBlockSize); err != nil {
 		return err
 	}
+
+	// V1-specific validation
+	if c.StorageType == StorageTypeV1Circular || c.StorageType == 0 {
+		if c.NumBlocks == 0 {
+			return ErrInvalidNumBlocks
+		}
+	}
+
+	// V2-specific validation
+	if c.StorageType == StorageTypeV2Partitioned {
+		if c.NumPartitions == 0 {
+			c.NumPartitions = defaultNumPartitions
+		}
+		if c.NumPartitions > maxPartitions {
+			return ErrTooManyPartitions
+		}
+		// If TotalSize is specified, calculate NumBlocks per partition
+		// Otherwise use NumBlocks to derive per-partition size
+		if c.TotalSize > 0 {
+			blocksPerPartition := c.TotalSize / int64(c.NumPartitions) / int64(c.DataBlockSize)
+			if blocksPerPartition == 0 {
+				return ErrInvalidNumBlocks
+			}
+		} else if c.NumBlocks == 0 {
+			return ErrInvalidNumBlocks
+		}
+	}
+
 	return nil
+}
+
+// BlocksPerPartition returns the number of blocks per partition for V2 stores.
+func (c *Config) BlocksPerPartition() uint32 {
+	if c.TotalSize > 0 {
+		return uint32(c.TotalSize / int64(c.NumPartitions) / int64(c.DataBlockSize))
+	}
+	return c.NumBlocks
 }
 
 // DataFileSize returns the total size of the data file in bytes.

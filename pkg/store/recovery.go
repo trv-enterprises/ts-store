@@ -172,3 +172,140 @@ func (s *Store) isBlockEmpty(blockNum uint32) (bool, error) {
 	}
 	return header.DataLen == 0 && header.Flags == 0 && header.Timestamp == 0, nil
 }
+
+// V2 Partition Recovery
+
+// recoverPartitionsV2 performs crash recovery for V2 partitioned stores.
+// Discovers partition directories, validates each, and rebuilds partition order.
+func (s *Store) recoverPartitionsV2() error {
+	// For each active partition, perform per-partition recovery
+	for i := uint8(0); i < s.globalMeta.ActiveCount; i++ {
+		partID := uint32(s.globalMeta.PartitionOrder[i])
+		p := s.partitions[partID]
+		if p == nil {
+			continue
+		}
+
+		if err := s.recoverPartition(p); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// recoverPartition performs crash recovery for a single partition.
+func (s *Store) recoverPartition(p *Partition) error {
+	// Phase 1: Find orphaned head blocks
+	orphanedHead, err := s.findOrphanedHeadInPartition(p)
+	if err != nil {
+		return err
+	}
+	if orphanedHead != p.meta.HeadBlock {
+		p.meta.HeadBlock = orphanedHead
+	}
+
+	// Phase 2: Fix write offset
+	if err := s.fixWriteOffsetInPartition(p); err != nil {
+		return err
+	}
+
+	// Phase 3: Update timestamp bounds
+	if err := s.updatePartitionTimestampBounds(p); err != nil {
+		return err
+	}
+
+	return p.writeMeta()
+}
+
+// findOrphanedHeadInPartition finds orphaned blocks in a partition.
+func (s *Store) findOrphanedHeadInPartition(p *Partition) (uint32, error) {
+	currentHead := p.meta.HeadBlock
+
+	// Check if partition is empty
+	headHeader, err := p.readBlockHeader(currentHead)
+	if err != nil {
+		return currentHead, nil
+	}
+	if headHeader.DataLen == 0 && headHeader.Flags == 0 {
+		return currentHead, nil
+	}
+
+	// Scan forward looking for orphaned blocks
+	maxScans := p.numBlocks
+	for i := uint32(0); i < maxScans; i++ {
+		nextBlock := currentHead + 1
+		if nextBlock >= p.numBlocks {
+			break // V2 partitions don't wrap
+		}
+
+		header, err := p.readBlockHeader(nextBlock)
+		if err != nil {
+			break
+		}
+
+		if header.Flags == 0 && header.DataLen == 0 {
+			break // Empty block, no orphan
+		}
+
+		currentHead = nextBlock
+	}
+
+	return currentHead, nil
+}
+
+// fixWriteOffsetInPartition recalculates WriteOffset for a partition.
+func (s *Store) fixWriteOffsetInPartition(p *Partition) error {
+	header, err := p.readBlockHeader(p.meta.HeadBlock)
+	if err != nil {
+		return nil
+	}
+
+	if header.DataLen == 0 && header.Flags == 0 {
+		p.meta.WriteOffset = 0
+		return nil
+	}
+
+	if header.IsPacked() && !header.IsContinuation() {
+		p.meta.WriteOffset = block.BlockHeaderSize + header.DataLen
+	}
+
+	return nil
+}
+
+// updatePartitionTimestampBounds updates min/max timestamps for a partition.
+func (s *Store) updatePartitionTimestampBounds(p *Partition) error {
+	if p.activeBlockCount() == 0 {
+		p.meta.MinTimestamp = 0
+		p.meta.MaxTimestamp = 0
+		return nil
+	}
+
+	// Get min timestamp from first block
+	firstEntry, err := p.readIndexEntry(0)
+	if err == nil && firstEntry.Timestamp > 0 {
+		p.meta.MinTimestamp = firstEntry.Timestamp
+	}
+
+	// Get max timestamp from head block's last object
+	headEntry, err := p.readIndexEntry(p.meta.HeadBlock)
+	if err == nil && headEntry.Timestamp > 0 {
+		// Scan for last object timestamp
+		lastTs := headEntry.Timestamp
+		offset := uint32(block.BlockHeaderSize)
+		for offset < p.meta.WriteOffset {
+			objHeader, err := p.readObjectHeader(p.meta.HeadBlock, offset)
+			if err != nil || objHeader.Timestamp == 0 {
+				break
+			}
+			lastTs = objHeader.Timestamp
+			if objHeader.NextOffset == 0 || objHeader.IsLastInBlock() {
+				break
+			}
+			offset = objHeader.NextOffset
+		}
+		p.meta.MaxTimestamp = lastTs
+	}
+
+	return nil
+}

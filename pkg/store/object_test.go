@@ -15,7 +15,7 @@ import (
 func TestPutGetSmallObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "small-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -68,7 +68,7 @@ func TestPutGetSmallObject(t *testing.T) {
 func TestSpanningObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "spanning-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -147,7 +147,7 @@ func TestSpanningObject(t *testing.T) {
 func TestMaxObjectSize(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "max-size-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -191,7 +191,7 @@ func TestMaxObjectSize(t *testing.T) {
 func TestDeleteObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "delete-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -233,7 +233,7 @@ func TestDeleteObject(t *testing.T) {
 func TestDeleteObjectByTime(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "delete-by-time-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -267,7 +267,7 @@ func TestDeleteObjectByTime(t *testing.T) {
 func TestDeleteSpanningObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "delete-spanning-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -321,7 +321,7 @@ func TestDeleteSpanningObject(t *testing.T) {
 func TestDeleteLargeSpanningObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "delete-large-spanning-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -382,7 +382,7 @@ func TestDeleteLargeSpanningObject(t *testing.T) {
 func TestMultipleObjects(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "multi-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -452,7 +452,7 @@ func TestMultipleObjects(t *testing.T) {
 func TestGetObjectByBlock(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "get-by-block-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -489,7 +489,7 @@ func TestGetObjectByBlock(t *testing.T) {
 func TestGetOldestNewestObjects(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "oldest-newest-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -537,7 +537,7 @@ func TestGetOldestNewestObjects(t *testing.T) {
 func TestGetObjectsInRange(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "range-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -570,7 +570,7 @@ func TestGetObjectsInRange(t *testing.T) {
 func TestTimestampOutOfOrder(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "timestamp-order-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100

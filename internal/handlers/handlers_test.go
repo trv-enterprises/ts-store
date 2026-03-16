@@ -352,8 +352,8 @@ func TestDeleteByTimestamp(t *testing.T) {
 	router, storeService, _, _ := setupTestRouter(t)
 	defer storeService.CloseAll()
 
-	// Create a store
-	body := `{"name": "del-time-test"}`
+	// Create a V1 store (delete is only supported in V1)
+	body := `{"name": "del-time-test", "storage_type": "v1"}`
 	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

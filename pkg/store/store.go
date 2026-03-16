@@ -62,16 +62,23 @@ type StoreMetadata struct {
 const metadataSize = 64
 
 // Store represents an open circular time series store.
+// Supports both V1 (single circular buffer) and V2 (partitioned) storage.
 type Store struct {
 	mu        sync.RWMutex
 	config    Config
-	meta      StoreMetadata
-	dataFile  *os.File
-	indexFile *os.File
-	metaFile  *os.File
+	meta      StoreMetadata  // V1 metadata
+	dataFile  *os.File       // V1 data file
+	indexFile *os.File       // V1 index file
+	metaFile  *os.File       // Shared metadata file (both V1 and V2)
 	schemaSet *schema.SchemaSet // Only used for DataTypeSchema stores
 	closed    bool
 	path      string
+
+	// V2 partitioned storage fields
+	isV2             bool                   // True if V2 partitioned store
+	globalMeta       *GlobalMetadata        // V2 global metadata
+	partitions       map[uint32]*Partition  // V2 partition map (id -> partition)
+	currentPartition *Partition             // V2 current write partition
 }
 
 // Create creates a new store with the given configuration.
@@ -80,6 +87,16 @@ func Create(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	// Route to V2 creation if configured for partitioned storage
+	if cfg.StorageType == StorageTypeV2Partitioned {
+		return createV2(cfg)
+	}
+
+	return createV1(cfg)
+}
+
+// createV1 creates a new V1 circular buffer store.
+func createV1(cfg Config) (*Store, error) {
 	storePath := filepath.Join(cfg.Path, cfg.Name)
 
 	// Check if store already exists
@@ -157,11 +174,8 @@ func Create(cfg Config) (*Store, error) {
 		metaFile:  metaFile,
 		closed:    false,
 		path:      storePath,
+		isV2:      false,
 	}
-
-	// Initialize all primary blocks as available (not yet used)
-	// They're not on the free list - they're virgin blocks
-	// The free list is for reclaimed blocks
 
 	// Write initial metadata
 	if err := s.writeMeta(); err != nil {
@@ -173,7 +187,82 @@ func Create(cfg Config) (*Store, error) {
 	return s, nil
 }
 
+// createV2 creates a new V2 partitioned store.
+func createV2(cfg Config) (*Store, error) {
+	storePath := filepath.Join(cfg.Path, cfg.Name)
+
+	// Check if store already exists
+	if _, err := os.Stat(storePath); err == nil {
+		return nil, ErrStoreExists
+	}
+
+	// Create store directory
+	if err := os.MkdirAll(storePath, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create store directory: %w", err)
+	}
+
+	metaPath := filepath.Join(storePath, metaFileName)
+
+	// Create global metadata file
+	metaFile, err := os.Create(metaPath)
+	if err != nil {
+		os.RemoveAll(storePath)
+		return nil, fmt.Errorf("failed to create meta file: %w", err)
+	}
+
+	blocksPerPart := cfg.BlocksPerPartition()
+
+	// Initialize global metadata
+	globalMeta := &GlobalMetadata{
+		Magic:            magicNumberV2,
+		Version:          versionV2,
+		NumPartitions:    cfg.NumPartitions,
+		BlocksPerPart:    blocksPerPart,
+		BlockSize:        cfg.DataBlockSize,
+		DataType:         cfg.DataType,
+		CurrentPartition: 0,
+		OldestPartition:  0,
+		ActiveCount:      0,
+	}
+
+	s := &Store{
+		config:     cfg,
+		metaFile:   metaFile,
+		closed:     false,
+		path:       storePath,
+		isV2:       true,
+		globalMeta: globalMeta,
+		partitions: make(map[uint32]*Partition),
+	}
+
+	// Create the first partition
+	firstPart, err := createPartition(storePath, 0, blocksPerPart, cfg.DataBlockSize)
+	if err != nil {
+		metaFile.Close()
+		os.RemoveAll(storePath)
+		return nil, fmt.Errorf("failed to create first partition: %w", err)
+	}
+
+	s.partitions[0] = firstPart
+	s.currentPartition = firstPart
+	s.globalMeta.CurrentPartition = 0
+	s.globalMeta.OldestPartition = 0
+	s.globalMeta.PartitionOrder[0] = 0
+	s.globalMeta.ActiveCount = 1
+
+	// Write global metadata
+	if err := s.writeGlobalMeta(); err != nil {
+		firstPart.Close()
+		metaFile.Close()
+		os.RemoveAll(storePath)
+		return nil, fmt.Errorf("failed to write global metadata: %w", err)
+	}
+
+	return s, nil
+}
+
 // Open opens an existing store.
+// Automatically detects V1 vs V2 format based on the magic number.
 func Open(path string, name string) (*Store, error) {
 	storePath := filepath.Join(path, name)
 
@@ -182,15 +271,38 @@ func Open(path string, name string) (*Store, error) {
 		return nil, ErrStoreNotFound
 	}
 
-	dataPath := filepath.Join(storePath, dataFileName)
-	indexPath := filepath.Join(storePath, indexFileName)
 	metaPath := filepath.Join(storePath, metaFileName)
 
-	// Open metadata file and read metadata
+	// Open metadata file and read magic to detect version
 	metaFile, err := os.OpenFile(metaPath, os.O_RDWR, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open meta file: %w", err)
 	}
+
+	// Read first 8 bytes to get magic number
+	magicBuf := make([]byte, 8)
+	if _, err := metaFile.ReadAt(magicBuf, 0); err != nil {
+		metaFile.Close()
+		return nil, fmt.Errorf("failed to read magic number: %w", err)
+	}
+	magic := binary.LittleEndian.Uint64(magicBuf)
+
+	// Route to appropriate open function based on magic
+	if IsV2Store(magic) {
+		return openV2(path, name, storePath, metaFile)
+	}
+	if IsV1Store(magic) {
+		return openV1(path, name, storePath, metaFile)
+	}
+
+	metaFile.Close()
+	return nil, ErrInvalidMagic
+}
+
+// openV1 opens a V1 circular buffer store.
+func openV1(path string, name string, storePath string, metaFile *os.File) (*Store, error) {
+	dataPath := filepath.Join(storePath, dataFileName)
+	indexPath := filepath.Join(storePath, indexFileName)
 
 	var meta StoreMetadata
 	if err := readMetadata(metaFile, &meta); err != nil {
@@ -198,11 +310,7 @@ func Open(path string, name string) (*Store, error) {
 		return nil, err
 	}
 
-	// Validate magic and version
-	if meta.Magic != magicNumber {
-		metaFile.Close()
-		return nil, ErrInvalidMagic
-	}
+	// Validate version
 	if meta.Version != version {
 		metaFile.Close()
 		return nil, ErrVersionMismatch
@@ -230,6 +338,7 @@ func Open(path string, name string) (*Store, error) {
 		DataBlockSize:  meta.DataBlockSize,
 		IndexBlockSize: meta.IndexBlockSize,
 		DataType:       meta.DataType,
+		StorageType:    StorageTypeV1Circular,
 	}
 
 	s := &Store{
@@ -240,12 +349,86 @@ func Open(path string, name string) (*Store, error) {
 		metaFile:  metaFile,
 		closed:    false,
 		path:      storePath,
+		isV2:      false,
 	}
 
 	// Perform crash recovery to fix any inconsistencies
 	if err := s.recoverFromCrash(); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("crash recovery failed: %w", err)
+	}
+
+	// Load schema for schema stores
+	if err := s.loadSchema(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("failed to load schema: %w", err)
+	}
+
+	return s, nil
+}
+
+// openV2 opens a V2 partitioned store.
+func openV2(path string, name string, storePath string, metaFile *os.File) (*Store, error) {
+	// Read global metadata
+	buf := make([]byte, globalMetadataSize)
+	if _, err := metaFile.ReadAt(buf, 0); err != nil {
+		metaFile.Close()
+		return nil, fmt.Errorf("failed to read global metadata: %w", err)
+	}
+
+	globalMeta := DecodeGlobalMetadata(buf)
+
+	// Validate version
+	if globalMeta.Version != versionV2 {
+		metaFile.Close()
+		return nil, ErrVersionMismatch
+	}
+
+	cfg := Config{
+		Name:           name,
+		Path:           path,
+		NumBlocks:      globalMeta.BlocksPerPart,
+		DataBlockSize:  globalMeta.BlockSize,
+		IndexBlockSize: 4096, // Default, not stored in V2 global meta
+		DataType:       globalMeta.DataType,
+		StorageType:    StorageTypeV2Partitioned,
+		NumPartitions:  globalMeta.NumPartitions,
+	}
+
+	s := &Store{
+		config:     cfg,
+		metaFile:   metaFile,
+		closed:     false,
+		path:       storePath,
+		isV2:       true,
+		globalMeta: globalMeta,
+		partitions: make(map[uint32]*Partition),
+	}
+
+	// Open all active partitions
+	for i := uint8(0); i < globalMeta.ActiveCount; i++ {
+		partID := uint32(globalMeta.PartitionOrder[i])
+		part, err := openPartition(storePath, partID, globalMeta.BlockSize)
+		if err != nil {
+			// Clean up already opened partitions
+			for _, p := range s.partitions {
+				p.Close()
+			}
+			metaFile.Close()
+			return nil, fmt.Errorf("failed to open partition %d: %w", partID, err)
+		}
+		s.partitions[partID] = part
+	}
+
+	// Set current partition
+	if globalMeta.ActiveCount > 0 {
+		s.currentPartition = s.partitions[globalMeta.CurrentPartition]
+	}
+
+	// Perform V2 crash recovery
+	if err := s.recoverPartitionsV2(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("partition recovery failed: %w", err)
 	}
 
 	// Load schema for schema stores
@@ -268,30 +451,47 @@ func (s *Store) Close() error {
 
 	var errs []error
 
-	// Write final metadata
-	if err := s.writeMetaLocked(); err != nil {
-		errs = append(errs, err)
+	if s.isV2 {
+		// V2: Close all partitions
+		for _, p := range s.partitions {
+			if p != nil {
+				if err := p.Close(); err != nil {
+					errs = append(errs, err)
+				}
+			}
+		}
+
+		// Write final global metadata
+		if err := s.writeGlobalMeta(); err != nil {
+			errs = append(errs, err)
+		}
+	} else {
+		// V1: Write final metadata
+		if err := s.writeMetaLocked(); err != nil {
+			errs = append(errs, err)
+		}
+
+		// Sync and close V1 files
+		if s.dataFile != nil {
+			if err := s.dataFile.Sync(); err != nil {
+				errs = append(errs, err)
+			}
+			if err := s.dataFile.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+
+		if s.indexFile != nil {
+			if err := s.indexFile.Sync(); err != nil {
+				errs = append(errs, err)
+			}
+			if err := s.indexFile.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 
-	// Sync and close files
-	if s.dataFile != nil {
-		if err := s.dataFile.Sync(); err != nil {
-			errs = append(errs, err)
-		}
-		if err := s.dataFile.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
-	if s.indexFile != nil {
-		if err := s.indexFile.Sync(); err != nil {
-			errs = append(errs, err)
-		}
-		if err := s.indexFile.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-
+	// Close metadata file (shared by V1 and V2)
 	if s.metaFile != nil {
 		if err := s.metaFile.Sync(); err != nil {
 			errs = append(errs, err)
@@ -333,7 +533,11 @@ func (s *Store) Reset() error {
 		return ErrStoreClosed
 	}
 
-	// Reset metadata to initial state - this makes all existing data inaccessible
+	if s.isV2 {
+		return s.resetV2()
+	}
+
+	// V1: Reset metadata to initial state - this makes all existing data inaccessible
 	// The circular buffer will overwrite old blocks naturally as new data arrives
 	s.meta.HeadBlock = 0
 	s.meta.TailBlock = 0
@@ -361,6 +565,39 @@ func (s *Store) Reset() error {
 	return nil
 }
 
+// resetV2 performs a reset for V2 partitioned stores.
+// Deletes all partitions except the first one, which is cleared.
+func (s *Store) resetV2() error {
+	// Close and delete all partitions except first
+	for id, p := range s.partitions {
+		if p != nil {
+			p.Close()
+		}
+		if id != 0 {
+			deletePartition(s.path, id)
+		}
+		delete(s.partitions, id)
+	}
+
+	// Delete partition 0 and recreate it
+	deletePartition(s.path, 0)
+
+	newPart, err := createPartition(s.path, 0, s.globalMeta.BlocksPerPart, s.globalMeta.BlockSize)
+	if err != nil {
+		return fmt.Errorf("failed to create partition 0: %w", err)
+	}
+
+	s.partitions[0] = newPart
+	s.currentPartition = newPart
+	s.globalMeta.CurrentPartition = 0
+	s.globalMeta.OldestPartition = 0
+	s.globalMeta.ActiveCount = 1
+	s.globalMeta.PartitionOrder = [16]uint8{}
+	s.globalMeta.PartitionOrder[0] = 0
+
+	return s.writeGlobalMeta()
+}
+
 // DeleteStore removes a store by path and name without opening it.
 func DeleteStore(path string, name string) error {
 	storePath := filepath.Join(path, name)
@@ -378,13 +615,27 @@ func (s *Store) Config() Config {
 func (s *Store) DataType() DataType {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.isV2 {
+		return s.globalMeta.DataType
+	}
 	return s.meta.DataType
+}
+
+// IsV2 returns true if this is a V2 partitioned store.
+func (s *Store) IsV2() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isV2
 }
 
 // Stats returns current store statistics.
 func (s *Store) Stats() StoreStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	if s.isV2 {
+		return s.statsV2()
+	}
 
 	stats := StoreStats{
 		// Block configuration
@@ -402,6 +653,9 @@ func (s *Store) Stats() StoreStats {
 
 		// Derived stats
 		ActiveBlocks: s.activeBlockCount(),
+
+		// Version
+		StorageVersion: 1,
 	}
 
 	// Get oldest timestamp (from tail)
@@ -419,20 +673,73 @@ func (s *Store) Stats() StoreStats {
 	return stats
 }
 
+// statsV2 returns statistics for V2 partitioned stores.
+func (s *Store) statsV2() StoreStats {
+	stats := StoreStats{
+		// Block configuration (per partition)
+		NumBlocks:     s.globalMeta.BlocksPerPart,
+		DataBlockSize: s.globalMeta.BlockSize,
+
+		// Data type
+		DataType: s.globalMeta.DataType.String(),
+
+		// V2-specific
+		StorageVersion:   2,
+		NumPartitions:    s.globalMeta.NumPartitions,
+		ActivePartitions: uint32(s.globalMeta.ActiveCount),
+		CurrentPartition: s.globalMeta.CurrentPartition,
+	}
+
+	// Collect partition stats
+	partStats := make([]PartitionStats, 0, s.globalMeta.ActiveCount)
+	var totalBlocks uint32
+	var oldestTs, newestTs int64
+
+	for i := uint8(0); i < s.globalMeta.ActiveCount; i++ {
+		partID := uint32(s.globalMeta.PartitionOrder[i])
+		if p, ok := s.partitions[partID]; ok {
+			ps := p.Stats()
+			partStats = append(partStats, ps)
+			totalBlocks += ps.HeadBlock + 1
+
+			if ps.MinTimestamp > 0 && (oldestTs == 0 || ps.MinTimestamp < oldestTs) {
+				oldestTs = ps.MinTimestamp
+			}
+			if ps.MaxTimestamp > newestTs {
+				newestTs = ps.MaxTimestamp
+			}
+		}
+	}
+
+	stats.PartitionStats = partStats
+	stats.ActiveBlocks = totalBlocks
+
+	if oldestTs > 0 {
+		stats.OldestTimestamp = oldestTs
+		stats.OldestTime = time.Unix(0, oldestTs).UTC().Format(time.RFC3339)
+	}
+	if newestTs > 0 {
+		stats.NewestTimestamp = newestTs
+		stats.NewestTime = time.Unix(0, newestTs).UTC().Format(time.RFC3339)
+	}
+
+	return stats
+}
+
 // StoreStats contains runtime statistics about the store.
 type StoreStats struct {
 	// Block configuration
 	NumBlocks      uint32 `json:"num_blocks"`
 	DataBlockSize  uint32 `json:"data_block_size"`
-	IndexBlockSize uint32 `json:"index_block_size"`
+	IndexBlockSize uint32 `json:"index_block_size,omitempty"`
 
 	// Data type
 	DataType string `json:"data_type"`
 
-	// Current state
-	HeadBlock   uint32 `json:"head_block"`
-	TailBlock   uint32 `json:"tail_block"`
-	WriteOffset uint32 `json:"write_offset"`
+	// Current state (V1)
+	HeadBlock   uint32 `json:"head_block,omitempty"`
+	TailBlock   uint32 `json:"tail_block,omitempty"`
+	WriteOffset uint32 `json:"write_offset,omitempty"`
 
 	// Derived stats
 	ActiveBlocks uint32 `json:"active_blocks"`
@@ -442,6 +749,13 @@ type StoreStats struct {
 	OldestTime      string `json:"oldest_time,omitempty"`
 	NewestTimestamp int64  `json:"newest_timestamp,omitempty"`
 	NewestTime      string `json:"newest_time,omitempty"`
+
+	// V2 Partition fields
+	StorageVersion   uint32           `json:"storage_version"`
+	NumPartitions    uint32           `json:"num_partitions,omitempty"`
+	ActivePartitions uint32           `json:"active_partitions,omitempty"`
+	CurrentPartition uint32           `json:"current_partition,omitempty"`
+	PartitionStats   []PartitionStats `json:"partition_stats,omitempty"`
 }
 
 // writeMeta writes metadata to disk (acquires lock).

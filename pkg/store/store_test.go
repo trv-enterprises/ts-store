@@ -14,7 +14,7 @@ import (
 func TestCreateAndOpen(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 
@@ -61,7 +61,7 @@ func TestCreateAndOpen(t *testing.T) {
 func TestCreateDuplicate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 
@@ -81,7 +81,7 @@ func TestCreateDuplicate(t *testing.T) {
 func TestInsertAndFind(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -126,7 +126,7 @@ func TestInsertAndFind(t *testing.T) {
 func TestCircularWrap(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 10 // Small circle for testing
@@ -170,7 +170,7 @@ func TestCircularWrap(t *testing.T) {
 func TestRangeQuery(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -210,7 +210,7 @@ func TestRangeQuery(t *testing.T) {
 func TestDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 
@@ -236,7 +236,7 @@ func TestBlockSizeValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Test invalid block size (not power of 2)
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 	cfg.DataBlockSize = 1000 // Not power of 2
@@ -261,7 +261,7 @@ func TestMultipleStores(t *testing.T) {
 	// Create multiple stores
 	stores := make([]*Store, 3)
 	for i := 0; i < 3; i++ {
-		cfg := DefaultConfig()
+		cfg := DefaultConfigV1()
 		cfg.Name = "store-" + string(rune('a'+i))
 		cfg.Path = tmpDir
 
@@ -301,7 +301,7 @@ func TestMultipleStores(t *testing.T) {
 func TestReset(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfig()
+	cfg := DefaultConfigV1()
 	cfg.Name = "reset-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
