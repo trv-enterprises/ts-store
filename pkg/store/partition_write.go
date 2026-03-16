@@ -374,36 +374,59 @@ func (s *Store) updatePreviousObjectLinkV2(p *Partition, blockNum uint32, newOff
 
 // rollToNewPartition seals the current partition and creates a new one.
 // If all partition slots are used, deletes the oldest partition first.
+//
+// This uses a phase-based approach for crash safety. The global metadata
+// write is the atomic commit point. By writing the phase before each
+// non-atomic filesystem operation, recovery knows what to clean up.
 func (s *Store) rollToNewPartition() error {
-	// Seal current partition if it exists and has data
+	// Seal current partition if it exists and has data (idempotent)
 	if s.currentPartition != nil && !s.currentPartition.isEmpty() {
 		if err := s.currentPartition.Seal(); err != nil {
 			return err
 		}
 	}
 
-	// Check if we need to delete the oldest partition
+	// Find next partition ID
+	nextID := (s.globalMeta.CurrentPartition + 1) % s.globalMeta.NumPartitions
+
+	// Phase 1: Delete oldest partition if needed
 	if s.globalMeta.ActiveCount >= uint8(s.globalMeta.NumPartitions) {
-		// Delete oldest partition
 		oldestID := uint32(s.globalMeta.PartitionOrder[0])
+
+		// Remove from in-memory tracking and commit Phase 1 BEFORE deleting
 		oldestPart := s.partitions[oldestID]
 		if oldestPart != nil {
 			if err := oldestPart.Close(); err != nil {
 				return err
 			}
 		}
+		s.partitions[oldestID] = nil
+		copy(s.globalMeta.PartitionOrder[:], s.globalMeta.PartitionOrder[1:])
+		s.globalMeta.PartitionOrder[s.globalMeta.ActiveCount-1] = 0
+		s.globalMeta.ActiveCount--
+
+		// Commit Phase 1: tells recovery to delete this partition directory
+		s.globalMeta.RolloverPhase = RolloverPhaseDeleting
+		s.globalMeta.RolloverTarget = oldestID
+		if err := s.writeGlobalMeta(); err != nil {
+			return err
+		}
+
+		// Now safe to delete the directory
 		if err := deletePartition(s.path, oldestID); err != nil {
 			return err
 		}
-		s.partitions[oldestID] = nil
-
-		// Shift partition order
-		copy(s.globalMeta.PartitionOrder[:], s.globalMeta.PartitionOrder[1:])
-		s.globalMeta.ActiveCount--
 	}
 
-	// Find next partition ID
-	nextID := (s.globalMeta.CurrentPartition + 1) % s.globalMeta.NumPartitions
+	// Commit Phase 2: tells recovery to clean up partial dir and create partition
+	s.globalMeta.RolloverPhase = RolloverPhaseCreating
+	s.globalMeta.RolloverTarget = nextID
+	if err := s.writeGlobalMeta(); err != nil {
+		return err
+	}
+
+	// Remove any orphaned directory at nextID before creating fresh
+	deletePartition(s.path, nextID)
 
 	// Create new partition
 	newPart, err := createPartition(s.path, nextID, s.globalMeta.BlocksPerPart, s.globalMeta.BlockSize)
@@ -411,18 +434,17 @@ func (s *Store) rollToNewPartition() error {
 		return err
 	}
 
-	// Update global metadata
+	// Finalize: add to tracking and commit Phase 0 (idle)
 	s.partitions[nextID] = newPart
 	s.currentPartition = newPart
 	s.globalMeta.CurrentPartition = nextID
 	s.globalMeta.PartitionOrder[s.globalMeta.ActiveCount] = uint8(nextID)
 	s.globalMeta.ActiveCount++
-
-	// Update oldest partition if this is the first one
 	if s.globalMeta.ActiveCount == 1 {
 		s.globalMeta.OldestPartition = nextID
 	}
-
+	s.globalMeta.RolloverPhase = RolloverPhaseIdle
+	s.globalMeta.RolloverTarget = 0
 	return s.writeGlobalMeta()
 }
 

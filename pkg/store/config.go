@@ -18,6 +18,7 @@ var (
 	ErrInvalidDataType        = errors.New("invalid data type: must be binary, text, json, or schema")
 	ErrSchemaRequired         = errors.New("schema is required for schema data type")
 	ErrDataTypeMismatch       = errors.New("data does not match store's data type")
+	ErrTooFewPartitions       = errors.New("number of partitions must be at least 2")
 	ErrTooManyPartitions      = errors.New("number of partitions cannot exceed 16")
 	ErrPartitionFull          = errors.New("partition is full")
 	ErrDeleteNotSupportedV2   = errors.New("individual object deletion not supported in V2 partitioned stores")
@@ -140,6 +141,9 @@ func (c *Config) Validate() error {
 	if c.StorageType == StorageTypeV2Partitioned {
 		if c.NumPartitions == 0 {
 			c.NumPartitions = defaultNumPartitions
+		}
+		if c.NumPartitions < 2 {
+			return ErrTooFewPartitions
 		}
 		if c.NumPartitions > maxPartitions {
 			return ErrTooManyPartitions

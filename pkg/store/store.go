@@ -405,10 +405,20 @@ func openV2(path string, name string, storePath string, metaFile *os.File) (*Sto
 		partitions: make(map[uint32]*Partition),
 	}
 
-	// Open all active partitions
-	for i := uint8(0); i < globalMeta.ActiveCount; i++ {
-		partID := uint32(globalMeta.PartitionOrder[i])
-		part, err := openPartition(storePath, partID, globalMeta.BlockSize)
+	// Recover from any interrupted rollover BEFORE opening partitions.
+	// This may create/delete partition directories and update globalMeta.
+	if err := s.recoverRolloverV2(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("rollover recovery failed: %w", err)
+	}
+
+	// Open all active partitions, skipping any already opened by recovery
+	for i := uint8(0); i < s.globalMeta.ActiveCount; i++ {
+		partID := uint32(s.globalMeta.PartitionOrder[i])
+		if s.partitions[partID] != nil {
+			continue // Already opened by rollover recovery
+		}
+		part, err := openPartition(storePath, partID, s.globalMeta.BlockSize)
 		if err != nil {
 			// Clean up already opened partitions
 			for _, p := range s.partitions {
@@ -421,14 +431,20 @@ func openV2(path string, name string, storePath string, metaFile *os.File) (*Sto
 	}
 
 	// Set current partition
-	if globalMeta.ActiveCount > 0 {
-		s.currentPartition = s.partitions[globalMeta.CurrentPartition]
+	if s.globalMeta.ActiveCount > 0 {
+		s.currentPartition = s.partitions[s.globalMeta.CurrentPartition]
 	}
 
-	// Perform V2 crash recovery
+	// Perform per-partition crash recovery
 	if err := s.recoverPartitionsV2(); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("partition recovery failed: %w", err)
+	}
+
+	// Clean up any orphaned partition directories
+	if err := s.cleanOrphanedPartitions(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("orphan cleanup failed: %w", err)
 	}
 
 	// Load schema for schema stores

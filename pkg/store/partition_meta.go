@@ -24,6 +24,13 @@ const (
 	defaultNumPartitions = 6
 )
 
+// Rollover phase constants for crash-safe partition rollover.
+const (
+	RolloverPhaseIdle     uint8 = 0 // No rollover in progress
+	RolloverPhaseDeleting uint8 = 1 // Deleting oldest partition
+	RolloverPhaseCreating uint8 = 2 // Creating new partition
+)
+
 // GlobalMetadata is persisted to meta.tsdb for V2 partitioned stores.
 // Total size: 128 bytes
 type GlobalMetadata struct {
@@ -37,7 +44,9 @@ type GlobalMetadata struct {
 	OldestPartition  uint32    // Will be deleted first (0-based)
 	PartitionOrder   [16]uint8 // Ordered list of partition IDs (oldest→newest)
 	ActiveCount      uint8     // Number of active partitions (1-16)
-	Reserved         [46]byte  // Reserved for future use
+	RolloverPhase    uint8     // Rollover state: 0=idle, 1=deleting, 2=creating
+	RolloverTarget   uint32    // Partition ID being operated on during rollover
+	Reserved         [41]byte  // Reserved for future use
 }
 
 // PartitionMetadata is persisted to each partition's meta.tsdb file.
@@ -68,7 +77,9 @@ func (m *GlobalMetadata) Encode() []byte {
 	binary.LittleEndian.PutUint32(buf[29:33], m.OldestPartition)
 	copy(buf[33:49], m.PartitionOrder[:])
 	buf[49] = m.ActiveCount
-	// bytes 50-127 reserved
+	buf[50] = m.RolloverPhase
+	binary.LittleEndian.PutUint32(buf[51:55], m.RolloverTarget)
+	// bytes 55-127 reserved
 	return buf
 }
 
@@ -85,6 +96,8 @@ func DecodeGlobalMetadata(buf []byte) *GlobalMetadata {
 	m.OldestPartition = binary.LittleEndian.Uint32(buf[29:33])
 	copy(m.PartitionOrder[:], buf[33:49])
 	m.ActiveCount = buf[49]
+	m.RolloverPhase = buf[50]
+	m.RolloverTarget = binary.LittleEndian.Uint32(buf[51:55])
 	return m
 }
 
