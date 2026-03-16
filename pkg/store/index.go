@@ -227,16 +227,11 @@ func (s *Store) GetOldestTimestamp() (int64, error) {
 		return 0, ErrStoreClosed
 	}
 
-	entry, err := s.readIndexEntry(s.meta.TailBlock)
-	if err != nil {
-		return 0, err
+	if s.isV2 {
+		return s.getOldestTimestampV2()
 	}
 
-	if entry.Timestamp == 0 {
-		return 0, ErrEmptyStore
-	}
-
-	return entry.Timestamp, nil
+	return s.getOldestTimestampLocked()
 }
 
 // GetNewestTimestamp returns the timestamp of the newest entry.
@@ -246,6 +241,10 @@ func (s *Store) GetNewestTimestamp() (int64, error) {
 
 	if s.closed {
 		return 0, ErrStoreClosed
+	}
+
+	if s.isV2 {
+		return s.getNewestTimestampV2()
 	}
 
 	return s.getNewestTimestampLocked()
