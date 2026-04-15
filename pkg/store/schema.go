@@ -25,12 +25,22 @@ func (s *Store) GetSchemaSet() *schema.SchemaSet {
 	return s.schemaSet
 }
 
+// dataTypeLocked returns the store's data type without acquiring the lock.
+// Caller must hold s.mu (read or write). For V2 partitioned stores, the
+// DataType lives in globalMeta; for V1 it's in meta.
+func (s *Store) dataTypeLocked() DataType {
+	if s.isV2 {
+		return s.globalMeta.DataType
+	}
+	return s.meta.DataType
+}
+
 // GetSchema returns the current schema version for schema stores.
 func (s *Store) GetSchema() (*schema.Schema, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.meta.DataType != DataTypeSchema {
+	if s.dataTypeLocked() != DataTypeSchema {
 		return nil, ErrSchemaNotSupported
 	}
 
@@ -47,7 +57,7 @@ func (s *Store) SetSchema(sch *schema.Schema) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.meta.DataType != DataTypeSchema {
+	if s.dataTypeLocked() != DataTypeSchema {
 		return 0, ErrSchemaNotSupported
 	}
 
@@ -74,7 +84,7 @@ func (s *Store) ValidateAndCompact(data []byte) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.meta.DataType != DataTypeSchema {
+	if s.dataTypeLocked() != DataTypeSchema {
 		return nil, ErrSchemaNotSupported
 	}
 
@@ -97,7 +107,7 @@ func (s *Store) ExpandData(data []byte, schemaVersion int) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if s.meta.DataType != DataTypeSchema {
+	if s.dataTypeLocked() != DataTypeSchema {
 		return nil, ErrSchemaNotSupported
 	}
 
@@ -122,7 +132,7 @@ func (s *Store) saveSchemaLocked() error {
 
 // loadSchema loads the schema from disk.
 func (s *Store) loadSchema() error {
-	if s.meta.DataType != DataTypeSchema {
+	if s.dataTypeLocked() != DataTypeSchema {
 		return nil // Not a schema store, nothing to load
 	}
 

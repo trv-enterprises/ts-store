@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tviviano/ts-store/pkg/block"
+	"github.com/tviviano/ts-store/pkg/schema"
 )
 
 // --- Metadata encode/decode round-trip tests ---
@@ -739,5 +740,72 @@ func TestRecoverV2CleanStore(t *testing.T) {
 	_, err = s2.PutObject(6000000, []byte("after recovery"))
 	if err != nil {
 		t.Fatalf("PutObject after V2 recovery failed: %v", err)
+	}
+}
+
+// Regression test for v0.5.0 bug: schema operations on V2 partitioned stores
+// returned ErrSchemaNotSupported because they read s.meta.DataType directly
+// instead of using s.dataTypeLocked() which handles V2's globalMeta.
+func TestV2SchemaStoreOperations(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "v2-schema-store"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 100
+	cfg.NumPartitions = 3
+	cfg.DataType = DataTypeSchema
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create V2 schema store: %v", err)
+	}
+	defer s.Close()
+
+	if !s.IsV2() {
+		t.Fatal("Expected V2 store")
+	}
+	if s.DataType() != DataTypeSchema {
+		t.Fatalf("DataType() = %v, want DataTypeSchema", s.DataType())
+	}
+
+	// SetSchema must succeed (would have failed with ErrSchemaNotSupported in v0.5.0)
+	sch := &schema.Schema{
+		Fields: []schema.Field{
+			{Index: 1, Name: "temperature", Type: "float32"},
+			{Index: 2, Name: "humidity", Type: "float32"},
+		},
+	}
+	version, err := s.SetSchema(sch)
+	if err != nil {
+		t.Fatalf("SetSchema on V2 schema store failed: %v", err)
+	}
+	if version != 1 {
+		t.Errorf("First schema version: got %d, want 1", version)
+	}
+
+	// GetSchema must return the schema we just set
+	got, err := s.GetSchema()
+	if err != nil {
+		t.Fatalf("GetSchema on V2 schema store failed: %v", err)
+	}
+	if len(got.Fields) != 2 {
+		t.Errorf("Schema fields: got %d, want 2", len(got.Fields))
+	}
+
+	// ValidateAndCompact must work
+	full := []byte(`{"temperature":72.5,"humidity":45}`)
+	compact, err := s.ValidateAndCompact(full)
+	if err != nil {
+		t.Fatalf("ValidateAndCompact on V2 schema store failed: %v", err)
+	}
+
+	// ExpandData must work
+	expanded, err := s.ExpandData(compact, 0)
+	if err != nil {
+		t.Fatalf("ExpandData on V2 schema store failed: %v", err)
+	}
+	if len(expanded) == 0 {
+		t.Error("ExpandData returned empty result")
 	}
 }
