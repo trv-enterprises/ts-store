@@ -6,9 +6,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,6 +18,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -58,6 +62,12 @@ func main() {
 		runCalcCommand(os.Args[2:])
 	case "status":
 		runStatusCommand(os.Args[2:])
+	case "stream":
+		if len(os.Args) < 3 {
+			printStreamUsage()
+			os.Exit(1)
+		}
+		runStreamCommand(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
@@ -79,6 +89,7 @@ Commands:
   serve     Start the API server
   create    Create a new store
   status    Show status of all stores
+  stream    Create outbound data streams (WebSocket push, MQTT sink)
   key       Manage API keys (requires device access)
   calc      Calculate storage footprint
   swagger   Open Swagger UI in browser to explore the API
@@ -1355,5 +1366,439 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 			}
 		}
 		fmt.Println()
+	}
+}
+
+// --- stream command ---
+
+func printStreamUsage() {
+	fmt.Println(`tsstore stream - Create outbound data streams
+
+Usage:
+  tsstore stream ws <store> [options]      Create a WebSocket push connection
+  tsstore stream mqtt <store> [options]    Create an MQTT sink connection
+
+Use "tsstore stream ws -h" or "tsstore stream mqtt -h" for details.`)
+}
+
+func printStreamWSUsage() {
+	fmt.Println(`tsstore stream ws - Create a WebSocket push connection
+
+Usage:
+  tsstore stream ws <store> --url <ws-url> [options]
+
+Required:
+  --url <url>              Remote WebSocket URL (ws:// or wss://)
+  --api-key <key>          Store API key (or set TSSTORE_API_KEY)
+
+Options:
+  --from <value>           Start position: "oldest" (default), "now", or nanosecond timestamp
+  --format <fmt>           Schema store format: "full" (default) or "compact"
+  --header <key:value>     Custom HTTP header (repeatable)
+  --filter <substring>     Only stream records matching this substring
+  --filter-ignore-case     Case-insensitive filtering
+  --agg-window <duration>  Aggregation time window (e.g., "1m", "5m", "1h")
+  --agg-fields <spec>      Per-field aggregation (e.g., "temperature:avg,humidity:avg")
+  --agg-default <func>     Default aggregation function (e.g., "avg" or "avg,sum,min,max")
+
+Examples:
+  tsstore stream ws my-store --url wss://remote:8080/data --api-key $KEY
+  tsstore stream ws my-store --url ws://dashboard/metrics --from now --agg-window 1m --agg-default avg
+  tsstore stream ws my-store --url wss://remote/data --header "Authorization:Bearer tok" --filter "building:north"`)
+}
+
+func printStreamMQTTUsage() {
+	fmt.Println(`tsstore stream mqtt - Create an MQTT sink connection
+
+Usage:
+  tsstore stream mqtt <store> --broker <url> --topic <topic> [options]
+
+Required:
+  --broker <url>           MQTT broker URL (tcp:// or ssl://)
+  --topic <topic>          MQTT topic to publish to
+  --api-key <key>          Store API key (or set TSSTORE_API_KEY)
+
+Options:
+  --from <value>           Start position: "oldest" (default), "now", or nanosecond timestamp
+  --client-id <id>         Custom MQTT client ID
+  --username <user>        MQTT authentication username
+  --password <pass>        MQTT authentication password
+  --include-timestamp      Wrap payload with {"timestamp": ..., "data": ...}
+  --cursor-interval <sec>  Cursor persistence: >0 persist every N sec, 0 memory only (default), -1 one-shot
+  --agg-window <duration>  Aggregation time window (e.g., "1m", "5m", "1h")
+  --agg-fields <spec>      Per-field aggregation (e.g., "temperature:avg,humidity:avg")
+  --agg-default <func>     Default aggregation function (e.g., "avg" or "avg,sum,min,max")
+
+Examples:
+  tsstore stream mqtt my-store --broker tcp://mqtt:1883 --topic sensors/temp --api-key $KEY
+  tsstore stream mqtt my-store --broker tcp://mqtt:1883 --topic metrics --from now --include-timestamp --cursor-interval 30
+  tsstore stream mqtt my-store --broker ssl://mqtt:8883 --topic agg/data --username user --password pass --agg-window 5m --agg-default avg`)
+}
+
+func runStreamCommand(args []string) {
+	subcommand := args[0]
+	switch subcommand {
+	case "ws":
+		runStreamWS(args[1:])
+	case "mqtt":
+		runStreamMQTT(args[1:])
+	case "-h", "--help":
+		printStreamUsage()
+	default:
+		fmt.Printf("Unknown stream type: %s (use 'ws' or 'mqtt')\n", subcommand)
+		printStreamUsage()
+		os.Exit(1)
+	}
+}
+
+func runStreamWS(args []string) {
+	var storeName, wsURL, apiKey, from, format, filter string
+	var aggWindow, aggFields, aggDefault string
+	var filterIgnoreCase bool
+	var headers []string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			printStreamWSUsage()
+			return
+		case "--url":
+			if i+1 < len(args) {
+				i++
+				wsURL = args[i]
+			}
+		case "--api-key":
+			if i+1 < len(args) {
+				i++
+				apiKey = args[i]
+			}
+		case "--from":
+			if i+1 < len(args) {
+				i++
+				from = args[i]
+			}
+		case "--format":
+			if i+1 < len(args) {
+				i++
+				format = args[i]
+			}
+		case "--header":
+			if i+1 < len(args) {
+				i++
+				headers = append(headers, args[i])
+			}
+		case "--filter":
+			if i+1 < len(args) {
+				i++
+				filter = args[i]
+			}
+		case "--filter-ignore-case":
+			filterIgnoreCase = true
+		case "--agg-window":
+			if i+1 < len(args) {
+				i++
+				aggWindow = args[i]
+			}
+		case "--agg-fields":
+			if i+1 < len(args) {
+				i++
+				aggFields = args[i]
+			}
+		case "--agg-default":
+			if i+1 < len(args) {
+				i++
+				aggDefault = args[i]
+			}
+		default:
+			if storeName == "" && !strings.HasPrefix(args[i], "-") {
+				storeName = args[i]
+			} else {
+				fmt.Printf("Unknown option: %s\n", args[i])
+				printStreamWSUsage()
+				os.Exit(1)
+			}
+		}
+	}
+
+	if storeName == "" {
+		fmt.Println("Error: store name is required")
+		printStreamWSUsage()
+		os.Exit(1)
+	}
+	if wsURL == "" {
+		fmt.Println("Error: --url is required")
+		printStreamWSUsage()
+		os.Exit(1)
+	}
+
+	apiKey = resolveAPIKey(apiKey)
+	if apiKey == "" {
+		fmt.Println("Error: API key required (use --api-key or set TSSTORE_API_KEY)")
+		os.Exit(1)
+	}
+
+	body := map[string]interface{}{
+		"mode": "push",
+		"url":  wsURL,
+		"from": parseFromValue(from),
+	}
+	if format != "" {
+		body["format"] = format
+	}
+	if len(headers) > 0 {
+		headerMap := make(map[string]string)
+		for _, h := range headers {
+			k, v, ok := strings.Cut(h, ":")
+			if !ok {
+				fmt.Printf("Error: invalid header format %q (expected key:value)\n", h)
+				os.Exit(1)
+			}
+			headerMap[k] = v
+		}
+		body["headers"] = headerMap
+	}
+	if filter != "" {
+		body["filter"] = filter
+	}
+	if filterIgnoreCase {
+		body["filter_ignore_case"] = true
+	}
+	if aggWindow != "" {
+		body["agg_window"] = aggWindow
+	}
+	if aggFields != "" {
+		body["agg_fields"] = aggFields
+	}
+	if aggDefault != "" {
+		body["agg_default"] = aggDefault
+	}
+
+	cfg := loadStreamConfig()
+	path := fmt.Sprintf("/api/stores/%s/ws/connections", storeName)
+	streamAPIPost(cfg, apiKey, path, body)
+}
+
+func runStreamMQTT(args []string) {
+	var storeName, brokerURL, topic, apiKey, from string
+	var clientID, username, password string
+	var aggWindow, aggFields, aggDefault string
+	var includeTimestamp bool
+	cursorInterval := (*int)(nil)
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			printStreamMQTTUsage()
+			return
+		case "--broker":
+			if i+1 < len(args) {
+				i++
+				brokerURL = args[i]
+			}
+		case "--topic":
+			if i+1 < len(args) {
+				i++
+				topic = args[i]
+			}
+		case "--api-key":
+			if i+1 < len(args) {
+				i++
+				apiKey = args[i]
+			}
+		case "--from":
+			if i+1 < len(args) {
+				i++
+				from = args[i]
+			}
+		case "--client-id":
+			if i+1 < len(args) {
+				i++
+				clientID = args[i]
+			}
+		case "--username":
+			if i+1 < len(args) {
+				i++
+				username = args[i]
+			}
+		case "--password":
+			if i+1 < len(args) {
+				i++
+				password = args[i]
+			}
+		case "--include-timestamp":
+			includeTimestamp = true
+		case "--cursor-interval":
+			if i+1 < len(args) {
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil {
+					fmt.Printf("Error: --cursor-interval must be an integer, got %q\n", args[i])
+					os.Exit(1)
+				}
+				cursorInterval = &n
+			}
+		case "--agg-window":
+			if i+1 < len(args) {
+				i++
+				aggWindow = args[i]
+			}
+		case "--agg-fields":
+			if i+1 < len(args) {
+				i++
+				aggFields = args[i]
+			}
+		case "--agg-default":
+			if i+1 < len(args) {
+				i++
+				aggDefault = args[i]
+			}
+		default:
+			if storeName == "" && !strings.HasPrefix(args[i], "-") {
+				storeName = args[i]
+			} else {
+				fmt.Printf("Unknown option: %s\n", args[i])
+				printStreamMQTTUsage()
+				os.Exit(1)
+			}
+		}
+	}
+
+	if storeName == "" {
+		fmt.Println("Error: store name is required")
+		printStreamMQTTUsage()
+		os.Exit(1)
+	}
+	if brokerURL == "" {
+		fmt.Println("Error: --broker is required")
+		printStreamMQTTUsage()
+		os.Exit(1)
+	}
+	if topic == "" {
+		fmt.Println("Error: --topic is required")
+		printStreamMQTTUsage()
+		os.Exit(1)
+	}
+
+	apiKey = resolveAPIKey(apiKey)
+	if apiKey == "" {
+		fmt.Println("Error: API key required (use --api-key or set TSSTORE_API_KEY)")
+		os.Exit(1)
+	}
+
+	body := map[string]interface{}{
+		"broker_url": brokerURL,
+		"topic":      topic,
+		"from":       parseFromValue(from),
+	}
+	if clientID != "" {
+		body["client_id"] = clientID
+	}
+	if username != "" {
+		body["username"] = username
+	}
+	if password != "" {
+		body["password"] = password
+	}
+	if includeTimestamp {
+		body["include_timestamp"] = true
+	}
+	if cursorInterval != nil {
+		body["cursor_persist_interval"] = *cursorInterval
+	}
+	if aggWindow != "" {
+		body["agg_window"] = aggWindow
+	}
+	if aggFields != "" {
+		body["agg_fields"] = aggFields
+	}
+	if aggDefault != "" {
+		body["agg_default"] = aggDefault
+	}
+
+	cfg := loadStreamConfig()
+	path := fmt.Sprintf("/api/stores/%s/mqtt/connections", storeName)
+	streamAPIPost(cfg, apiKey, path, body)
+}
+
+func resolveAPIKey(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return os.Getenv("TSSTORE_API_KEY")
+}
+
+func parseFromValue(s string) int64 {
+	switch strings.ToLower(s) {
+	case "", "oldest", "0":
+		return 0
+	case "now", "-1":
+		return -1
+	default:
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			fmt.Printf("Error: --from must be 'oldest', 'now', or a nanosecond timestamp, got %q\n", s)
+			os.Exit(1)
+		}
+		return n
+	}
+}
+
+func loadStreamConfig() *config.Config {
+	configPath := defaultConfigPath
+	if envPath := os.Getenv("TSSTORE_CONFIG"); envPath != "" {
+		configPath = envPath
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+	cfg.LoadFromEnv()
+	return cfg
+}
+
+func streamAPIPost(cfg *config.Config, apiKey, path string, body interface{}) {
+	scheme := "http"
+	if cfg.TLSEnabled() {
+		scheme = "https"
+	}
+	host := cfg.Server.Host
+	if host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	baseURL := fmt.Sprintf("%s://%s:%d", scheme, host, cfg.Server.Port)
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		log.Fatalf("Failed to encode request: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", baseURL+path, bytes.NewReader(jsonBody))
+	if err != nil {
+		log.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error: could not reach server at %s\n", baseURL)
+		fmt.Println("Make sure the ts-store server is running (tsstore serve)")
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusCreated {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, respBody, "", "  ") == nil {
+			fmt.Println(pretty.String())
+		} else {
+			fmt.Println(string(respBody))
+		}
+	} else {
+		fmt.Printf("Error (%d): %s\n", resp.StatusCode, string(respBody))
+		os.Exit(1)
 	}
 }
