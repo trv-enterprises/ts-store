@@ -276,6 +276,10 @@ func (p *Pusher) runLoop() {
 		// Reset retry delay on successful connection
 		retryDelay = time.Second
 
+		// Start read loop for incoming control messages (e.g., seek)
+		p.wg.Add(1)
+		go p.readLoop()
+
 		// Run the push loop
 		err = p.pushLoop()
 		if err != nil {
@@ -552,4 +556,61 @@ func (p *Pusher) setError(msg string) {
 	p.status = "error"
 	atomic.AddInt64(&p.errors, 1)
 	p.mu.Unlock()
+}
+
+// readLoop reads incoming control messages from the remote server.
+// This enables the remote end to control the push stream (e.g., seek to a
+// timestamp for gap recovery in outbound-only firewall environments).
+func (p *Pusher) readLoop() {
+	defer p.wg.Done()
+
+	for {
+		p.mu.RLock()
+		conn := p.conn
+		p.mu.RUnlock()
+
+		if conn == nil {
+			return
+		}
+
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			// Connection closed or error -- pushLoop handles reconnect
+			return
+		}
+
+		p.handleControlMessage(message)
+	}
+}
+
+// handleControlMessage processes a control message from the remote server.
+// Supported message types:
+//   - "seek": rewind the push cursor to a given timestamp
+func (p *Pusher) handleControlMessage(message []byte) {
+	var msg struct {
+		Type      string `json:"type"`
+		Timestamp int64  `json:"timestamp"`
+	}
+	if err := json.Unmarshal(message, &msg); err != nil {
+		log.Printf("WS push %s: ignoring unparseable control message", p.config.ID)
+		return
+	}
+
+	switch msg.Type {
+	case "seek":
+		log.Printf("WS push %s: seek to timestamp %d", p.config.ID, msg.Timestamp)
+		p.mu.Lock()
+		p.lastTimestamp = msg.Timestamp
+		// Reset aggregation state to avoid mixing old/new window data.
+		// Flush() returns the partial result and resets internal state;
+		// we discard the result. Both operations are under the same lock,
+		// so there's no crash window -- if the process dies, all state is
+		// in-memory and will be fresh on restart.
+		if p.accumulator != nil {
+			p.accumulator.Flush()
+		}
+		p.mu.Unlock()
+	default:
+		log.Printf("WS push %s: ignoring unknown control message type %q", p.config.ID, msg.Type)
+	}
 }

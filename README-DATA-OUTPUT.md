@@ -177,6 +177,34 @@ When a rule fires:
 - If `webhook` is configured, an HTTP POST is sent to the URL
 - `cooldown` prevents alert storms (minimum time between alerts per rule)
 
+### Remote Control: Seek
+
+Push connections listen for control messages from the remote server, enabling the remote end to control the data stream over the existing outbound WebSocket.
+
+This is essential in **outbound-only firewall environments** where the edge device can only dial out (e.g., HTTPS/WSS allowed, inbound blocked). The push connection is the only communication channel available. Since the push cursor is memory-only, a power failure or restart causes it to be lost. The connection restarts with `from: -1` (now), creating a data gap. The remote server -- which knows the last timestamp it received -- can send a `seek` message to request backfill over the same outbound connection.
+
+**Seek message format** (sent by remote server to ts-store):
+```json
+{"type": "seek", "timestamp": 1704067200000000000}
+```
+
+| Field       | Type   | Description |
+|-------------|--------|-------------|
+| `type`      | string | Must be `"seek"` |
+| `timestamp` | int64  | Nanosecond Unix timestamp to rewind to |
+
+**Behavior:**
+- ts-store rewinds its push cursor to the given timestamp
+- The next poll cycle (100ms) begins sending data from that point forward
+- If aggregation is active, the current partial window is discarded and a fresh window starts from the new position
+- Unknown message types are logged and ignored (forward-compatible)
+
+**Typical recovery flow:**
+1. Edge device loses power, restarts, reconnects with `from: -1` (now)
+2. Remote server receives the new connection, checks its last-received timestamp `T`
+3. Remote sends `{"type": "seek", "timestamp": T}`
+4. ts-store rewinds to `T` and re-sends all data from that point, filling the gap
+
 ## MQTT Sink: Publish to Broker
 
 ts-store can publish data directly to an MQTT broker, maintaining its own cursor for crash recovery and respecting broker backpressure.
