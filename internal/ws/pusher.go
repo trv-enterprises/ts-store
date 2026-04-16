@@ -46,12 +46,20 @@ type Pusher struct {
 
 // NewPusher creates a new outbound push connection.
 func NewPusher(st *store.Store, storeName string, config store.WSConnection) *Pusher {
+	// Resolve from=-1 ("now") to the current time so sendNewData doesn't
+	// accidentally fetch all historical data (from=0 means "oldest",
+	// but -1+1=0 would have the same effect without this resolution).
+	startFrom := config.From
+	if startFrom < 0 {
+		startFrom = time.Now().UnixNano()
+	}
+
 	p := &Pusher{
 		store:         st,
 		storeName:     storeName,
 		config:        config,
 		status:        "disconnected",
-		lastTimestamp: config.From,
+		lastTimestamp: startFrom,
 		stopCh:        make(chan struct{}),
 	}
 
