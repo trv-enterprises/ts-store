@@ -644,6 +644,40 @@ func (s *Store) IsV2() bool {
 	return s.isV2
 }
 
+// DiskUsage returns the total bytes of storage files on disk for this store.
+//
+// For V1 stores this is meta.tsdb + data.tsdb + index.tsdb at the store root.
+// For V2 stores this is the root meta.tsdb plus every .tsdb file under each
+// partition-N/ directory. Non-storage files (keys.json, schema.json, MQTT
+// cursors, etc.) are excluded.
+func (s *Store) DiskUsage() (uint64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var total uint64
+	err := filepath.WalkDir(s.path, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Ext(d.Name()) != ".tsdb" {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		total += uint64(fi.Size())
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 // Stats returns current store statistics.
 func (s *Store) Stats() StoreStats {
 	s.mu.RLock()
@@ -690,40 +724,49 @@ func (s *Store) Stats() StoreStats {
 }
 
 // statsV2 returns statistics for V2 partitioned stores.
+//
+// NumBlocks and ActiveBlocks are both reported across the active partition
+// ring (BlocksPerPart * ActiveCount). This keeps the usage percentage
+// meaningful: as partitions rotate in and out, ActiveCount stays at its
+// configured maximum and the ratio reflects how full the live ring is.
 func (s *Store) statsV2() StoreStats {
 	stats := StoreStats{
-		// Block configuration (per partition)
-		NumBlocks:     s.globalMeta.BlocksPerPart,
 		DataBlockSize: s.globalMeta.BlockSize,
+		DataType:      s.globalMeta.DataType.String(),
 
-		// Data type
-		DataType: s.globalMeta.DataType.String(),
-
-		// V2-specific
 		StorageVersion:   2,
 		NumPartitions:    s.globalMeta.NumPartitions,
 		ActivePartitions: uint32(s.globalMeta.ActiveCount),
 		CurrentPartition: s.globalMeta.CurrentPartition,
 	}
 
-	// Collect partition stats
+	stats.NumBlocks = s.globalMeta.BlocksPerPart * uint32(s.globalMeta.ActiveCount)
+
 	partStats := make([]PartitionStats, 0, s.globalMeta.ActiveCount)
 	var totalBlocks uint32
 	var oldestTs, newestTs int64
 
 	for i := uint8(0); i < s.globalMeta.ActiveCount; i++ {
 		partID := uint32(s.globalMeta.PartitionOrder[i])
-		if p, ok := s.partitions[partID]; ok {
-			ps := p.Stats()
-			partStats = append(partStats, ps)
-			totalBlocks += ps.HeadBlock + 1
+		p, ok := s.partitions[partID]
+		if !ok {
+			continue
+		}
+		ps := p.Stats()
+		partStats = append(partStats, ps)
 
-			if ps.MinTimestamp > 0 && (oldestTs == 0 || ps.MinTimestamp < oldestTs) {
-				oldestTs = ps.MinTimestamp
-			}
-			if ps.MaxTimestamp > newestTs {
-				newestTs = ps.MaxTimestamp
-			}
+		// Only count blocks for partitions that have been written to.
+		// An empty partition has HeadBlock=0 and ObjectCount=0, and must
+		// not contribute 1 block to the total.
+		if ps.ObjectCount > 0 {
+			totalBlocks += ps.HeadBlock + 1
+		}
+
+		if ps.MinTimestamp > 0 && (oldestTs == 0 || ps.MinTimestamp < oldestTs) {
+			oldestTs = ps.MinTimestamp
+		}
+		if ps.MaxTimestamp > newestTs {
+			newestTs = ps.MaxTimestamp
 		}
 	}
 

@@ -528,3 +528,113 @@ func TestV2BackwardCompatibility(t *testing.T) {
 		t.Errorf("V1 data mismatch: got %q, want %q", readData, data)
 	}
 }
+
+func TestV2StatsAggregatesAcrossPartitions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "v2-stats-aggregate"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 4
+	cfg.NumPartitions = 3
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	// With no writes, ActiveBlocks must be 0 even though one partition exists.
+	if got := s.Stats().ActiveBlocks; got != 0 {
+		t.Errorf("Empty store ActiveBlocks: got %d, want 0", got)
+	}
+
+	// Write enough to fill ~1.5 partitions and force a rollover so two
+	// partitions are active. With NumBlocks=4 (BlocksPerPart) and one object
+	// per block, 6 inserts gives HeadBlock=3 in part 0 and HeadBlock=1 in
+	// part 1.
+	objSize := int(cfg.DataBlockSize) // ~one block per write
+	for i := 0; i < 6; i++ {
+		_, err := s.PutObject(int64(i+1)*1_000_000_000, make([]byte, objSize))
+		if err != nil {
+			t.Fatalf("PutObject %d failed: %v", i, err)
+		}
+	}
+
+	stats := s.Stats()
+	if stats.ActivePartitions < 2 {
+		t.Fatalf("Expected at least 2 active partitions after rollover, got %d", stats.ActivePartitions)
+	}
+
+	// NumBlocks must reflect the active ring (BlocksPerPart * ActiveCount),
+	// not just one partition. Otherwise ActiveBlocks/NumBlocks goes >100%.
+	wantNumBlocks := cfg.NumBlocks * stats.ActivePartitions
+	if stats.NumBlocks != wantNumBlocks {
+		t.Errorf("NumBlocks: got %d, want %d (BlocksPerPart=%d * ActivePartitions=%d)",
+			stats.NumBlocks, wantNumBlocks, cfg.NumBlocks, stats.ActivePartitions)
+	}
+
+	if stats.ActiveBlocks > stats.NumBlocks {
+		t.Errorf("ActiveBlocks (%d) must not exceed NumBlocks (%d) — usage would exceed 100%%",
+			stats.ActiveBlocks, stats.NumBlocks)
+	}
+}
+
+func TestV2DiskUsage(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "v2-disk-usage"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 8
+	cfg.NumPartitions = 3
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer s.Close()
+
+	for i := 0; i < 4; i++ {
+		_, err := s.PutObject(int64(i+1)*1_000_000_000, []byte("payload"))
+		if err != nil {
+			t.Fatalf("PutObject %d failed: %v", i, err)
+		}
+	}
+
+	got, err := s.DiskUsage()
+	if err != nil {
+		t.Fatalf("DiskUsage failed: %v", err)
+	}
+
+	// Independently sum every .tsdb file under the store path and compare.
+	var want uint64
+	storePath := filepath.Join(tmpDir, cfg.Name)
+	err = filepath.WalkDir(storePath, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if filepath.Ext(d.Name()) != ".tsdb" {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		want += uint64(fi.Size())
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Walk failed: %v", err)
+	}
+
+	if got != want {
+		t.Errorf("DiskUsage: got %d bytes, want %d bytes", got, want)
+	}
+
+	// Sanity: must be far larger than just the 128-byte root meta —
+	// that was the original CLI bug (only the root file got counted).
+	if got <= 128 {
+		t.Errorf("DiskUsage (%d) suspiciously small — partition files likely missed", got)
+	}
+}

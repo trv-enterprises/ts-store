@@ -906,6 +906,16 @@ func formatBytes(bytes uint64) string {
 	}
 }
 
+// resolvedDataPath returns an absolute version of the configured base path
+// when possible, so status output unambiguously identifies which directory
+// is being read.
+func resolvedDataPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
 // mqttConnectionForStatus is a minimal struct for reading MQTT config
 type mqttConnectionForStatus struct {
 	ID        string `json:"id"`
@@ -1082,6 +1092,7 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 		}
 
 		stats := st.Stats()
+		totalSize, _ := st.DiskUsage()
 		st.Close()
 
 		status.DataType = stats.DataType
@@ -1094,20 +1105,6 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 		status.OldestTime = stats.OldestTime
 		status.NewestTime = stats.NewestTime
 
-		// Calculate file size
-		metaPath := filepath.Join(cfg.Store.BasePath, storeName, "meta.tsdb")
-		dataPath := filepath.Join(cfg.Store.BasePath, storeName, "data.tsdb")
-		indexPath := filepath.Join(cfg.Store.BasePath, storeName, "index.tsdb")
-		var totalSize uint64
-		if fi, err := os.Stat(dataPath); err == nil {
-			totalSize += uint64(fi.Size())
-		}
-		if fi, err := os.Stat(indexPath); err == nil {
-			totalSize += uint64(fi.Size())
-		}
-		if fi, err := os.Stat(metaPath); err == nil {
-			totalSize += uint64(fi.Size())
-		}
 		status.FileSizeBytes = totalSize
 		status.FileSizeHuman = formatBytes(totalSize)
 
@@ -1152,7 +1149,8 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 
 	// Text output
 	fmt.Printf("=== Store Status ===\n")
-	fmt.Printf("Server: %s (running)\n\n", baseURL)
+	fmt.Printf("Server:    %s (running)\n", baseURL)
+	fmt.Printf("Data path: %s\n\n", resolvedDataPath(cfg.Store.BasePath))
 
 	if len(stores) == 0 {
 		fmt.Println("No stores open")
@@ -1262,6 +1260,7 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 		}
 
 		stats := st.Stats()
+		totalSize, _ := st.DiskUsage()
 
 		status.DataType = stats.DataType
 		status.NumBlocks = stats.NumBlocks
@@ -1273,19 +1272,6 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 		status.OldestTime = stats.OldestTime
 		status.NewestTime = stats.NewestTime
 
-		// Calculate file size
-		dataPath := filepath.Join(cfg.Store.BasePath, storeName, "data.tsdb")
-		indexPath := filepath.Join(cfg.Store.BasePath, storeName, "index.tsdb")
-		var totalSize uint64
-		if fi, err := os.Stat(dataPath); err == nil {
-			totalSize += uint64(fi.Size())
-		}
-		if fi, err := os.Stat(indexPath); err == nil {
-			totalSize += uint64(fi.Size())
-		}
-		if fi, err := os.Stat(metaPath); err == nil {
-			totalSize += uint64(fi.Size())
-		}
 		status.FileSizeBytes = totalSize
 		status.FileSizeHuman = formatBytes(totalSize)
 
@@ -1327,10 +1313,11 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 
 	// Text output
 	fmt.Printf("=== Store Status ===\n")
-	fmt.Printf("Server: not running\n\n")
+	fmt.Printf("Server:    not running\n")
+	fmt.Printf("Data path: %s\n\n", resolvedDataPath(cfg.Store.BasePath))
 
 	if len(stores) == 0 {
-		fmt.Printf("No stores found (data path: %s)\n", cfg.Store.BasePath)
+		fmt.Printf("No stores found\n")
 		return
 	}
 
