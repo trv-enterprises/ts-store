@@ -257,6 +257,7 @@ func runServer(args []string) {
 	wsHandler := handlers.NewWSHandler(storeService)
 	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManager)
 	mqttHandler := handlers.NewMQTTHandler(storeService.GetMQTTManager)
+	alertsHandler := handlers.NewAlertsHandler(storeService.GetAlertsManager)
 
 	// API routes
 	api := router.Group("/api")
@@ -315,6 +316,17 @@ func runServer(args []string) {
 				mqttConns.POST("", mqttHandler.Create)
 				mqttConns.GET("/:id", mqttHandler.Get)
 				mqttConns.DELETE("/:id", mqttHandler.Delete)
+			}
+
+			// Webhook/WS/MQTT alerts
+			alertsGroup := storeRoutes.Group("/alerts")
+			{
+				alertsGroup.GET("", alertsHandler.List)
+				alertsGroup.POST("/webhook", alertsHandler.CreateWebhook)
+				alertsGroup.POST("/ws", alertsHandler.CreateWS)
+				alertsGroup.POST("/mqtt", alertsHandler.CreateMQTT)
+				alertsGroup.GET("/:id", alertsHandler.Get)
+				alertsGroup.DELETE("/:id", alertsHandler.Delete)
 			}
 		}
 	}

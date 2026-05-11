@@ -1,0 +1,367 @@
+// Copyright (c) 2026 TRV Enterprises LLC
+// SPDX-License-Identifier: Apache-2.0
+// See LICENSE file for details.
+
+package alerts
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/tviviano/ts-store/pkg/store"
+)
+
+var (
+	ErrManagerClosed = errors.New("alerts manager is closed")
+	ErrNotFound      = errors.New("alert not found")
+)
+
+// Manager owns all webhook/WS/MQTT alert workers for a single store.
+type Manager struct {
+	mu sync.RWMutex
+
+	store     *store.Store
+	storeName string
+
+	workers map[string]*Worker // alertID -> worker (IDs unique across types)
+	closed  bool
+}
+
+// NewManager constructs a manager. Call LoadAndStart to spin up persisted alerts.
+func NewManager(st *store.Store, storeName string) *Manager {
+	return &Manager{
+		store:     st,
+		storeName: storeName,
+		workers:   make(map[string]*Worker),
+	}
+}
+
+// LoadAndStart reads persisted webhook/WS/MQTT alert configs and starts a
+// Worker for each. Errors on individual alerts are logged via the worker
+// itself and do not block the rest.
+func (m *Manager) LoadAndStart() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return ErrManagerClosed
+	}
+
+	wh, err := m.store.LoadWebhookAlerts()
+	if err == nil {
+		for _, a := range wh.Alerts {
+			if w, err := m.buildWebhookWorker(a); err == nil {
+				m.workers[a.ID] = w
+				w.Start()
+			}
+		}
+	}
+
+	wsa, err := m.store.LoadWSAlerts()
+	if err == nil {
+		for _, a := range wsa.Alerts {
+			if w, err := m.buildWSWorker(a); err == nil {
+				m.workers[a.ID] = w
+				w.Start()
+			}
+		}
+	}
+
+	mq, err := m.store.LoadMQTTAlerts()
+	if err == nil {
+		for _, a := range mq.Alerts {
+			if w, err := m.buildMQTTWorker(a); err == nil {
+				m.workers[a.ID] = w
+				w.Start()
+			}
+		}
+	}
+
+	return nil
+}
+
+// CreateWebhookAlertRequest is the wire shape for creating a webhook alert.
+type CreateWebhookAlertRequest struct {
+	URL          string                  `json:"url"`
+	Headers      map[string]string       `json:"headers,omitempty"`
+	Rules        []store.AlertRuleConfig `json:"rules"`
+	PollInterval string                  `json:"poll_interval,omitempty"`
+	Timeout      string                  `json:"timeout,omitempty"`
+}
+
+// CreateWebhookAlert validates the request, persists it, and starts a worker.
+func (m *Manager) CreateWebhookAlert(req CreateWebhookAlertRequest) (Status, error) {
+	if req.URL == "" {
+		return Status{}, fmt.Errorf("url is required")
+	}
+	if len(req.Rules) == 0 {
+		return Status{}, fmt.Errorf("at least one rule is required")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return Status{}, ErrManagerClosed
+	}
+
+	alert := store.WebhookAlert{
+		ID:           uuid.New().String()[:8],
+		URL:          req.URL,
+		Headers:      req.Headers,
+		Rules:        req.Rules,
+		PollInterval: req.PollInterval,
+		Timeout:      req.Timeout,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := m.store.AddWebhookAlert(alert); err != nil {
+		return Status{}, err
+	}
+
+	w, err := m.buildWebhookWorker(alert)
+	if err != nil {
+		_ = m.store.RemoveWebhookAlert(alert.ID)
+		return Status{}, err
+	}
+	m.workers[alert.ID] = w
+	w.Start()
+	return w.Status(), nil
+}
+
+// CreateWSAlertRequest is the wire shape for creating a WS alert.
+type CreateWSAlertRequest struct {
+	URL          string                  `json:"url"`
+	Headers      map[string]string       `json:"headers,omitempty"`
+	Rules        []store.AlertRuleConfig `json:"rules"`
+	PollInterval string                  `json:"poll_interval,omitempty"`
+}
+
+func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
+	if req.URL == "" {
+		return Status{}, fmt.Errorf("url is required")
+	}
+	if len(req.Rules) == 0 {
+		return Status{}, fmt.Errorf("at least one rule is required")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return Status{}, ErrManagerClosed
+	}
+
+	alert := store.WSAlert{
+		ID:           uuid.New().String()[:8],
+		URL:          req.URL,
+		Headers:      req.Headers,
+		Rules:        req.Rules,
+		PollInterval: req.PollInterval,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := m.store.AddWSAlert(alert); err != nil {
+		return Status{}, err
+	}
+
+	w, err := m.buildWSWorker(alert)
+	if err != nil {
+		_ = m.store.RemoveWSAlert(alert.ID)
+		return Status{}, err
+	}
+	m.workers[alert.ID] = w
+	w.Start()
+	return w.Status(), nil
+}
+
+// CreateMQTTAlertRequest is the wire shape for creating an MQTT alert.
+type CreateMQTTAlertRequest struct {
+	BrokerURL    string                  `json:"broker_url"`
+	Topic        string                  `json:"topic"`
+	Username     string                  `json:"username,omitempty"`
+	Password     string                  `json:"password,omitempty"`
+	QoS          byte                    `json:"qos,omitempty"`
+	Rules        []store.AlertRuleConfig `json:"rules"`
+	PollInterval string                  `json:"poll_interval,omitempty"`
+}
+
+func (m *Manager) CreateMQTTAlert(req CreateMQTTAlertRequest) (Status, error) {
+	if req.BrokerURL == "" || req.Topic == "" {
+		return Status{}, fmt.Errorf("broker_url and topic are required")
+	}
+	if len(req.Rules) == 0 {
+		return Status{}, fmt.Errorf("at least one rule is required")
+	}
+	if req.QoS == 0 {
+		req.QoS = 1 // default QoS 1 (at-least-once)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return Status{}, ErrManagerClosed
+	}
+
+	alert := store.MQTTAlert{
+		ID:           uuid.New().String()[:8],
+		BrokerURL:    req.BrokerURL,
+		Topic:        req.Topic,
+		Username:     req.Username,
+		Password:     req.Password,
+		QoS:          req.QoS,
+		Rules:        req.Rules,
+		PollInterval: req.PollInterval,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := m.store.AddMQTTAlert(alert); err != nil {
+		return Status{}, err
+	}
+
+	w, err := m.buildMQTTWorker(alert)
+	if err != nil {
+		_ = m.store.RemoveMQTTAlert(alert.ID)
+		return Status{}, err
+	}
+	m.workers[alert.ID] = w
+	w.Start()
+	return w.Status(), nil
+}
+
+// ListAlerts returns a snapshot of all worker statuses, across all types.
+func (m *Manager) ListAlerts() []Status {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	out := make([]Status, 0, len(m.workers))
+	for _, w := range m.workers {
+		out = append(out, w.Status())
+	}
+	return out
+}
+
+// GetAlert returns the status of a single alert by ID.
+func (m *Manager) GetAlert(alertID string) (Status, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	w, ok := m.workers[alertID]
+	if !ok {
+		return Status{}, ErrNotFound
+	}
+	return w.Status(), nil
+}
+
+// DeleteAlert stops the worker, removes the persisted config, and deletes
+// the cursor file. The alert is located by scanning each of the three
+// persisted alert lists.
+func (m *Manager) DeleteAlert(alertID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	w, ok := m.workers[alertID]
+	if !ok {
+		return ErrNotFound
+	}
+	w.Stop()
+	delete(m.workers, alertID)
+
+	// Try each store remover; one will succeed, the others return
+	// ErrObjectNotFound which we ignore.
+	if err := m.store.RemoveWebhookAlert(alertID); err == nil {
+		removeCursor(m.store, "webhook", alertID)
+		return nil
+	}
+	if err := m.store.RemoveWSAlert(alertID); err == nil {
+		removeCursor(m.store, "ws", alertID)
+		return nil
+	}
+	if err := m.store.RemoveMQTTAlert(alertID); err == nil {
+		removeCursor(m.store, "mqtt", alertID)
+		return nil
+	}
+	// Worker existed in memory but no persisted config — clean up anyway.
+	return nil
+}
+
+// Stop stops all workers. Safe to call multiple times.
+func (m *Manager) Stop() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.closed {
+		return nil
+	}
+	m.closed = true
+
+	for _, w := range m.workers {
+		w.Stop()
+	}
+	m.workers = make(map[string]*Worker)
+	return nil
+}
+
+// --- worker builders ---
+
+func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
+	sink, err := NewWebhookSink(a.URL, a.Headers, a.Timeout)
+	if err != nil {
+		return nil, err
+	}
+	return NewWorker(Options{
+		Store:        m.store,
+		StoreName:    m.storeName,
+		ID:           a.ID,
+		Type:         "webhook",
+		Target:       a.URL,
+		Rules:        a.Rules,
+		Sink:         sink,
+		PollInterval: a.PollInterval,
+		CursorPath:   cursorPathFor(m.store, "webhook", a.ID),
+		CreatedAt:    a.CreatedAt,
+	})
+}
+
+func (m *Manager) buildWSWorker(a store.WSAlert) (*Worker, error) {
+	sink := NewWSSink(a.URL, a.Headers)
+	return NewWorker(Options{
+		Store:        m.store,
+		StoreName:    m.storeName,
+		ID:           a.ID,
+		Type:         "ws",
+		Target:       a.URL,
+		Rules:        a.Rules,
+		Sink:         sink,
+		PollInterval: a.PollInterval,
+		CursorPath:   cursorPathFor(m.store, "ws", a.ID),
+		CreatedAt:    a.CreatedAt,
+	})
+}
+
+func (m *Manager) buildMQTTWorker(a store.MQTTAlert) (*Worker, error) {
+	clientID := fmt.Sprintf("tsstore-%s-alert-%s", m.storeName, a.ID)
+	sink := NewMQTTSink(a.BrokerURL, a.Topic, a.Username, a.Password, a.QoS, clientID)
+	return NewWorker(Options{
+		Store:        m.store,
+		StoreName:    m.storeName,
+		ID:           a.ID,
+		Type:         "mqtt",
+		Target:       fmt.Sprintf("%s -> %s", a.BrokerURL, a.Topic),
+		Rules:        a.Rules,
+		Sink:         sink,
+		PollInterval: a.PollInterval,
+		CursorPath:   cursorPathFor(m.store, "mqtt", a.ID),
+		CreatedAt:    a.CreatedAt,
+	})
+}
+
+// cursorPathFor returns a per-alert cursor file under the store directory.
+func cursorPathFor(st *store.Store, alertType, alertID string) string {
+	return filepath.Join(st.StorePath(), alertType+"_alert_"+alertID+".cursor")
+}
+
+// removeCursor deletes the cursor file. Errors are silently ignored — a
+// missing file is fine, and we don't want to fail Delete on cleanup quirks.
+func removeCursor(st *store.Store, alertType, alertID string) {
+	_ = os.Remove(cursorPathFor(st, alertType, alertID))
+}
