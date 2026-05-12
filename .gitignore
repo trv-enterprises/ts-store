@@ -1,6 +1,9 @@
 # Environment (contains local settings)
 .env
 
+# Local dev tooling (MCP server config, etc.)
+.mcp.json
+
 # Binaries
 *.exe
 *.exe~
