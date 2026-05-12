@@ -1,0 +1,69 @@
+# Copyright (c) 2026 TRV Enterprises LLC
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build release binaries for linux/{amd64,arm64} on tag push and attach
+# them to the corresponding GitHub Release (creating it if necessary).
+
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual trigger lets us re-run the build for an existing tag if the
+  # automatic run failed or was added after the tag was already pushed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.6.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write # to upload assets / create releases
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve target tag
+        id: tag
+        run: |
+          # workflow_dispatch supplies the tag as an input; tag pushes use
+          # github.ref_name directly.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Check out the tag we're building — for workflow_dispatch this
+          # means the input tag, not the default branch.
+          ref: ${{ steps.tag.outputs.name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build linux/amd64 and linux/arm64 via Makefile
+        run: |
+          # `make release-binaries` builds both architectures with the
+          # version injected via -ldflags, then copies them into dist/
+          # with the tag name in the filename.
+          make release-binaries VERSION=${{ steps.tag.outputs.name }}
+
+      - name: Upload binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          # If the release exists (e.g. created earlier by `make release`),
+          # the action appends these assets; otherwise it creates one with
+          # the tag name as the title.
+          files: |
+            dist/tsstore-${{ steps.tag.outputs.name }}-linux-amd64
+            dist/tsstore-${{ steps.tag.outputs.name }}-linux-arm64
+          fail_on_unmatched_files: true
