@@ -66,4 +66,8 @@ jobs:
           files: |
             dist/tsstore-${{ steps.tag.outputs.name }}-linux-amd64
             dist/tsstore-${{ steps.tag.outputs.name }}-linux-arm64
+            dist/journal-logs-${{ steps.tag.outputs.name }}-linux-amd64
+            dist/journal-logs-${{ steps.tag.outputs.name }}-linux-arm64
+            dist/system-stats-${{ steps.tag.outputs.name }}-linux-amd64
+            dist/system-stats-${{ steps.tag.outputs.name }}-linux-arm64
           fail_on_unmatched_files: true

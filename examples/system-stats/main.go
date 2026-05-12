@@ -26,6 +26,9 @@ import (
 	"time"
 )
 
+// Version is injected at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 // SystemStats is flattened for schema-based storage
 type SystemStats struct {
 	CPUPct              int   `json:"cpu.pct"`
@@ -285,14 +288,20 @@ func writeToHTTP(httpURL, storeName, apiKey string, data []byte) error {
 
 func main() {
 	var (
-		socketPath = flag.String("socket", "/var/run/tsstore/tsstore.sock", "ts-store Unix socket path")
-		httpURL    = flag.String("http", "", "ts-store HTTP URL (use instead of socket)")
-		storeName  = flag.String("store", "system-stats", "Store name")
-		apiKey     = flag.String("key", "", "API key for the store")
-		interval   = flag.Int("interval", 20, "Collection interval in seconds")
-		stdout     = flag.Bool("stdout", false, "Output to stdout instead of ts-store")
+		socketPath  = flag.String("socket", "/var/run/tsstore/tsstore.sock", "ts-store Unix socket path")
+		httpURL     = flag.String("http", "", "ts-store HTTP URL (use instead of socket)")
+		storeName   = flag.String("store", "system-stats", "Store name")
+		apiKey      = flag.String("key", "", "API key for the store")
+		interval    = flag.Int("interval", 20, "Collection interval in seconds")
+		stdout      = flag.Bool("stdout", false, "Output to stdout instead of ts-store")
+		showVersion = flag.Bool("version", false, "Print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("system-stats", Version)
+		return
+	}
 
 	// Check environment for HTTP URL
 	if *httpURL == "" {

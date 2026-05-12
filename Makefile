@@ -28,14 +28,18 @@ GO = go
 # Build flags
 LDFLAGS = -s -w -X main.Version=$(VERSION)
 
-.PHONY: all build build-arm64 build-amd64 build-local clean test test-verbose help
-.PHONY: version-bump release release-binaries
+.PHONY: all build build-arm64 build-amd64 build-local build-collectors clean test test-verbose help
+.PHONY: version-bump release release-binaries release-collectors
+
+# Collectors built and shipped alongside tsstore. Each name must match a
+# subdirectory under examples/ that builds as `main`.
+COLLECTORS := journal-logs system-stats
 
 all: build
 
 ## Build targets
 
-build: build-arm64 build-amd64 ## Build both ARM64 and AMD64 binaries
+build: build-arm64 build-amd64 build-collectors ## Build all server + collector binaries for both architectures
 
 build-arm64: ## Build Linux ARM64 binary
 	@echo "Building $(BINARY_NAME) for Linux ARM64..."
@@ -50,6 +54,15 @@ build-amd64: ## Build Linux AMD64 binary
 build-local: ## Build for local architecture
 	@echo "Building $(BINARY_NAME) for local system..."
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/tsstore
+
+build-collectors: ## Build all collectors for both architectures
+	@mkdir -p $(BUILD_DIR)
+	@for c in $(COLLECTORS); do \
+		echo "Building $$c for Linux ARM64..."; \
+		GOOS=linux GOARCH=arm64 $(GO) build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(BUILD_DIR)/$$c-linux-arm64 ./examples/$$c; \
+		echo "Building $$c for Linux AMD64..."; \
+		GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(BUILD_DIR)/$$c-linux-amd64 ./examples/$$c; \
+	done
 
 ## Test targets
 
@@ -70,15 +83,21 @@ version-bump: ## Update version in main.go (use with VERSION=vX.Y.Z)
 	@sed -i '' 's/fmt\.Println("tsstore v[^"]*")/fmt.Println("tsstore $(VERSION)")/' cmd/tsstore/main.go
 	@echo "✓ Version updated to $(VERSION)"
 
-release-binaries: build ## Create release binaries in dist/
+release-binaries: build ## Create release binaries (server + collectors) in dist/
 	@echo "Creating release binaries for $(VERSION)..."
 	@mkdir -p $(DIST_DIR)
 	@for arch in $(ARCHS); do \
 		echo "  Copying $(BINARY_NAME)-$(VERSION)-$$arch..."; \
 		cp $(BUILD_DIR)/$(BINARY_NAME)-$$arch $(DIST_DIR)/$(BINARY_NAME)-$(VERSION)-$$arch; \
 	done
+	@for c in $(COLLECTORS); do \
+		for arch in $(ARCHS); do \
+			echo "  Copying $$c-$(VERSION)-$$arch..."; \
+			cp $(BUILD_DIR)/$$c-$$arch $(DIST_DIR)/$$c-$(VERSION)-$$arch; \
+		done; \
+	done
 	@echo "✓ Release binaries created:"
-	@ls -lh $(DIST_DIR)/$(BINARY_NAME)-$(VERSION)-*
+	@ls -lh $(DIST_DIR)/*-$(VERSION)-*
 
 release: ## Full release: bump version, build, commit, tag, push (use with VERSION=vX.Y.Z)
 	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \

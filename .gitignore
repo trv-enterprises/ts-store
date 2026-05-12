@@ -14,6 +14,11 @@
 tsstore-linux-*
 /bin/
 /dist/
+# Collector binaries built in-place inside examples/<name>/
+examples/journal-logs/journal-logs
+examples/journal-logs/journal-logs-*
+examples/system-stats/system-stats
+examples/system-stats/system-stats-*
 
 # Test binary, built with `go test -c`
 *.test

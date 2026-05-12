@@ -26,6 +26,9 @@ import (
 	"time"
 )
 
+// Version is injected at build time via -ldflags "-X main.Version=...".
+var Version = "dev"
+
 // JournalEntry represents a parsed journalctl JSON entry
 type JournalEntry struct {
 	Timestamp         string `json:"__REALTIME_TIMESTAMP,omitempty"`
@@ -52,16 +55,22 @@ type LogEntry struct {
 
 func main() {
 	var (
-		socketPath = flag.String("socket", "/var/run/tsstore/tsstore.sock", "ts-store Unix socket path")
-		httpURL    = flag.String("http", "", "ts-store HTTP URL (use instead of socket)")
-		storeName  = flag.String("store", "journal-logs", "Store name")
-		apiKey     = flag.String("key", "", "API key for the store")
-		stdout     = flag.Bool("stdout", false, "Output to stdout instead of ts-store")
-		since      = flag.String("since", "", "Start reading from this time (e.g., '1 hour ago', 'today')")
-		units      = flag.String("units", "", "Comma-separated list of units to filter (e.g., 'sshd,nginx')")
-		priority   = flag.String("priority", "", "Maximum priority level (0=emerg to 7=debug)")
+		socketPath  = flag.String("socket", "/var/run/tsstore/tsstore.sock", "ts-store Unix socket path")
+		httpURL     = flag.String("http", "", "ts-store HTTP URL (use instead of socket)")
+		storeName   = flag.String("store", "journal-logs", "Store name")
+		apiKey      = flag.String("key", "", "API key for the store")
+		stdout      = flag.Bool("stdout", false, "Output to stdout instead of ts-store")
+		since       = flag.String("since", "", "Start reading from this time (e.g., '1 hour ago', 'today')")
+		units       = flag.String("units", "", "Comma-separated list of units to filter (e.g., 'sshd,nginx')")
+		priority    = flag.String("priority", "", "Maximum priority level (0=emerg to 7=debug)")
+		showVersion = flag.Bool("version", false, "Print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("journal-logs", Version)
+		return
+	}
 
 	// Check environment for HTTP URL
 	if *httpURL == "" {
