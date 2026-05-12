@@ -68,6 +68,12 @@ func main() {
 			os.Exit(1)
 		}
 		runStreamCommand(os.Args[2:])
+	case "alerts":
+		if len(os.Args) < 3 {
+			printAlertsUsage()
+			os.Exit(1)
+		}
+		runAlertsCommand(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
@@ -90,6 +96,7 @@ Commands:
   create    Create a new store
   status    Show status of all stores
   stream    Create outbound data streams (WebSocket push, MQTT sink)
+  alerts    Manage webhook, WS, and MQTT alert resources
   key       Manage API keys (requires device access)
   calc      Calculate storage footprint
   swagger   Open Swagger UI in browser to explore the API
@@ -257,6 +264,7 @@ func runServer(args []string) {
 	wsHandler := handlers.NewWSHandler(storeService)
 	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManager)
 	mqttHandler := handlers.NewMQTTHandler(storeService.GetMQTTManager)
+	alertsHandler := handlers.NewAlertsHandler(storeService.GetAlertsManager)
 
 	// API routes
 	api := router.Group("/api")
@@ -315,6 +323,17 @@ func runServer(args []string) {
 				mqttConns.POST("", mqttHandler.Create)
 				mqttConns.GET("/:id", mqttHandler.Get)
 				mqttConns.DELETE("/:id", mqttHandler.Delete)
+			}
+
+			// Webhook/WS/MQTT alerts
+			alertsGroup := storeRoutes.Group("/alerts")
+			{
+				alertsGroup.GET("", alertsHandler.List)
+				alertsGroup.POST("/webhook", alertsHandler.CreateWebhook)
+				alertsGroup.POST("/ws", alertsHandler.CreateWS)
+				alertsGroup.POST("/mqtt", alertsHandler.CreateMQTT)
+				alertsGroup.GET("/:id", alertsHandler.Get)
+				alertsGroup.DELETE("/:id", alertsHandler.Delete)
 			}
 		}
 	}
@@ -1058,6 +1077,7 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 		URL    string `json:"url,omitempty"`
 		Broker string `json:"broker_url,omitempty"`
 		Topic  string `json:"topic,omitempty"`
+		Rules  int    `json:"rules,omitempty"`
 	}
 
 	type storeStatus struct {
@@ -1073,6 +1093,9 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 		FileSizeHuman   string           `json:"file_size_human"`
 		WSConnections   []connectionInfo `json:"ws_connections,omitempty"`
 		MQTTConnections []connectionInfo `json:"mqtt_connections,omitempty"`
+		WebhookAlerts   []connectionInfo `json:"webhook_alerts,omitempty"`
+		WSAlerts        []connectionInfo `json:"ws_alerts,omitempty"`
+		MQTTAlerts      []connectionInfo `json:"mqtt_alerts,omitempty"`
 		Error           string           `json:"error,omitempty"`
 	}
 
@@ -1093,7 +1116,6 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 
 		stats := st.Stats()
 		totalSize, _ := st.DiskUsage()
-		st.Close()
 
 		status.DataType = stats.DataType
 		status.NumBlocks = stats.NumBlocks
@@ -1115,6 +1137,39 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 					ID:     conn.ID,
 					Status: "configured",
 					URL:    conn.URL,
+				})
+			}
+		}
+
+		// Load alert resources (all three types).
+		if wh, err := st.LoadWebhookAlerts(); err == nil && wh != nil {
+			for _, a := range wh.Alerts {
+				status.WebhookAlerts = append(status.WebhookAlerts, connectionInfo{
+					ID:     a.ID,
+					Status: "configured",
+					URL:    a.URL,
+					Rules:  len(a.Rules),
+				})
+			}
+		}
+		if wsa, err := st.LoadWSAlerts(); err == nil && wsa != nil {
+			for _, a := range wsa.Alerts {
+				status.WSAlerts = append(status.WSAlerts, connectionInfo{
+					ID:     a.ID,
+					Status: "configured",
+					URL:    a.URL,
+					Rules:  len(a.Rules),
+				})
+			}
+		}
+		if mqa, err := st.LoadMQTTAlerts(); err == nil && mqa != nil {
+			for _, a := range mqa.Alerts {
+				status.MQTTAlerts = append(status.MQTTAlerts, connectionInfo{
+					ID:     a.ID,
+					Status: "configured",
+					Broker: a.BrokerURL,
+					Topic:  a.Topic,
+					Rules:  len(a.Rules),
 				})
 			}
 		}
@@ -1188,6 +1243,24 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 				fmt.Printf("    - %s: %s -> %s\n", c.ID[:8], c.Broker, c.Topic)
 			}
 		}
+		if len(s.WebhookAlerts) > 0 {
+			fmt.Printf("  Webhook alerts: %d\n", len(s.WebhookAlerts))
+			for _, a := range s.WebhookAlerts {
+				fmt.Printf("    - %s: %s (%d rules)\n", a.ID[:8], a.URL, a.Rules)
+			}
+		}
+		if len(s.WSAlerts) > 0 {
+			fmt.Printf("  WS alerts:      %d\n", len(s.WSAlerts))
+			for _, a := range s.WSAlerts {
+				fmt.Printf("    - %s: %s (%d rules)\n", a.ID[:8], a.URL, a.Rules)
+			}
+		}
+		if len(s.MQTTAlerts) > 0 {
+			fmt.Printf("  MQTT alerts:    %d\n", len(s.MQTTAlerts))
+			for _, a := range s.MQTTAlerts {
+				fmt.Printf("    - %s: %s -> %s (%d rules)\n", a.ID[:8], a.Broker, a.Topic, a.Rules)
+			}
+		}
 		fmt.Println()
 	}
 
@@ -1216,6 +1289,7 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 		URL    string `json:"url,omitempty"`
 		Broker string `json:"broker_url,omitempty"`
 		Topic  string `json:"topic,omitempty"`
+		Rules  int    `json:"rules,omitempty"`
 	}
 
 	type storeStatus struct {
@@ -1231,6 +1305,9 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 		FileSizeHuman   string           `json:"file_size_human"`
 		WSConnections   []connectionInfo `json:"ws_connections,omitempty"`
 		MQTTConnections []connectionInfo `json:"mqtt_connections,omitempty"`
+		WebhookAlerts   []connectionInfo `json:"webhook_alerts,omitempty"`
+		WSAlerts        []connectionInfo `json:"ws_alerts,omitempty"`
+		MQTTAlerts      []connectionInfo `json:"mqtt_alerts,omitempty"`
 		Error           string           `json:"error,omitempty"`
 	}
 
@@ -1295,6 +1372,36 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 			})
 		}
 
+		// Load alert resources (all three types).
+		if wh, err := st.LoadWebhookAlerts(); err == nil && wh != nil {
+			for _, a := range wh.Alerts {
+				status.WebhookAlerts = append(status.WebhookAlerts, connectionInfo{
+					ID:    a.ID,
+					URL:   a.URL,
+					Rules: len(a.Rules),
+				})
+			}
+		}
+		if wsa, err := st.LoadWSAlerts(); err == nil && wsa != nil {
+			for _, a := range wsa.Alerts {
+				status.WSAlerts = append(status.WSAlerts, connectionInfo{
+					ID:    a.ID,
+					URL:   a.URL,
+					Rules: len(a.Rules),
+				})
+			}
+		}
+		if mqa, err := st.LoadMQTTAlerts(); err == nil && mqa != nil {
+			for _, a := range mqa.Alerts {
+				status.MQTTAlerts = append(status.MQTTAlerts, connectionInfo{
+					ID:     a.ID,
+					Broker: a.BrokerURL,
+					Topic:  a.Topic,
+					Rules:  len(a.Rules),
+				})
+			}
+		}
+
 		st.Close()
 		stores = append(stores, status)
 	}
@@ -1350,6 +1457,24 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 			fmt.Printf("  MQTT connections: %d (configured)\n", len(s.MQTTConnections))
 			for _, c := range s.MQTTConnections {
 				fmt.Printf("    - %s: %s -> %s\n", c.ID[:8], c.Broker, c.Topic)
+			}
+		}
+		if len(s.WebhookAlerts) > 0 {
+			fmt.Printf("  Webhook alerts: %d (configured)\n", len(s.WebhookAlerts))
+			for _, a := range s.WebhookAlerts {
+				fmt.Printf("    - %s: %s (%d rules)\n", a.ID[:8], a.URL, a.Rules)
+			}
+		}
+		if len(s.WSAlerts) > 0 {
+			fmt.Printf("  WS alerts:      %d (configured)\n", len(s.WSAlerts))
+			for _, a := range s.WSAlerts {
+				fmt.Printf("    - %s: %s (%d rules)\n", a.ID[:8], a.URL, a.Rules)
+			}
+		}
+		if len(s.MQTTAlerts) > 0 {
+			fmt.Printf("  MQTT alerts:    %d (configured)\n", len(s.MQTTAlerts))
+			for _, a := range s.MQTTAlerts {
+				fmt.Printf("    - %s: %s -> %s (%d rules)\n", a.ID[:8], a.Broker, a.Topic, a.Rules)
 			}
 		}
 		fmt.Println()
@@ -1562,7 +1687,7 @@ func runStreamWS(args []string) {
 
 	cfg := loadStreamConfig()
 	path := fmt.Sprintf("/api/stores/%s/ws/connections", storeName)
-	streamAPIPost(cfg, apiKey, path, body)
+	apiPost(cfg, apiKey, path, body)
 }
 
 func runStreamMQTT(args []string) {
@@ -1704,7 +1829,7 @@ func runStreamMQTT(args []string) {
 
 	cfg := loadStreamConfig()
 	path := fmt.Sprintf("/api/stores/%s/mqtt/connections", storeName)
-	streamAPIPost(cfg, apiKey, path, body)
+	apiPost(cfg, apiKey, path, body)
 }
 
 func resolveAPIKey(flagValue string) string {
@@ -1743,7 +1868,8 @@ func loadStreamConfig() *config.Config {
 	return cfg
 }
 
-func streamAPIPost(cfg *config.Config, apiKey, path string, body interface{}) {
+// apiBaseURL builds the local server base URL from the loaded config.
+func apiBaseURL(cfg *config.Config) string {
 	scheme := "http"
 	if cfg.TLSEnabled() {
 		scheme = "https"
@@ -1752,40 +1878,64 @@ func streamAPIPost(cfg *config.Config, apiKey, path string, body interface{}) {
 	if host == "0.0.0.0" {
 		host = "127.0.0.1"
 	}
-	baseURL := fmt.Sprintf("%s://%s:%d", scheme, host, cfg.Server.Port)
+	return fmt.Sprintf("%s://%s:%d", scheme, host, cfg.Server.Port)
+}
 
-	jsonBody, err := json.Marshal(body)
-	if err != nil {
-		log.Fatalf("Failed to encode request: %v", err)
-	}
-
-	req, err := http.NewRequest("POST", baseURL+path, bytes.NewReader(jsonBody))
+// apiGet performs a GET against the local server and prints the response.
+func apiGet(cfg *config.Config, apiKey, path string) {
+	req, err := http.NewRequest("GET", apiBaseURL(cfg)+path, nil)
 	if err != nil {
 		log.Fatalf("Failed to create request: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", apiKey)
+	doAPIRequest(req, http.StatusOK)
+}
 
+// apiDelete performs a DELETE against the local server and prints the response.
+func apiDelete(cfg *config.Config, apiKey, path string) {
+	req, err := http.NewRequest("DELETE", apiBaseURL(cfg)+path, nil)
+	if err != nil {
+		log.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", apiKey)
+	doAPIRequest(req, http.StatusOK)
+}
+
+// doAPIRequest sends the request, prints the body, exits on non-success.
+func doAPIRequest(req *http.Request, successStatus int) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("Error: could not reach server at %s\n", baseURL)
+		fmt.Printf("Error: could not reach server: %v\n", err)
 		fmt.Println("Make sure the ts-store server is running (tsstore serve)")
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusCreated {
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == successStatus {
 		var pretty bytes.Buffer
-		if json.Indent(&pretty, respBody, "", "  ") == nil {
+		if json.Indent(&pretty, body, "", "  ") == nil {
 			fmt.Println(pretty.String())
 		} else {
-			fmt.Println(string(respBody))
+			fmt.Println(string(body))
 		}
-	} else {
-		fmt.Printf("Error (%d): %s\n", resp.StatusCode, string(respBody))
-		os.Exit(1)
+		return
 	}
+	fmt.Printf("Error (%d): %s\n", resp.StatusCode, string(body))
+	os.Exit(1)
+}
+
+func apiPost(cfg *config.Config, apiKey, path string, body interface{}) {
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		log.Fatalf("Failed to encode request: %v", err)
+	}
+	req, err := http.NewRequest("POST", apiBaseURL(cfg)+path, bytes.NewReader(jsonBody))
+	if err != nil {
+		log.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	doAPIRequest(req, http.StatusCreated)
 }

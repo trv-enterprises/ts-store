@@ -55,7 +55,9 @@ tags:
   - name: Schema
     description: Schema management for schema-type stores
   - name: WebSocket
-    description: Outbound WebSocket connection management with optional alerting
+    description: Outbound WebSocket connection management (data streaming)
+  - name: Alerts
+    description: Rule-based alerts with webhook, WS, or MQTT dispatch
 
 paths:
   /health:
@@ -588,8 +590,8 @@ paths:
         Create an outbound WebSocket connection. ts-store will dial the specified URL
         and push data (push mode) or receive data (pull mode).
 
-        **Alerting:** Optionally configure rules to trigger alerts when data matches conditions.
-        Alerts are sent over the WebSocket and/or to configured webhooks.
+        For rule-based notifications, use the `/alerts/*` endpoints — WS push
+        is now a data-streaming resource only.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -668,6 +670,172 @@ paths:
                     example: connection deleted
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stores/{store}/alerts:
+    get:
+      tags:
+        - Alerts
+      summary: List all alerts for a store
+      description: |
+        Returns the status of every alert across all three transports
+        (webhook, ws, mqtt). Each entry is tagged with its `type`.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: List of alert statuses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AlertStatus'
+
+  /api/stores/{store}/alerts/webhook:
+    post:
+      tags:
+        - Alerts
+      summary: Create a webhook alert
+      description: |
+        Creates a new webhook alert. When any rule matches a record in the
+        store, the worker POSTs an Alert payload to `url` with `headers`.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWebhookAlertRequest'
+      responses:
+        '201':
+          description: Alert created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertStatus'
+        '400':
+          description: Invalid request
+
+  /api/stores/{store}/alerts/ws:
+    post:
+      tags:
+        - Alerts
+      summary: Create a WebSocket alert
+      description: |
+        Creates a new WS alert. Each rule match opens an outbound
+        WebSocket to `url`, sends one `type: alert` frame, and closes.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWSAlertRequest'
+      responses:
+        '201':
+          description: Alert created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertStatus'
+        '400':
+          description: Invalid request
+
+  /api/stores/{store}/alerts/mqtt:
+    post:
+      tags:
+        - Alerts
+      summary: Create an MQTT alert
+      description: |
+        Creates a new MQTT alert. The worker holds a persistent client to
+        `broker_url` and publishes Alert payloads to `topic` at the
+        configured QoS (default 1).
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMQTTAlertRequest'
+      responses:
+        '201':
+          description: Alert created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertStatus'
+        '400':
+          description: Invalid request
+
+  /api/stores/{store}/alerts/{alertId}:
+    get:
+      tags:
+        - Alerts
+      summary: Get alert status
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Alert status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Alerts
+      summary: Delete an alert
+      description: Stop the worker and remove the persisted configuration.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Alert deleted
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -1074,17 +1242,16 @@ components:
         agg_default:
           type: string
           description: Default aggregation function(s) (e.g., "avg" or "avg,sum,min,max")
-        rules:
-          type: array
-          items:
-            $ref: '#/components/schemas/AlertRule'
-          description: Optional alert rules
 
     AlertRule:
       type: object
       required:
         - name
         - condition
+      description: |
+        A single rule shared by all alert resources (webhook, ws, mqtt). The
+        transport-specific dispatch target lives on the parent alert resource,
+        not on the rule.
       properties:
         name:
           type: string
@@ -1097,19 +1264,117 @@ components:
             - Simple: "temperature > 80", "status == \"error\""
             - Compound: "temp > 80 AND humidity < 30", "level == \"warn\" OR level == \"error\""
           example: temperature > 80
-        webhook:
-          type: string
-          description: Webhook URL to call when rule fires
-          example: https://alerts.example.com/notify
-        webhook_headers:
-          type: object
-          additionalProperties:
-            type: string
-          description: Headers for webhook HTTP POST
         cooldown:
           type: string
           description: Minimum time between alerts (e.g., "5m", "1h")
           example: 5m
+
+    AlertStatus:
+      type: object
+      properties:
+        id:
+          type: string
+          example: a1b2c3d4
+        type:
+          type: string
+          enum: [webhook, ws, mqtt]
+        target:
+          type: string
+          description: URL (webhook/ws) or "broker -> topic" (mqtt)
+        rules_count:
+          type: integer
+        alerts_fired:
+          type: integer
+          format: int64
+        last_timestamp:
+          type: integer
+          format: int64
+        state:
+          type: string
+          enum: [running, stopped, error]
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    CreateWebhookAlertRequest:
+      type: object
+      required:
+        - url
+        - rules
+      properties:
+        url:
+          type: string
+          example: https://hooks.example.com/incoming
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Custom HTTP headers (e.g., Authorization)
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRule'
+        poll_interval:
+          type: string
+          description: Poll cadence (default 1s)
+          example: 1s
+        timeout:
+          type: string
+          description: HTTP timeout per request (default 10s)
+          example: 10s
+
+    CreateWSAlertRequest:
+      type: object
+      required:
+        - url
+        - rules
+      properties:
+        url:
+          type: string
+          example: wss://alerts.example.com/in
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Headers sent on the WebSocket upgrade request
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRule'
+        poll_interval:
+          type: string
+          example: 1s
+
+    CreateMQTTAlertRequest:
+      type: object
+      required:
+        - broker_url
+        - topic
+        - rules
+      properties:
+        broker_url:
+          type: string
+          example: tcp://broker.example.com:1883
+        topic:
+          type: string
+          example: alerts/heat
+        username:
+          type: string
+        password:
+          type: string
+        qos:
+          type: integer
+          enum: [0, 1, 2]
+          description: MQTT QoS, default 1 (at-least-once)
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlertRule'
+        poll_interval:
+          type: string
+          example: 1s
 
     WSConnectionStatus:
       type: object
@@ -1139,13 +1404,6 @@ components:
         messages_received:
           type: integer
           format: int64
-        rules_count:
-          type: integer
-          description: Number of configured alert rules
-        alerts_fired:
-          type: integer
-          format: int64
-          description: Total alerts fired
         errors:
           type: integer
           format: int64
