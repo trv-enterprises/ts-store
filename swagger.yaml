@@ -795,7 +795,19 @@ paths:
     get:
       tags:
         - Alerts
-      summary: Get alert status
+      summary: Get alert detail
+      description: |
+        Returns the alert's worker runtime status plus its persisted
+        configuration (rules, URL/broker/topic, headers, etc.). The
+        response is a flat object: top-level fields are the runtime
+        Status, and the matching transport config sits under one of
+        `webhook`, `ws`, or `mqtt` (only one will be present).
+
+        Sensitive fields are redacted on read: MQTT `password` and
+        well-known auth-style HTTP headers (`Authorization`,
+        `X-API-Key`, `X-Auth-Token`, `X-Access-Token`,
+        `Proxy-Authorization`, `Cookie`) come back as `[redacted]`.
+        The values on disk are unchanged.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -809,11 +821,11 @@ paths:
             type: string
       responses:
         '200':
-          description: Alert status
+          description: Alert detail (status + config)
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AlertStatus'
+                $ref: '#/components/schemas/AlertDetail'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -1297,6 +1309,88 @@ components:
         created_at:
           type: string
           format: date-time
+
+    AlertDetail:
+      description: |
+        Flattened view of an alert's worker status plus its persisted
+        configuration. Status fields appear at the top level; the
+        transport-specific config is nested under `webhook`, `ws`, or
+        `mqtt` — exactly one will be present, matching `type`.
+        Sensitive values (MQTT password, common auth-style headers)
+        are redacted as `[redacted]`.
+      allOf:
+        - $ref: '#/components/schemas/AlertStatus'
+        - type: object
+          properties:
+            webhook:
+              description: Present when type is "webhook".
+              type: object
+              properties:
+                id:
+                  type: string
+                url:
+                  type: string
+                headers:
+                  type: object
+                  additionalProperties: { type: string }
+                rules:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AlertRule'
+                poll_interval:
+                  type: string
+                timeout:
+                  type: string
+                created_at:
+                  type: string
+                  format: date-time
+            ws:
+              description: Present when type is "ws".
+              type: object
+              properties:
+                id:
+                  type: string
+                url:
+                  type: string
+                headers:
+                  type: object
+                  additionalProperties: { type: string }
+                rules:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AlertRule'
+                poll_interval:
+                  type: string
+                created_at:
+                  type: string
+                  format: date-time
+            mqtt:
+              description: Present when type is "mqtt".
+              type: object
+              properties:
+                id:
+                  type: string
+                broker_url:
+                  type: string
+                topic:
+                  type: string
+                username:
+                  type: string
+                password:
+                  type: string
+                  description: Redacted to "[redacted]" if set on disk.
+                qos:
+                  type: integer
+                  enum: [0, 1, 2]
+                rules:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AlertRule'
+                poll_interval:
+                  type: string
+                created_at:
+                  type: string
+                  format: date-time
 
     CreateWebhookAlertRequest:
       type: object

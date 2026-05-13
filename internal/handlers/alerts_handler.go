@@ -99,13 +99,15 @@ func (h *AlertsHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"alerts": mgr.ListAlerts()})
 }
 
-// Get handles GET /api/stores/:store/alerts/:id
+// Get handles GET /api/stores/:store/alerts/:id — returns the worker
+// status plus the persisted config (with auth-style headers and MQTT
+// passwords redacted).
 func (h *AlertsHandler) Get(c *gin.Context) {
 	mgr := h.resolveManager(c)
 	if mgr == nil {
 		return
 	}
-	status, err := mgr.GetAlert(c.Param("id"))
+	detail, err := mgr.GetAlertDetail(c.Param("id"))
 	if err != nil {
 		if errors.Is(err, alerts.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "alert not found"})
@@ -114,7 +116,7 @@ func (h *AlertsHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, status)
+	c.JSON(http.StatusOK, detail)
 }
 
 // Delete handles DELETE /api/stores/:store/alerts/:id

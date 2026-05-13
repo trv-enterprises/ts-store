@@ -5,10 +5,12 @@
 package alerts
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -250,6 +252,143 @@ func (m *Manager) GetAlert(alertID string) (Status, error) {
 		return Status{}, ErrNotFound
 	}
 	return w.Status(), nil
+}
+
+// AlertDetail combines a Worker's runtime Status with the persisted
+// configuration for the alert. Used by GET /alerts/{id} so callers can
+// see both "what is this alert configured to do?" and "what is it
+// currently doing?" in one response.
+//
+// Exactly one of WebhookConfig, WSConfig, or MQTTConfig is non-nil,
+// matching Status.Type.
+type AlertDetail struct {
+	Status        Status               `json:",inline"`
+	WebhookConfig *store.WebhookAlert  `json:"webhook,omitempty"`
+	WSConfig      *store.WSAlert       `json:"ws,omitempty"`
+	MQTTConfig    *store.MQTTAlert     `json:"mqtt,omitempty"`
+}
+
+// MarshalJSON flattens Status into the top-level object so the response
+// reads naturally instead of nesting status under a key. Go's struct-tag
+// `json:",inline"` doesn't actually flatten — that's a yaml tag — so we
+// do it by hand.
+func (d AlertDetail) MarshalJSON() ([]byte, error) {
+	// Marshal Status as the base object, then merge the config field.
+	base, err := json.Marshal(d.Status)
+	if err != nil {
+		return nil, err
+	}
+	// Strip the trailing "}" and append our config field if any.
+	if len(base) == 0 || base[len(base)-1] != '}' {
+		return base, nil // shouldn't happen with a struct
+	}
+	var configKey string
+	var configVal interface{}
+	switch {
+	case d.WebhookConfig != nil:
+		configKey = "webhook"
+		configVal = d.WebhookConfig
+	case d.WSConfig != nil:
+		configKey = "ws"
+		configVal = d.WSConfig
+	case d.MQTTConfig != nil:
+		configKey = "mqtt"
+		configVal = d.MQTTConfig
+	default:
+		return base, nil
+	}
+	configBytes, err := json.Marshal(configVal)
+	if err != nil {
+		return nil, err
+	}
+	// base is `{...}`, configBytes is `{...}`. We want `{...,"key":{...}}`.
+	out := make([]byte, 0, len(base)+len(configBytes)+len(configKey)+5)
+	out = append(out, base[:len(base)-1]...)
+	if len(base) > 2 { // not just "{}"
+		out = append(out, ',')
+	}
+	out = append(out, '"')
+	out = append(out, configKey...)
+	out = append(out, '"', ':')
+	out = append(out, configBytes...)
+	out = append(out, '}')
+	return out, nil
+}
+
+// sensitiveHeaderNames are HTTP header names whose values are masked when
+// returned via the read API. Matched case-insensitively. The values are
+// still persisted as-is on disk; this redaction is purely about not
+// echoing secrets back over the network on read.
+var sensitiveHeaderNames = map[string]struct{}{
+	"authorization":       {},
+	"proxy-authorization": {},
+	"cookie":              {},
+	"x-api-key":           {},
+	"x-auth-token":        {},
+	"x-access-token":      {},
+}
+
+func redactHeaders(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if _, isSensitive := sensitiveHeaderNames[strings.ToLower(k)]; isSensitive && v != "" {
+			out[k] = "[redacted]"
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// GetAlertDetail returns the worker status plus the persisted config for
+// an alert. Secrets (MQTT password, common auth-style HTTP headers) are
+// redacted; the on-disk values are unchanged.
+func (m *Manager) GetAlertDetail(alertID string) (AlertDetail, error) {
+	m.mu.RLock()
+	w, ok := m.workers[alertID]
+	m.mu.RUnlock()
+	if !ok {
+		return AlertDetail{}, ErrNotFound
+	}
+	status := w.Status()
+	detail := AlertDetail{Status: status}
+
+	// Read the persisted config matching the worker's type. Reading
+	// outside the manager lock is fine: the store's own mutex protects
+	// the file load, and the worker can't change type at runtime.
+	switch status.Type {
+	case "webhook":
+		cfg, err := m.store.GetWebhookAlert(alertID)
+		if err != nil {
+			return AlertDetail{}, err
+		}
+		redacted := *cfg
+		redacted.Headers = redactHeaders(cfg.Headers)
+		detail.WebhookConfig = &redacted
+	case "ws":
+		cfg, err := m.store.GetWSAlert(alertID)
+		if err != nil {
+			return AlertDetail{}, err
+		}
+		redacted := *cfg
+		redacted.Headers = redactHeaders(cfg.Headers)
+		detail.WSConfig = &redacted
+	case "mqtt":
+		cfg, err := m.store.GetMQTTAlert(alertID)
+		if err != nil {
+			return AlertDetail{}, err
+		}
+		redacted := *cfg
+		if redacted.Password != "" {
+			redacted.Password = "[redacted]"
+		}
+		detail.MQTTConfig = &redacted
+	}
+
+	return detail, nil
 }
 
 // DeleteAlert stops the worker, removes the persisted config, and deletes
