@@ -1295,6 +1295,11 @@ components:
           description: URL (webhook/ws) or "broker -> topic" (mqtt)
         rules_count:
           type: integer
+        rule_names:
+          type: array
+          items:
+            type: string
+          description: Names of all rules configured on this alert, in order.
         alerts_fired:
           type: integer
           format: int64

@@ -32,6 +32,7 @@ type Status struct {
 	Type          string    `json:"type"` // "webhook" | "ws" | "mqtt"
 	Target        string    `json:"target"`
 	RulesCount    int       `json:"rules_count"`
+	RuleNames     []string  `json:"rule_names,omitempty"`
 	AlertsFired   int64     `json:"alerts_fired"`
 	LastTimestamp int64     `json:"last_timestamp,omitempty"`
 	State         string    `json:"state"` // running | stopped | error
@@ -54,6 +55,7 @@ type Worker struct {
 
 	evaluator    *rules.Evaluator
 	rulesCount   int
+	ruleNames    []string
 	sink         Sink
 	pollInterval time.Duration
 
@@ -131,6 +133,10 @@ func NewWorker(opts Options) (*Worker, error) {
 	// are NOT used — dispatch is unified through Sink.Send.
 	w.evaluator = rules.NewEvaluator(opts.StoreName, alertRules, w.dispatch)
 	w.rulesCount = len(alertRules)
+	w.ruleNames = make([]string, 0, len(alertRules))
+	for _, ar := range alertRules {
+		w.ruleNames = append(w.ruleNames, ar.Rule.Name)
+	}
 	return w, nil
 }
 
@@ -305,11 +311,14 @@ func (w *Worker) writeCursor(ts int64) {
 func (w *Worker) Status() Status {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
+	// ruleNames is set at construction and never mutated, so the slice
+	// header copy is safe — readers can't see it grow or shrink.
 	return Status{
 		ID:            w.id,
 		Type:          w.alertType,
 		Target:        w.target,
 		RulesCount:    w.rulesCount,
+		RuleNames:     w.ruleNames,
 		AlertsFired:   atomic.LoadInt64(&w.alertsFired),
 		LastTimestamp: w.lastTs,
 		State:         w.state,

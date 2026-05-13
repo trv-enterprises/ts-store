@@ -238,6 +238,24 @@ func TestWorkerStartFromNowIgnoresHistory(t *testing.T) {
 	waitForAlerts(t, sink, 1, 2*time.Second)
 }
 
+func TestWorkerStatusReportsRuleNames(t *testing.T) {
+	s := newTestStore(t, "rule-names")
+	sink := &stubSink{}
+	w := newWorker(t, s, sink, []store.AlertRuleConfig{
+		{Name: "hot", Condition: "temperature > 80"},
+		{Name: "cold", Condition: "temperature < 0"},
+	}, "")
+	defer w.Stop()
+
+	got := w.Status()
+	if got.RulesCount != 2 {
+		t.Errorf("RulesCount: got %d, want 2", got.RulesCount)
+	}
+	if len(got.RuleNames) != 2 || got.RuleNames[0] != "hot" || got.RuleNames[1] != "cold" {
+		t.Errorf("RuleNames: got %v, want [hot cold]", got.RuleNames)
+	}
+}
+
 func TestWorkerStopClosesSink(t *testing.T) {
 	s := newTestStore(t, "stop")
 	sink := &stubSink{}
