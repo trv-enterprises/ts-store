@@ -1280,6 +1280,15 @@ components:
           type: string
           description: Minimum time between alerts (e.g., "5m", "1h")
           example: 5m
+        external_ref:
+          type: string
+          maxLength: 512
+          description: |
+            Opaque pass-through string echoed on every alert payload this
+            rule fires. ts-store does not parse or interpret it. Cap is 512
+            bytes; NUL bytes are rejected. Use for a dashboard component
+            id, a Grafana slug, or a JSON-encoded compound key.
+          example: dashboards/warehouse-sensors#component-42
 
     AlertStatus:
       type: object

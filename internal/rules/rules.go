@@ -38,6 +38,10 @@ type Rule struct {
 	Name       string
 	Conditions []Condition
 	LogicalOp  string // "AND" or "OR", empty means single condition
+
+	// ExternalRef is an opaque pass-through value supplied by the caller.
+	// Echoed on every Alert this rule produces; not used in evaluation.
+	ExternalRef string
 }
 
 // conditionPattern matches: field operator value

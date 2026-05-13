@@ -96,13 +96,27 @@ type CreateWebhookAlertRequest struct {
 	Timeout      string                  `json:"timeout,omitempty"`
 }
 
+// validateRules checks each rule's user-supplied fields. Returns a clear
+// error for the first offending rule.
+func validateRules(rs []store.AlertRuleConfig) error {
+	if len(rs) == 0 {
+		return fmt.Errorf("at least one rule is required")
+	}
+	for _, r := range rs {
+		if err := r.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CreateWebhookAlert validates the request, persists it, and starts a worker.
 func (m *Manager) CreateWebhookAlert(req CreateWebhookAlertRequest) (Status, error) {
 	if req.URL == "" {
 		return Status{}, fmt.Errorf("url is required")
 	}
-	if len(req.Rules) == 0 {
-		return Status{}, fmt.Errorf("at least one rule is required")
+	if err := validateRules(req.Rules); err != nil {
+		return Status{}, err
 	}
 
 	m.mu.Lock()
@@ -146,8 +160,8 @@ func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
 	if req.URL == "" {
 		return Status{}, fmt.Errorf("url is required")
 	}
-	if len(req.Rules) == 0 {
-		return Status{}, fmt.Errorf("at least one rule is required")
+	if err := validateRules(req.Rules); err != nil {
+		return Status{}, err
 	}
 
 	m.mu.Lock()
@@ -193,8 +207,8 @@ func (m *Manager) CreateMQTTAlert(req CreateMQTTAlertRequest) (Status, error) {
 	if req.BrokerURL == "" || req.Topic == "" {
 		return Status{}, fmt.Errorf("broker_url and topic are required")
 	}
-	if len(req.Rules) == 0 {
-		return Status{}, fmt.Errorf("at least one rule is required")
+	if err := validateRules(req.Rules); err != nil {
+		return Status{}, err
 	}
 	if req.QoS == 0 {
 		req.QoS = 1 // default QoS 1 (at-least-once)

@@ -119,11 +119,12 @@ func (e *Evaluator) evaluateRecord(rec dataRecord) {
 
 		// Build alert
 		alert := notify.Alert{
-			RuleName:  ar.Rule.Name,
-			Condition: e.conditionString(ar.Rule),
-			Timestamp: rec.timestamp,
-			Data:      rec.data,
-			StoreName: e.storeName,
+			RuleName:    ar.Rule.Name,
+			Condition:   e.conditionString(ar.Rule),
+			Timestamp:   rec.timestamp,
+			Data:        rec.data,
+			StoreName:   e.storeName,
+			ExternalRef: ar.Rule.ExternalRef,
 		}
 
 		// Fire webhook if configured

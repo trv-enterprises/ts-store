@@ -150,6 +150,9 @@ func buildAlertRules(configs []store.AlertRuleConfig) ([]rules.AlertRule, error)
 		if err != nil {
 			return nil, fmt.Errorf("rule %q: %w", rc.Name, err)
 		}
+		// Pass-through reference attached to every alert this rule fires.
+		// Not interpreted by ts-store.
+		rule.ExternalRef = rc.ExternalRef
 		ar := rules.AlertRule{Rule: rule}
 		if rc.Cooldown != "" {
 			d, err := duration.ParseDuration(rc.Cooldown)

@@ -172,11 +172,16 @@ The body POSTed to the webhook (and the contents of the `alert` field on a WS fr
   "condition": "temperature > 80",
   "timestamp": 1747000000000000000,
   "data": { "temperature": 95.0, "humidity": 0.4 },
-  "store_name": "sensors"
+  "store_name": "sensors",
+  "external_ref": "dashboards/warehouse-sensors#component-42"
 }
 ```
 
-`data` is the full record that triggered the match.
+`data` is the full record that triggered the match. `external_ref` is omitted when the rule didn't configure one.
+
+#### `external_ref` — opaque pass-through
+
+Each rule may carry an `external_ref` string (≤512 bytes, no NUL bytes, otherwise unconstrained). ts-store does not parse or interpret it — receivers can stash whatever they need: a dashboard component id, a Grafana slug, a Slack channel name, or a JSON-encoded compound key like `{"dashboard_id":"…","namespace":"default"}`. When the rule fires, the value is echoed verbatim on the alert payload above. If the rule didn't set one, the field is omitted from the JSON.
 
 ## CLI
 

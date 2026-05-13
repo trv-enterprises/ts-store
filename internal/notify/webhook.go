@@ -23,6 +23,10 @@ type Alert struct {
 	Timestamp int64                  `json:"timestamp"`
 	Data      map[string]interface{} `json:"data"`
 	StoreName string                 `json:"store_name,omitempty"`
+
+	// ExternalRef is the rule's opaque pass-through identifier, echoed
+	// as-is for the receiver. Set only if the rule had one configured.
+	ExternalRef string `json:"external_ref,omitempty"`
 }
 
 // WebhookConfig holds configuration for a webhook endpoint.

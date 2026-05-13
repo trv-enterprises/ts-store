@@ -150,6 +150,57 @@ func TestEvaluatorWebhookInvokedWhenSet(t *testing.T) {
 	}, 1, 2*time.Second)
 }
 
+func TestEvaluatorPassesExternalRefThrough(t *testing.T) {
+	var mu sync.Mutex
+	var got []notify.Alert
+
+	rule := mustParseRule(t, "hot", "temperature > 80")
+	rule.Rule.ExternalRef = "dashboards/x#component-42"
+
+	e := NewEvaluator("s", []AlertRule{rule}, captureCallback(&got, &mu))
+	e.Start()
+	defer e.Stop()
+
+	e.Evaluate(1, map[string]interface{}{"temperature": 90.0})
+
+	waitFor(t, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(got)
+	}, 1, 2*time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got[0].ExternalRef != "dashboards/x#component-42" {
+		t.Errorf("ExternalRef: got %q", got[0].ExternalRef)
+	}
+}
+
+func TestEvaluatorOmitsEmptyExternalRef(t *testing.T) {
+	// When a rule has no external_ref, the Alert.ExternalRef should be
+	// empty and (with omitempty on the JSON tag) absent from the wire.
+	var mu sync.Mutex
+	var got []notify.Alert
+	rule := mustParseRule(t, "hot", "temperature > 80")
+	e := NewEvaluator("s", []AlertRule{rule}, captureCallback(&got, &mu))
+	e.Start()
+	defer e.Stop()
+
+	e.Evaluate(1, map[string]interface{}{"temperature": 90.0})
+
+	waitFor(t, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(got)
+	}, 1, 2*time.Second)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got[0].ExternalRef != "" {
+		t.Errorf("ExternalRef should be empty, got %q", got[0].ExternalRef)
+	}
+}
+
 func TestEvaluatorStopDoesntPanic(t *testing.T) {
 	e := NewEvaluator("s", []AlertRule{
 		mustParseRule(t, "hot", "temperature > 80"),
