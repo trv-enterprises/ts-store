@@ -214,11 +214,11 @@ paths:
       tags:
         - Stores
       summary: Get store statistics
-      description: Returns detailed statistics about the store.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
+      description: |
+        Returns operational stats about the store: block counts, time
+        range, partition layout, block size. **Unauthenticated** —
+        deliberately public so dashboards and monitors can poll without
+        a per-store API key. No store data is exposed.
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -228,8 +228,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StoreStats'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
 
   /api/stores/{store}/data:
     post:

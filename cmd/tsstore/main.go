@@ -274,6 +274,11 @@ func runServer(args []string) {
 		{
 			stores.POST("", middleware.AdminAuth(cfg.Server.AdminKey), storeHandler.Create) // Create new store (requires admin key)
 			stores.GET("", storeHandler.List)                                               // List open stores (no auth)
+			// Operational stats — block counts, time range, partition layout.
+			// Deliberately unauthenticated so dashboards, monitors, and other
+			// observability consumers don't need a per-store API key just to
+			// poll capacity/health. No store data is exposed here.
+			stores.GET("/:store/stats", storeHandler.Stats)
 		}
 
 		// Store-specific operations (require auth)
@@ -282,7 +287,6 @@ func runServer(args []string) {
 		{
 			storeRoutes.DELETE("", storeHandler.Delete)
 			storeRoutes.POST("/reset", storeHandler.Reset)
-			storeRoutes.GET("/stats", storeHandler.Stats)
 
 			// Unified data endpoint
 			// Content-Type determines format:
