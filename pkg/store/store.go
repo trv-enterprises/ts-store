@@ -79,6 +79,10 @@ type Store struct {
 	globalMeta       *GlobalMetadata        // V2 global metadata
 	partitions       map[uint32]*Partition  // V2 partition map (id -> partition)
 	currentPartition *Partition             // V2 current write partition
+
+	// Activity counters surfaced via /metrics. Process-lifetime by
+	// default; resettable via ResetMetrics.
+	metrics storeMetrics
 }
 
 // Create creates a new store with the given configuration.
@@ -176,6 +180,7 @@ func createV1(cfg Config) (*Store, error) {
 		path:      storePath,
 		isV2:      false,
 	}
+	s.initMetrics()
 
 	// Write initial metadata
 	if err := s.writeMeta(); err != nil {
@@ -234,6 +239,7 @@ func createV2(cfg Config) (*Store, error) {
 		globalMeta: globalMeta,
 		partitions: make(map[uint32]*Partition),
 	}
+	s.initMetrics()
 
 	// Create the first partition
 	firstPart, err := createPartition(storePath, 0, blocksPerPart, cfg.DataBlockSize)
@@ -351,6 +357,7 @@ func openV1(path string, name string, storePath string, metaFile *os.File) (*Sto
 		path:      storePath,
 		isV2:      false,
 	}
+	s.initMetrics()
 
 	// Perform crash recovery to fix any inconsistencies
 	if err := s.recoverFromCrash(); err != nil {
@@ -404,6 +411,7 @@ func openV2(path string, name string, storePath string, metaFile *os.File) (*Sto
 		globalMeta: globalMeta,
 		partitions: make(map[uint32]*Partition),
 	}
+	s.initMetrics()
 
 	// Recover from any interrupted rollover BEFORE opening partitions.
 	// This may create/delete partition directories and update globalMeta.

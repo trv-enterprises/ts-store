@@ -59,9 +59,10 @@ type Worker struct {
 	sink         Sink
 	pollInterval time.Duration
 
-	lastTs      int64
-	cursorPath  string
-	alertsFired int64
+	lastTs        int64
+	cursorPath    string
+	alertsFired   int64
+	alertsDropped int64 // sink.Send returned an error
 
 	state     string
 	lastError string
@@ -276,13 +277,45 @@ func (w *Worker) pollOnce() error {
 }
 
 // dispatch is the evaluator's onAlert callback. It hands the alert to the
-// sink and increments the fired counter.
+// sink and increments the fired counter. A sink error counts as a drop.
 func (w *Worker) dispatch(alert notify.Alert) {
 	if err := w.sink.Send(alert); err != nil {
+		atomic.AddInt64(&w.alertsDropped, 1)
 		w.setError(fmt.Sprintf("sink send: %v", err))
 		return
 	}
 	atomic.AddInt64(&w.alertsFired, 1)
+}
+
+// Metrics is the activity snapshot for a Worker, exposed via the per-store
+// /metrics endpoint. RulesTested and RulesMatched come from the evaluator
+// (cheap atomic loads).
+type Metrics struct {
+	ID            string `json:"id"`
+	Type          string `json:"type"` // "webhook" | "ws" | "mqtt"
+	RulesTested   int64  `json:"rules_tested"`
+	RulesMatched  int64  `json:"rules_matched"`
+	AlertsFired   int64  `json:"alerts_fired"`
+	AlertsDropped int64  `json:"alerts_dropped"`
+}
+
+// Metrics returns a snapshot of the worker's activity counters.
+func (w *Worker) Metrics() Metrics {
+	return Metrics{
+		ID:            w.id,
+		Type:          w.alertType,
+		RulesTested:   w.evaluator.RulesTested(),
+		RulesMatched:  w.evaluator.RulesMatched(),
+		AlertsFired:   atomic.LoadInt64(&w.alertsFired),
+		AlertsDropped: atomic.LoadInt64(&w.alertsDropped),
+	}
+}
+
+// ResetMetrics zeros the worker's and its evaluator's counters.
+func (w *Worker) ResetMetrics() {
+	atomic.StoreInt64(&w.alertsFired, 0)
+	atomic.StoreInt64(&w.alertsDropped, 0)
+	w.evaluator.ResetCounters()
 }
 
 func (w *Worker) setError(msg string) {

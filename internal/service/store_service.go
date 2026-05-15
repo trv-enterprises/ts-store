@@ -361,6 +361,41 @@ func (s *StoreService) Reset(name string) error {
 	return st.Reset()
 }
 
+// StoreActivity is the per-store activity snapshot returned by Metrics.
+// Combines I/O counters from the store with rule/alert counters summed
+// across every webhook/WS/MQTT alert worker for that store.
+type StoreActivity struct {
+	Store  store.StoreMetrics `json:"store"`
+	Alerts []alerts.Metrics   `json:"alerts,omitempty"`
+}
+
+// Metrics returns activity counters for the store.
+func (s *StoreService) Metrics(name string) (*StoreActivity, error) {
+	st, err := s.GetOrOpen(name)
+	if err != nil {
+		return nil, err
+	}
+	out := &StoreActivity{Store: st.Metrics()}
+	if mgr := s.GetAlertsManager(name); mgr != nil {
+		out.Alerts = mgr.AllMetrics()
+	}
+	return out, nil
+}
+
+// ResetMetrics zeros the activity counters on the store and every alert
+// worker for the store.
+func (s *StoreService) ResetMetrics(name string) error {
+	st, err := s.GetOrOpen(name)
+	if err != nil {
+		return err
+	}
+	st.ResetMetrics()
+	if mgr := s.GetAlertsManager(name); mgr != nil {
+		mgr.ResetMetrics()
+	}
+	return nil
+}
+
 // CloseAll closes all open stores.
 func (s *StoreService) CloseAll() error {
 	s.mu.Lock()

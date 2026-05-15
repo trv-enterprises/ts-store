@@ -279,6 +279,8 @@ func runServer(args []string) {
 			// observability consumers don't need a per-store API key just to
 			// poll capacity/health. No store data is exposed here.
 			stores.GET("/:store/stats", storeHandler.Stats)
+			// Same posture for activity counters (writes, reads, rule evals).
+			stores.GET("/:store/metrics", storeHandler.Metrics)
 		}
 
 		// Store-specific operations (require auth)
@@ -287,6 +289,8 @@ func runServer(args []string) {
 		{
 			storeRoutes.DELETE("", storeHandler.Delete)
 			storeRoutes.POST("/reset", storeHandler.Reset)
+			// Authenticated: zeros counters and advances the "since" timestamp.
+			storeRoutes.POST("/metrics/reset", storeHandler.ResetMetrics)
 
 			// Unified data endpoint
 			// Content-Type determines format:
@@ -939,6 +943,58 @@ func resolvedDataPath(p string) string {
 	return p
 }
 
+// activityInfo is the aggregated activity row shown on a store's status
+// output. Sums per-worker alert counters into a single line; per-worker
+// detail is accessible via GET /alerts.
+type activityInfo struct {
+	Writes       int64  `json:"writes"`
+	Reads        int64  `json:"reads"`
+	RulesTested  int64  `json:"rules_tested"`
+	RulesMatched int64  `json:"rules_matched"`
+	AlertsFired  int64  `json:"alerts_fired"`
+	Since        string `json:"since,omitempty"`
+}
+
+// fetchActivity pulls /metrics for the given store and folds the
+// per-worker alert counters into a single aggregated activityInfo.
+// Returns nil on any error — the caller treats that as "no activity row".
+func fetchActivity(client *http.Client, baseURL, storeName string) *activityInfo {
+	resp, err := client.Get(fmt.Sprintf("%s/api/stores/%s/metrics", baseURL, storeName))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var payload struct {
+		Store struct {
+			Writes int64  `json:"writes"`
+			Reads  int64  `json:"reads"`
+			Since  string `json:"since"`
+		} `json:"store"`
+		Alerts []struct {
+			RulesTested  int64 `json:"rules_tested"`
+			RulesMatched int64 `json:"rules_matched"`
+			AlertsFired  int64 `json:"alerts_fired"`
+		} `json:"alerts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil
+	}
+	out := &activityInfo{
+		Writes: payload.Store.Writes,
+		Reads:  payload.Store.Reads,
+		Since:  payload.Store.Since,
+	}
+	for _, a := range payload.Alerts {
+		out.RulesTested += a.RulesTested
+		out.RulesMatched += a.RulesMatched
+		out.AlertsFired += a.AlertsFired
+	}
+	return out
+}
+
 // alertRuleNames extracts just the rule names from a list of configs.
 // Used to populate the rule_names field on status output without
 // dragging the full rule body into the response.
@@ -1130,6 +1186,7 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 		WebhookAlerts   []connectionInfo `json:"webhook_alerts,omitempty"`
 		WSAlerts        []connectionInfo `json:"ws_alerts,omitempty"`
 		MQTTAlerts      []connectionInfo `json:"mqtt_alerts,omitempty"`
+		Activity        *activityInfo    `json:"activity,omitempty"`
 		Error           string           `json:"error,omitempty"`
 	}
 
@@ -1222,6 +1279,12 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 			})
 		}
 
+		// Activity counters: best-effort via the unauthenticated /metrics
+		// endpoint. Failure here doesn't fail the whole row — we just skip
+		// the activity line. Only populated for the live server, never in
+		// offline mode (the CLI process didn't accumulate the counters).
+		status.Activity = fetchActivity(client, baseURL, storeName)
+
 		stores = append(stores, status)
 	}
 
@@ -1267,6 +1330,15 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 			fmt.Printf("  Time range:   %s to %s\n", s.OldestTime, s.NewestTime)
 		} else {
 			fmt.Printf("  Time range:   (empty)\n")
+		}
+		if s.Activity != nil {
+			fmt.Printf("  Activity:     %s writes, %s reads, %s rules tested (%s matched), %s alerts fired since %s\n",
+				formatNumber(uint64(s.Activity.Writes)),
+				formatNumber(uint64(s.Activity.Reads)),
+				formatNumber(uint64(s.Activity.RulesTested)),
+				formatNumber(uint64(s.Activity.RulesMatched)),
+				formatNumber(uint64(s.Activity.AlertsFired)),
+				s.Activity.Since)
 		}
 		if len(s.WSConnections) > 0 {
 			fmt.Printf("  WS connections: %d\n", len(s.WSConnections))

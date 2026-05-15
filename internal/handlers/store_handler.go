@@ -68,6 +68,32 @@ func (h *StoreHandler) Stats(c *gin.Context) {
 	c.JSON(http.StatusOK, stats)
 }
 
+// Metrics handles GET /api/stores/:store/metrics
+// Returns activity counters (writes, reads, rule evaluations, alert
+// dispatches) since process start or the last reset. Unauthenticated —
+// operational metadata, no record data exposed.
+func (h *StoreHandler) Metrics(c *gin.Context) {
+	storeName := c.Param("store")
+	activity, err := h.storeService.Metrics(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, activity)
+}
+
+// ResetMetrics handles POST /api/stores/:store/metrics/reset
+// Zeros all activity counters and advances the "since" timestamp.
+// Authenticated — changes server-visible state.
+func (h *StoreHandler) ResetMetrics(c *gin.Context) {
+	storeName := c.Param("store")
+	if err := h.storeService.ResetMetrics(storeName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "metrics reset"})
+}
+
 // List handles GET /api/stores
 // Returns list of all stores on disk.
 func (h *StoreHandler) List(c *gin.Context) {

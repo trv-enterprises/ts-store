@@ -229,6 +229,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/StoreStats'
 
+  /api/stores/{store}/metrics:
+    get:
+      tags:
+        - Stores
+      summary: Get store activity counters
+      description: |
+        Returns activity counters since process start (or the last
+        reset): writes, reads, bytes, rule evaluations, rule matches,
+        alert dispatches, alert drops. **Unauthenticated** — same
+        posture as /stats. No record data is exposed.
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Activity snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreActivity'
+
+  /api/stores/{store}/metrics/reset:
+    post:
+      tags:
+        - Stores
+      summary: Reset activity counters
+      description: |
+        Zeros every counter on the store and on each alert worker, and
+        advances the `since` timestamp to now. Authenticated because
+        it changes server-visible state.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Counters reset
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/stores/{store}/data:
     post:
       tags:
@@ -1036,6 +1077,68 @@ components:
           type: string
           description: Key ID for reference
           example: a1b2c3d4
+
+    StoreActivity:
+      type: object
+      description: |
+        Activity counters for a store: I/O on the store itself plus
+        rule/alert counters summed from every alert worker.
+      properties:
+        store:
+          type: object
+          properties:
+            writes:
+              type: integer
+              format: int64
+              description: Successful PutObject calls since the counters last reset.
+            bytes_written:
+              type: integer
+              format: int64
+            reads:
+              type: integer
+              format: int64
+              description: |
+                Sum of GetObject, GetObjectByTime, and range-scan calls
+                (GetObjectsInRange / GetOldestObjects / GetNewestObjects).
+                Range scans count once per call regardless of how many
+                handles they return.
+            bytes_read:
+              type: integer
+              format: int64
+              description: |
+                Bytes of object payload returned to callers via GetObject
+                and GetObjectByTime. Range scans return handles only and
+                do not credit byte counts here.
+            since:
+              type: string
+              format: date-time
+              description: When the counters last started accumulating.
+        alerts:
+          type: array
+          description: One entry per active alert worker on the store.
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              type:
+                type: string
+                enum: [webhook, ws, mqtt]
+              rules_tested:
+                type: integer
+                format: int64
+              rules_matched:
+                type: integer
+                format: int64
+              alerts_fired:
+                type: integer
+                format: int64
+              alerts_dropped:
+                type: integer
+                format: int64
+                description: |
+                  Sink.Send returned an error — for webhook sinks this
+                  includes the async queue overflow path.
 
     StoreStats:
       type: object

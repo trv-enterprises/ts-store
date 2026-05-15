@@ -6,6 +6,7 @@ package rules
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tviviano/ts-store/internal/notify"
@@ -34,6 +35,12 @@ type Evaluator struct {
 
 	// Callback for alert firing (e.g., send over WebSocket)
 	onAlert func(alert notify.Alert)
+
+	// Activity counters. Atomic int64 — one increment per rule.Evaluate
+	// call (rulesTested) and per match (rulesMatched). Process-lifetime
+	// by default; the owning Worker exposes a reset path.
+	rulesTested  atomic.Int64
+	rulesMatched atomic.Int64
 }
 
 type dataRecord struct {
@@ -108,9 +115,11 @@ func (e *Evaluator) evaluateRecord(rec dataRecord) {
 	now := time.Now()
 
 	for _, ar := range e.rules {
+		e.rulesTested.Add(1)
 		if !ar.Rule.Evaluate(rec.data) {
 			continue
 		}
+		e.rulesMatched.Add(1)
 
 		// Check cooldown
 		if !e.checkCooldown(ar.Rule.Name, ar.Cooldown, now) {
@@ -191,4 +200,18 @@ func formatValue(v interface{}) string {
 	default:
 		return toString(v)
 	}
+}
+
+// RulesTested returns the number of rule evaluations performed since the
+// evaluator started or was last reset.
+func (e *Evaluator) RulesTested() int64 { return e.rulesTested.Load() }
+
+// RulesMatched returns the number of rule evaluations that returned true
+// since the evaluator started or was last reset. (Subset of RulesTested.)
+func (e *Evaluator) RulesMatched() int64 { return e.rulesMatched.Load() }
+
+// ResetCounters zeros the rulesTested and rulesMatched counters.
+func (e *Evaluator) ResetCounters() {
+	e.rulesTested.Store(0)
+	e.rulesMatched.Store(0)
 }

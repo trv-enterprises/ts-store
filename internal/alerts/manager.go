@@ -245,6 +245,27 @@ func (m *Manager) CreateMQTTAlert(req CreateMQTTAlertRequest) (Status, error) {
 	return w.Status(), nil
 }
 
+// AllMetrics returns a per-worker snapshot of activity counters for every
+// alert managed here. Used by the /metrics endpoint.
+func (m *Manager) AllMetrics() []Metrics {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Metrics, 0, len(m.workers))
+	for _, w := range m.workers {
+		out = append(out, w.Metrics())
+	}
+	return out
+}
+
+// ResetMetrics zeros activity counters on every worker.
+func (m *Manager) ResetMetrics() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, w := range m.workers {
+		w.ResetMetrics()
+	}
+}
+
 // ListAlerts returns a snapshot of all worker statuses, across all types.
 func (m *Manager) ListAlerts() []Status {
 	m.mu.RLock()

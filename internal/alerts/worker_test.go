@@ -256,6 +256,110 @@ func TestWorkerStatusReportsRuleNames(t *testing.T) {
 	}
 }
 
+func TestWorkerMetricsCountsRulesAndDispatches(t *testing.T) {
+	s := newTestStore(t, "metrics")
+	sink := &stubSink{}
+	w := newWorker(t, s, sink, []store.AlertRuleConfig{
+		{Name: "hot", Condition: "temperature > 80"},
+		{Name: "cold", Condition: "temperature < 0"},
+	}, "")
+
+	w.Start()
+	defer w.Stop()
+
+	// Wait one poll cycle so lastTs is set before we write.
+	time.Sleep(100 * time.Millisecond)
+
+	// Two records: one matches "hot" (one of two rules), the other matches
+	// nothing. Both records test both rules → 4 rules tested. One match.
+	writeRecord(t, s, map[string]interface{}{"temperature": 95.0})
+	writeRecord(t, s, map[string]interface{}{"temperature": 50.0})
+
+	waitForAlerts(t, sink, 1, 2*time.Second)
+	time.Sleep(150 * time.Millisecond) // let counters settle
+
+	m := w.Metrics()
+	if m.RulesTested != 4 {
+		t.Errorf("RulesTested: got %d, want 4 (2 records × 2 rules)", m.RulesTested)
+	}
+	if m.RulesMatched != 1 {
+		t.Errorf("RulesMatched: got %d, want 1", m.RulesMatched)
+	}
+	if m.AlertsFired != 1 {
+		t.Errorf("AlertsFired: got %d, want 1", m.AlertsFired)
+	}
+	if m.AlertsDropped != 0 {
+		t.Errorf("AlertsDropped: got %d, want 0", m.AlertsDropped)
+	}
+}
+
+// failingSink always returns an error from Send — used to exercise the
+// AlertsDropped counter path.
+type failingSink struct{}
+
+func (failingSink) Send(notify.Alert) error { return errStubFail }
+func (failingSink) Close() error            { return nil }
+
+var errStubFail = errSink("stub")
+
+type errSink string
+
+func (e errSink) Error() string { return string(e) }
+
+func TestWorkerMetricsCountsDrops(t *testing.T) {
+	s := newTestStore(t, "drops")
+	w := newWorker(t, s, failingSink{}, []store.AlertRuleConfig{
+		{Name: "always", Condition: "temperature > 0"},
+	}, "")
+	w.Start()
+	defer w.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+	writeRecord(t, s, map[string]interface{}{"temperature": 1.0})
+
+	// Wait for the worker to evaluate.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if w.Metrics().AlertsDropped >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	m := w.Metrics()
+	if m.AlertsDropped != 1 {
+		t.Errorf("AlertsDropped: got %d, want 1", m.AlertsDropped)
+	}
+	if m.AlertsFired != 0 {
+		t.Errorf("AlertsFired: got %d, want 0 (sink errored)", m.AlertsFired)
+	}
+}
+
+func TestWorkerResetMetricsZeros(t *testing.T) {
+	s := newTestStore(t, "reset")
+	sink := &stubSink{}
+	w := newWorker(t, s, sink, []store.AlertRuleConfig{
+		{Name: "x", Condition: "temperature > 0"},
+	}, "")
+	w.Start()
+	defer w.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+	writeRecord(t, s, map[string]interface{}{"temperature": 1.0})
+	waitForAlerts(t, sink, 1, 2*time.Second)
+
+	before := w.Metrics()
+	if before.RulesTested == 0 || before.AlertsFired == 0 {
+		t.Fatalf("test setup: counters should be non-zero before reset, got %+v", before)
+	}
+
+	w.ResetMetrics()
+	after := w.Metrics()
+	if after.RulesTested != 0 || after.RulesMatched != 0 || after.AlertsFired != 0 || after.AlertsDropped != 0 {
+		t.Errorf("expected zero counters after reset, got %+v", after)
+	}
+}
+
 func TestWorkerStopClosesSink(t *testing.T) {
 	s := newTestStore(t, "stop")
 	sink := &stubSink{}

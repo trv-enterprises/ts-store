@@ -60,7 +60,11 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 
 	// Route to V2 if partitioned store
 	if s.isV2 {
-		return s.putObjectV2(timestamp, data)
+		h, err := s.putObjectV2(timestamp, data)
+		if err == nil {
+			s.metrics.recordWrite(len(data))
+		}
+		return h, err
 	}
 
 	// V1 circular buffer path
@@ -89,6 +93,7 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 		return nil, err
 	}
 
+	s.metrics.recordWrite(len(data))
 	return handle, nil
 }
 
@@ -106,18 +111,25 @@ func (s *Store) GetObject(handle *ObjectHandle) ([]byte, error) {
 		return nil, ErrStoreClosed
 	}
 
-	// V2 partitioned store - use partition from handle
-	if s.isV2 {
-		return s.getObjectV2(handle)
+	var (
+		data []byte
+		err  error
+	)
+	switch {
+	case s.isV2:
+		// V2 partitioned store - use partition from handle.
+		data, err = s.getObjectV2(handle)
+	case handle.Offset > 0:
+		// V1 packed: V2-style handle with Offset set.
+		data, err = s.readPackedObjectData(handle.BlockNum, handle.Offset, handle.Size, handle.SpanCount)
+	default:
+		// V1 legacy: single object per block.
+		data, err = s.readBlockDataLocked(handle.BlockNum)
 	}
-
-	// V1: Check if this is a V2 packed handle (has Offset set)
-	if handle.Offset > 0 {
-		return s.readPackedObjectData(handle.BlockNum, handle.Offset, handle.Size, handle.SpanCount)
+	if err == nil {
+		s.metrics.recordRead(len(data))
 	}
-
-	// V1 legacy format - single object per block
-	return s.readBlockDataLocked(handle.BlockNum)
+	return data, err
 }
 
 // getObjectV2 retrieves an object from a V2 partitioned store.
@@ -197,9 +209,17 @@ func (s *Store) readPackedObjectDataFromPartition(p *Partition, blockNum uint32,
 }
 
 // GetObjectByTime retrieves an object by its timestamp.
-func (s *Store) GetObjectByTime(timestamp int64) ([]byte, *ObjectHandle, error) {
+func (s *Store) GetObjectByTime(timestamp int64) (data []byte, handle *ObjectHandle, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	// Record on any successful return path. The named-return + defer
+	// pattern keeps the early-return branches free of counter calls.
+	defer func() {
+		if err == nil {
+			s.metrics.recordRead(len(data))
+		}
+	}()
 
 	if s.closed {
 		return nil, nil, ErrStoreClosed
@@ -236,7 +256,7 @@ func (s *Store) GetObjectByTime(timestamp int64) ([]byte, *ObjectHandle, error) 
 		return nil, nil, ErrTimestampNotFound
 	}
 
-	data, err := s.readBlockDataLocked(blockNum)
+	data, err = s.readBlockDataLocked(blockNum)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -375,9 +395,14 @@ func (s *Store) GetObjectByBlock(blockNum uint32) ([]byte, *ObjectHandle, error)
 
 // GetOldestObjects returns the N oldest objects (from tail).
 // Returns handles only, not data. Use GetObject to retrieve data.
-func (s *Store) GetOldestObjects(limit int) ([]*ObjectHandle, error) {
+func (s *Store) GetOldestObjects(limit int) (handles []*ObjectHandle, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	defer func() {
+		if err == nil {
+			s.metrics.recordRangeRead()
+		}
+	}()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -392,7 +417,7 @@ func (s *Store) GetOldestObjects(limit int) ([]*ObjectHandle, error) {
 		return nil, nil
 	}
 
-	handles := make([]*ObjectHandle, 0)
+	handles = make([]*ObjectHandle, 0)
 
 	// Start from tail (oldest) and walk forward through blocks
 	for i := uint32(0); i < count && (limit <= 0 || len(handles) < limit); i++ {
@@ -450,9 +475,14 @@ func (s *Store) getOldestObjectsV2(limit int) ([]*ObjectHandle, error) {
 // GetNewestObjects returns the N newest objects (from head).
 // Returns handles only, not data. Use GetObject to retrieve data.
 // Results are returned newest first.
-func (s *Store) GetNewestObjects(limit int) ([]*ObjectHandle, error) {
+func (s *Store) GetNewestObjects(limit int) (handles []*ObjectHandle, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	defer func() {
+		if err == nil {
+			s.metrics.recordRangeRead()
+		}
+	}()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -528,9 +558,14 @@ func (s *Store) GetObjectsSince(d time.Duration, limit int) ([]*ObjectHandle, er
 // GetObjectsInRange returns objects with timestamps in [startTime, endTime].
 // Pass 0 for startTime to start from oldest, 0 for endTime to go until now.
 // Returns handles only, not data.
-func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*ObjectHandle, error) {
+func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) (handles []*ObjectHandle, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	defer func() {
+		if err == nil {
+			s.metrics.recordRangeRead()
+		}
+	}()
 
 	if s.closed {
 		return nil, ErrStoreClosed
@@ -569,7 +604,7 @@ func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) ([]*Objec
 	// Find end block position - we may need to scan one block past this
 	endOffset := s.findOffsetForTimeLocked(endTime, 0, count-1, false)
 
-	handles := make([]*ObjectHandle, 0)
+	handles = make([]*ObjectHandle, 0)
 
 	// Scan blocks from startOffset to endOffset+1 (may need extra block for packed objects)
 	for offset := startOffset; offset <= endOffset+1 && offset < count; offset++ {
