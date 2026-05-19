@@ -23,6 +23,8 @@ func TestParse_SimpleConditions(t *testing.T) {
 		{"equal", "status == \"error\"", false, "status", OpEq},
 		{"not equal", "status != \"ok\"", false, "status", OpNe},
 		{"with spaces", "  count  >=  100  ", false, "count", OpGe},
+		{"dotted field", "temp.cpu_max_core_c > 75", false, "temp.cpu_max_core_c", OpGt},
+		{"hyphen field", "disk-usage > 90", false, "disk-usage", OpGt},
 		{"empty", "", true, "", ""},
 		{"invalid no op", "temperature 80", true, "", ""},
 	}
@@ -127,6 +129,10 @@ func TestEvaluate_Numeric(t *testing.T) {
 		// Integer values
 		{"count > 10", map[string]interface{}{"count": 15}, true},
 		{"count > 10", map[string]interface{}{"count": int64(15)}, true},
+		// Dotted/hyphenated field names (flat keys with literal dots, as produced by system-stats)
+		{"temp.cpu_max_core_c > 75", map[string]interface{}{"temp.cpu_max_core_c": 82.0}, true},
+		{"temp.cpu_max_core_c > 75", map[string]interface{}{"temp.cpu_max_core_c": 70.0}, false},
+		{"disk-usage > 90", map[string]interface{}{"disk-usage": 95.0}, true},
 	}
 
 	for _, tt := range tests {

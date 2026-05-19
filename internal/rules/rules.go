@@ -45,8 +45,9 @@ type Rule struct {
 }
 
 // conditionPattern matches: field operator value
+// Field names may contain word characters, dots, and hyphens (e.g. "temp.cpu_max_core_c").
 // Examples: "temperature > 80", "status == \"error\"", "count >= 100", "message contains \"ERROR\""
-var conditionPattern = regexp.MustCompile(`^\s*(\w+)\s*(==|!=|>=|<=|>|<|contains)\s*(.+)\s*$`)
+var conditionPattern = regexp.MustCompile(`^\s*([\w.-]+)\s*(==|!=|>=|<=|>|<|contains)\s*(.+)\s*$`)
 
 // Parse parses a condition string into a Rule.
 // Supports:
