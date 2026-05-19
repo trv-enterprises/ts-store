@@ -54,6 +54,7 @@ type SystemStats struct {
 	UptimeSec          int64   `json:"uptime.sec"`
 	TempCPUPackageC    float64 `json:"temp.cpu_package_c,omitempty"`
 	TempCPUMaxCoreC    float64 `json:"temp.cpu_max_core_c,omitempty"`
+	TempCPUC           float64 `json:"temp.cpu_c,omitempty"`
 	TempNVMeC          float64 `json:"temp.nvme_c,omitempty"`
 	TempPCHC           float64 `json:"temp.pch_c,omitempty"`
 	TempNICC           float64 `json:"temp.nic_c,omitempty"`
@@ -75,6 +76,7 @@ type MemoryStats struct {
 type Temps struct {
 	CPUPackageC float64
 	CPUMaxCoreC float64
+	CPUC        float64
 	NVMeC       float64
 	PCHC        float64
 	NICC        float64
@@ -205,6 +207,11 @@ func readUptime() (int64, error) {
 // don't have a given chip simply return zero for that field, and the
 // JSON tag omits it. The "max core" reading is the hottest core
 // reported by the coretemp chip (excluding the package summary).
+//
+// On hosts without a coretemp chip (e.g. Raspberry Pi), we fall back
+// to /sys/class/thermal/thermal_zone*/temp where type=cpu-thermal /
+// cpu_thermal to populate a generic temp.cpu_c. We deliberately skip
+// this on x86 to avoid duplicating temp.cpu_package_c.
 func readTemps() Temps {
 	var t Temps
 	matches, err := filepath.Glob("/sys/class/hwmon/hwmon*")
@@ -226,7 +233,28 @@ func readTemps() Temps {
 			t.NICC = readTempInput(filepath.Join(dir, "temp1_input"))
 		}
 	}
+	// Pi / ARM SoC fallback: read /sys/class/thermal/thermal_zone* and
+	// look for a CPU thermal zone. Only emit when coretemp wasn't found,
+	// since x86 thermal_zone often mirrors coretemp.
+	if t.CPUPackageC == 0 {
+		t.CPUC = readCPUThermalZone()
+	}
 	return t
+}
+
+// readCPUThermalZone returns the temperature in Celsius from the first
+// /sys/class/thermal/thermal_zone* whose type names a CPU thermal zone
+// (Pi 4: "cpu-thermal", Pi 5: "cpu_thermal", some boards: "soc_thermal"
+// or "cpu-thermal-zone"). Returns 0 if no matching zone exists.
+func readCPUThermalZone() float64 {
+	zones, _ := filepath.Glob("/sys/class/thermal/thermal_zone*")
+	for _, z := range zones {
+		typ := strings.TrimSpace(readFile(filepath.Join(z, "type")))
+		if strings.Contains(typ, "cpu") && strings.Contains(typ, "thermal") {
+			return readTempInput(filepath.Join(z, "temp"))
+		}
+	}
+	return 0
 }
 
 // readCoretemp returns (package, hottest-core) in Celsius from a
@@ -543,6 +571,7 @@ func main() {
 			UptimeSec:          uptime,
 			TempCPUPackageC:    temps.CPUPackageC,
 			TempCPUMaxCoreC:    temps.CPUMaxCoreC,
+			TempCPUC:           temps.CPUC,
 			TempNVMeC:          temps.NVMeC,
 			TempPCHC:           temps.PCHC,
 			TempNICC:           temps.NICC,
