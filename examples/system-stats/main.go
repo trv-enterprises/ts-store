@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -29,21 +30,33 @@ import (
 // Version is injected at build time via -ldflags "-X main.Version=...".
 var Version = "dev"
 
-// SystemStats is flattened for schema-based storage
+// SystemStats is flattened for schema-based storage.
+// Temperature fields are emitted as omitempty so hosts without a given
+// sensor (e.g. no NVMe, no NIC temp) simply omit the field rather than
+// reporting a misleading 0 °C.
 type SystemStats struct {
-	CPUPct              int   `json:"cpu.pct"`
-	MemoryTotal         int64 `json:"memory.total"`
-	MemoryUsed          int64 `json:"memory.used"`
-	MemoryAvailable     int64 `json:"memory.available"`
-	MemoryPct           int   `json:"memory.pct"`
-	DiskIOReadByteSec   int64 `json:"disk_io.read_bytes_sec"`
-	DiskIOWriteByteSec  int64 `json:"disk_io.write_bytes_sec"`
-	NetworkRxByteSec    int64 `json:"network.rx_bytes_sec"`
-	NetworkTxByteSec    int64 `json:"network.tx_bytes_sec"`
-	DiskSpaceTotal      int64 `json:"disk_space.total"`
-	DiskSpaceUsed       int64 `json:"disk_space.used"`
-	DiskSpaceAvailable  int64 `json:"disk_space.available"`
-	DiskSpacePct        int   `json:"disk_space.pct"`
+	CPUPct             int     `json:"cpu.pct"`
+	MemoryTotal        int64   `json:"memory.total"`
+	MemoryUsed         int64   `json:"memory.used"`
+	MemoryAvailable    int64   `json:"memory.available"`
+	MemoryPct          int     `json:"memory.pct"`
+	DiskIOReadByteSec  int64   `json:"disk_io.read_bytes_sec"`
+	DiskIOWriteByteSec int64   `json:"disk_io.write_bytes_sec"`
+	NetworkRxByteSec   int64   `json:"network.rx_bytes_sec"`
+	NetworkTxByteSec   int64   `json:"network.tx_bytes_sec"`
+	DiskSpaceTotal     int64   `json:"disk_space.total"`
+	DiskSpaceUsed      int64   `json:"disk_space.used"`
+	DiskSpaceAvailable int64   `json:"disk_space.available"`
+	DiskSpacePct       int     `json:"disk_space.pct"`
+	SwapTotal          int64   `json:"swap.total"`
+	SwapUsed           int64   `json:"swap.used"`
+	SwapPct            int     `json:"swap.pct"`
+	UptimeSec          int64   `json:"uptime.sec"`
+	TempCPUPackageC    float64 `json:"temp.cpu_package_c,omitempty"`
+	TempCPUMaxCoreC    float64 `json:"temp.cpu_max_core_c,omitempty"`
+	TempNVMeC          float64 `json:"temp.nvme_c,omitempty"`
+	TempPCHC           float64 `json:"temp.pch_c,omitempty"`
+	TempNICC           float64 `json:"temp.nic_c,omitempty"`
 }
 
 // MemoryStats for internal use
@@ -52,6 +65,19 @@ type MemoryStats struct {
 	Used      int64
 	Available int64
 	Pct       int
+	SwapTotal int64
+	SwapUsed  int64
+	SwapPct   int
+}
+
+// Temps for internal use. Zero-valued fields mean "sensor not present"
+// — readers leave them at 0 and the JSON tag emits omitempty.
+type Temps struct {
+	CPUPackageC float64
+	CPUMaxCoreC float64
+	NVMeC       float64
+	PCHC        float64
+	NICC        float64
 }
 
 // DiskSpace for internal use
@@ -113,7 +139,7 @@ func readMemory() (MemoryStats, error) {
 	}
 	defer f.Close()
 
-	var total, available int64
+	var total, available, swapTotal, swapFree int64
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -125,6 +151,10 @@ func readMemory() (MemoryStats, error) {
 				total = val * 1024 // Convert KB to bytes
 			case strings.HasPrefix(line, "MemAvailable:"):
 				available = val * 1024
+			case strings.HasPrefix(line, "SwapTotal:"):
+				swapTotal = val * 1024
+			case strings.HasPrefix(line, "SwapFree:"):
+				swapFree = val * 1024
 			}
 		}
 	}
@@ -135,12 +165,113 @@ func readMemory() (MemoryStats, error) {
 		pct = int(used * 100 / total)
 	}
 
+	swapUsed := swapTotal - swapFree
+	swapPct := 0
+	if swapTotal > 0 {
+		swapPct = int(swapUsed * 100 / swapTotal)
+	}
+
 	return MemoryStats{
 		Total:     total,
 		Used:      used,
 		Available: available,
 		Pct:       pct,
+		SwapTotal: swapTotal,
+		SwapUsed:  swapUsed,
+		SwapPct:   swapPct,
 	}, nil
+}
+
+// readUptime returns the system uptime in seconds. /proc/uptime is two
+// floats; we only need the first.
+func readUptime() (int64, error) {
+	b, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(b))
+	if len(fields) < 1 {
+		return 0, fmt.Errorf("failed to parse /proc/uptime")
+	}
+	up, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(up), nil
+}
+
+// readTemps walks /sys/class/hwmon and picks out the sensors we care
+// about. Values in *_input files are milli-degrees Celsius. Hosts that
+// don't have a given chip simply return zero for that field, and the
+// JSON tag omits it. The "max core" reading is the hottest core
+// reported by the coretemp chip (excluding the package summary).
+func readTemps() Temps {
+	var t Temps
+	matches, err := filepath.Glob("/sys/class/hwmon/hwmon*")
+	if err != nil {
+		return t
+	}
+	for _, dir := range matches {
+		name := strings.TrimSpace(readFile(filepath.Join(dir, "name")))
+		switch name {
+		case "coretemp":
+			pkg, maxCore := readCoretemp(dir)
+			t.CPUPackageC = pkg
+			t.CPUMaxCoreC = maxCore
+		case "nvme":
+			t.NVMeC = readTempInput(filepath.Join(dir, "temp1_input"))
+		case "pch_haswell", "pch_skylake", "pch_cannonlake", "pch_lewisburg":
+			t.PCHC = readTempInput(filepath.Join(dir, "temp1_input"))
+		case "i350bb", "ixgbe", "i40e", "ice":
+			t.NICC = readTempInput(filepath.Join(dir, "temp1_input"))
+		}
+	}
+	return t
+}
+
+// readCoretemp returns (package, hottest-core) in Celsius from a
+// coretemp hwmon dir. Package id is identified by its temp*_label
+// starting with "Package"; cores by labels starting with "Core ".
+func readCoretemp(dir string) (float64, float64) {
+	var pkg, maxCore float64
+	inputs, _ := filepath.Glob(filepath.Join(dir, "temp*_input"))
+	for _, in := range inputs {
+		label := strings.TrimSpace(readFile(strings.TrimSuffix(in, "_input") + "_label"))
+		val := readTempInput(in)
+		switch {
+		case strings.HasPrefix(label, "Package"):
+			pkg = val
+		case strings.HasPrefix(label, "Core "):
+			if val > maxCore {
+				maxCore = val
+			}
+		}
+	}
+	return pkg, maxCore
+}
+
+// readTempInput reads a hwmon temp*_input file (milli-°C) and returns
+// degrees Celsius. Missing or unparseable files return 0.
+func readTempInput(path string) float64 {
+	s := strings.TrimSpace(readFile(path))
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return float64(v) / 1000.0
+}
+
+// readFile is a small helper that returns "" on error rather than
+// forcing every caller to handle the missing-file case.
+func readFile(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func readDiskIO() (diskIORaw, error) {
@@ -385,6 +516,13 @@ func main() {
 		// Get disk space
 		diskSpace := readDiskSpace()
 
+		uptime, err := readUptime()
+		if err != nil {
+			log.Printf("Warning: failed to read uptime: %v", err)
+		}
+
+		temps := readTemps()
+
 		stats := SystemStats{
 			CPUPct:             cpuPct,
 			MemoryTotal:        memory.Total,
@@ -399,6 +537,15 @@ func main() {
 			DiskSpaceUsed:      diskSpace.Used,
 			DiskSpaceAvailable: diskSpace.Available,
 			DiskSpacePct:       diskSpace.Pct,
+			SwapTotal:          memory.SwapTotal,
+			SwapUsed:           memory.SwapUsed,
+			SwapPct:            memory.SwapPct,
+			UptimeSec:          uptime,
+			TempCPUPackageC:    temps.CPUPackageC,
+			TempCPUMaxCoreC:    temps.CPUMaxCoreC,
+			TempNVMeC:          temps.NVMeC,
+			TempPCHC:           temps.PCHC,
+			TempNICC:           temps.NICC,
 		}
 
 		data, err := json.Marshal(stats)
