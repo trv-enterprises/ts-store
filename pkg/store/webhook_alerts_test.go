@@ -35,11 +35,11 @@ func TestWebhookAlertsRoundTrip(t *testing.T) {
 
 	// Add one.
 	a := WebhookAlert{
-		ID:        "alert-1",
-		URL:       "https://hook.example/incoming",
-		Headers:   map[string]string{"X-Token": "secret"},
-		Rules:     []AlertRuleConfig{{Name: "hot", Condition: "t > 80", Cooldown: "1m"}},
-		CreatedAt: time.Unix(1700000000, 0).UTC(),
+		ID:          "alert-1",
+		URL:         "https://hook.example/incoming",
+		Headers:     map[string]string{"X-Token": "secret"},
+		AlertCommon: AlertCommon{Name: "hot", Condition: "t > 80", Cooldown: "1m"},
+		CreatedAt:   time.Unix(1700000000, 0).UTC(),
 	}
 	if err := s.AddWebhookAlert(a); err != nil {
 		t.Fatalf("AddWebhookAlert: %v", err)
@@ -52,8 +52,8 @@ func TestWebhookAlertsRoundTrip(t *testing.T) {
 	if got.URL != a.URL || got.Headers["X-Token"] != "secret" {
 		t.Errorf("Round-trip mismatch: got %+v", got)
 	}
-	if len(got.Rules) != 1 || got.Rules[0].Name != "hot" {
-		t.Errorf("Rules not persisted: %+v", got.Rules)
+	if got.Name != "hot" || got.Condition != "t > 80" {
+		t.Errorf("Rule not persisted: name=%q condition=%q", got.Name, got.Condition)
 	}
 
 	// Remove.

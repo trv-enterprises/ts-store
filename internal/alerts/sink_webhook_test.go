@@ -50,9 +50,7 @@ func TestWebhookSinkEndToEnd(t *testing.T) {
 	}
 
 	s := newTestStore(t, "wh-sink")
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 	w.Start()
 	defer w.Stop()
 

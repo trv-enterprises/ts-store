@@ -23,9 +23,9 @@ type MQTTAlert struct {
 	Username     string            `json:"username,omitempty"`
 	Password     string            `json:"password,omitempty"`
 	QoS          byte              `json:"qos"` // 0, 1, or 2 — default 1
-	Rules        []AlertRuleConfig `json:"rules"`
 	PollInterval string            `json:"poll_interval,omitempty"` // default "1s"
 	CreatedAt    time.Time         `json:"created_at"`
+	AlertCommon
 }
 
 // MQTTAlertsConfig holds all MQTT alert configs for a store.

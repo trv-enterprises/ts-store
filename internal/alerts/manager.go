@@ -89,25 +89,11 @@ func (m *Manager) LoadAndStart() error {
 
 // CreateWebhookAlertRequest is the wire shape for creating a webhook alert.
 type CreateWebhookAlertRequest struct {
-	URL          string                  `json:"url"`
-	Headers      map[string]string       `json:"headers,omitempty"`
-	Rules        []store.AlertRuleConfig `json:"rules"`
-	PollInterval string                  `json:"poll_interval,omitempty"`
-	Timeout      string                  `json:"timeout,omitempty"`
-}
-
-// validateRules checks each rule's user-supplied fields. Returns a clear
-// error for the first offending rule.
-func validateRules(rs []store.AlertRuleConfig) error {
-	if len(rs) == 0 {
-		return fmt.Errorf("at least one rule is required")
-	}
-	for _, r := range rs {
-		if err := r.Validate(); err != nil {
-			return err
-		}
-	}
-	return nil
+	URL          string            `json:"url"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	PollInterval string            `json:"poll_interval,omitempty"`
+	Timeout      string            `json:"timeout,omitempty"`
+	store.AlertCommon
 }
 
 // CreateWebhookAlert validates the request, persists it, and starts a worker.
@@ -115,7 +101,7 @@ func (m *Manager) CreateWebhookAlert(req CreateWebhookAlertRequest) (Status, err
 	if req.URL == "" {
 		return Status{}, fmt.Errorf("url is required")
 	}
-	if err := validateRules(req.Rules); err != nil {
+	if err := req.AlertCommon.Validate(); err != nil {
 		return Status{}, err
 	}
 
@@ -129,10 +115,10 @@ func (m *Manager) CreateWebhookAlert(req CreateWebhookAlertRequest) (Status, err
 		ID:           uuid.New().String()[:8],
 		URL:          req.URL,
 		Headers:      req.Headers,
-		Rules:        req.Rules,
 		PollInterval: req.PollInterval,
 		Timeout:      req.Timeout,
 		CreatedAt:    time.Now().UTC(),
+		AlertCommon:  req.AlertCommon,
 	}
 	if err := m.store.AddWebhookAlert(alert); err != nil {
 		return Status{}, err
@@ -150,17 +136,17 @@ func (m *Manager) CreateWebhookAlert(req CreateWebhookAlertRequest) (Status, err
 
 // CreateWSAlertRequest is the wire shape for creating a WS alert.
 type CreateWSAlertRequest struct {
-	URL          string                  `json:"url"`
-	Headers      map[string]string       `json:"headers,omitempty"`
-	Rules        []store.AlertRuleConfig `json:"rules"`
-	PollInterval string                  `json:"poll_interval,omitempty"`
+	URL          string            `json:"url"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	PollInterval string            `json:"poll_interval,omitempty"`
+	store.AlertCommon
 }
 
 func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
 	if req.URL == "" {
 		return Status{}, fmt.Errorf("url is required")
 	}
-	if err := validateRules(req.Rules); err != nil {
+	if err := req.AlertCommon.Validate(); err != nil {
 		return Status{}, err
 	}
 
@@ -174,9 +160,9 @@ func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
 		ID:           uuid.New().String()[:8],
 		URL:          req.URL,
 		Headers:      req.Headers,
-		Rules:        req.Rules,
 		PollInterval: req.PollInterval,
 		CreatedAt:    time.Now().UTC(),
+		AlertCommon:  req.AlertCommon,
 	}
 	if err := m.store.AddWSAlert(alert); err != nil {
 		return Status{}, err
@@ -194,20 +180,20 @@ func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
 
 // CreateMQTTAlertRequest is the wire shape for creating an MQTT alert.
 type CreateMQTTAlertRequest struct {
-	BrokerURL    string                  `json:"broker_url"`
-	Topic        string                  `json:"topic"`
-	Username     string                  `json:"username,omitempty"`
-	Password     string                  `json:"password,omitempty"`
-	QoS          byte                    `json:"qos,omitempty"`
-	Rules        []store.AlertRuleConfig `json:"rules"`
-	PollInterval string                  `json:"poll_interval,omitempty"`
+	BrokerURL    string `json:"broker_url"`
+	Topic        string `json:"topic"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	QoS          byte   `json:"qos,omitempty"`
+	PollInterval string `json:"poll_interval,omitempty"`
+	store.AlertCommon
 }
 
 func (m *Manager) CreateMQTTAlert(req CreateMQTTAlertRequest) (Status, error) {
 	if req.BrokerURL == "" || req.Topic == "" {
 		return Status{}, fmt.Errorf("broker_url and topic are required")
 	}
-	if err := validateRules(req.Rules); err != nil {
+	if err := req.AlertCommon.Validate(); err != nil {
 		return Status{}, err
 	}
 	if req.QoS == 0 {
@@ -227,9 +213,9 @@ func (m *Manager) CreateMQTTAlert(req CreateMQTTAlertRequest) (Status, error) {
 		Username:     req.Username,
 		Password:     req.Password,
 		QoS:          req.QoS,
-		Rules:        req.Rules,
 		PollInterval: req.PollInterval,
 		CreatedAt:    time.Now().UTC(),
+		AlertCommon:  req.AlertCommon,
 	}
 	if err := m.store.AddMQTTAlert(alert); err != nil {
 		return Status{}, err
@@ -488,7 +474,7 @@ func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
 		ID:           a.ID,
 		Type:         "webhook",
 		Target:       a.URL,
-		Rules:        a.Rules,
+		Rule:         a.AlertCommon,
 		Sink:         sink,
 		PollInterval: a.PollInterval,
 		CursorPath:   cursorPathFor(m.store, "webhook", a.ID),
@@ -504,7 +490,7 @@ func (m *Manager) buildWSWorker(a store.WSAlert) (*Worker, error) {
 		ID:           a.ID,
 		Type:         "ws",
 		Target:       a.URL,
-		Rules:        a.Rules,
+		Rule:         a.AlertCommon,
 		Sink:         sink,
 		PollInterval: a.PollInterval,
 		CursorPath:   cursorPathFor(m.store, "ws", a.ID),
@@ -521,7 +507,7 @@ func (m *Manager) buildMQTTWorker(a store.MQTTAlert) (*Worker, error) {
 		ID:           a.ID,
 		Type:         "mqtt",
 		Target:       fmt.Sprintf("%s -> %s", a.BrokerURL, a.Topic),
-		Rules:        a.Rules,
+		Rule:         a.AlertCommon,
 		Sink:         sink,
 		PollInterval: a.PollInterval,
 		CursorPath:   cursorPathFor(m.store, "mqtt", a.ID),

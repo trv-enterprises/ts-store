@@ -33,11 +33,11 @@ func TestWSAlertsRoundTrip(t *testing.T) {
 	}
 
 	a := WSAlert{
-		ID:        "alert-1",
-		URL:       "wss://relay.example/alerts",
-		Headers:   map[string]string{"X-Token": "secret"},
-		Rules:     []AlertRuleConfig{{Name: "hot", Condition: "t > 80"}},
-		CreatedAt: time.Unix(1700000000, 0).UTC(),
+		ID:          "alert-1",
+		URL:         "wss://relay.example/alerts",
+		Headers:     map[string]string{"X-Token": "secret"},
+		AlertCommon: AlertCommon{Name: "hot", Condition: "t > 80"},
+		CreatedAt:   time.Unix(1700000000, 0).UTC(),
 	}
 	if err := s.AddWSAlert(a); err != nil {
 		t.Fatalf("AddWSAlert: %v", err)

@@ -90,7 +90,7 @@ func waitForAlerts(t *testing.T, sink *stubSink, n int, timeout time.Duration) {
 	t.Fatalf("timed out waiting for %d alerts, got %d", n, len(sink.Received()))
 }
 
-func newWorker(t *testing.T, s *store.Store, sink Sink, rules []store.AlertRuleConfig, cursorPath string) *Worker {
+func newWorker(t *testing.T, s *store.Store, sink Sink, rule store.AlertCommon, cursorPath string) *Worker {
 	t.Helper()
 	w, err := NewWorker(Options{
 		Store:        s,
@@ -98,7 +98,7 @@ func newWorker(t *testing.T, s *store.Store, sink Sink, rules []store.AlertRuleC
 		ID:           "w1",
 		Type:         "webhook",
 		Target:       "stub",
-		Rules:        rules,
+		Rule:         rule,
 		Sink:         sink,
 		PollInterval: "50ms",
 		CursorPath:   cursorPath,
@@ -113,9 +113,7 @@ func newWorker(t *testing.T, s *store.Store, sink Sink, rules []store.AlertRuleC
 func TestWorkerMatchingRecordFires(t *testing.T) {
 	s := newTestStore(t, "match")
 	sink := &stubSink{}
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 
 	w.Start()
 	defer w.Stop()
@@ -138,9 +136,7 @@ func TestWorkerMatchingRecordFires(t *testing.T) {
 func TestWorkerNonMatchingRecordIgnored(t *testing.T) {
 	s := newTestStore(t, "nomatch")
 	sink := &stubSink{}
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 
 	w.Start()
 	defer w.Stop()
@@ -158,9 +154,7 @@ func TestWorkerNonMatchingRecordIgnored(t *testing.T) {
 func TestWorkerCooldownSuppresses(t *testing.T) {
 	s := newTestStore(t, "cooldown")
 	sink := &stubSink{}
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80", Cooldown: "1h"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80", Cooldown: "1h"}, "")
 
 	w.Start()
 	defer w.Stop()
@@ -182,9 +176,7 @@ func TestWorkerWritesCursor(t *testing.T) {
 	s := newTestStore(t, "cursor")
 	sink := &stubSink{}
 	cursorPath := filepath.Join(t.TempDir(), "alert.cursor")
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "any", Condition: "temperature > 0"},
-	}, cursorPath)
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "any", Condition: "temperature > 0"}, cursorPath)
 
 	w.Start()
 	defer w.Stop()
@@ -221,9 +213,7 @@ func TestWorkerStartFromNowIgnoresHistory(t *testing.T) {
 	// Give the store a clean separation between historical write and worker start.
 	time.Sleep(50 * time.Millisecond)
 
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 	w.Start()
 	defer w.Stop()
 
@@ -238,31 +228,22 @@ func TestWorkerStartFromNowIgnoresHistory(t *testing.T) {
 	waitForAlerts(t, sink, 1, 2*time.Second)
 }
 
-func TestWorkerStatusReportsRuleNames(t *testing.T) {
-	s := newTestStore(t, "rule-names")
+func TestWorkerStatusReportsRuleName(t *testing.T) {
+	s := newTestStore(t, "rule-name")
 	sink := &stubSink{}
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80"},
-		{Name: "cold", Condition: "temperature < 0"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 	defer w.Stop()
 
 	got := w.Status()
-	if got.RulesCount != 2 {
-		t.Errorf("RulesCount: got %d, want 2", got.RulesCount)
-	}
-	if len(got.RuleNames) != 2 || got.RuleNames[0] != "hot" || got.RuleNames[1] != "cold" {
-		t.Errorf("RuleNames: got %v, want [hot cold]", got.RuleNames)
+	if got.RuleName != "hot" {
+		t.Errorf("RuleName: got %q, want %q", got.RuleName, "hot")
 	}
 }
 
-func TestWorkerMetricsCountsRulesAndDispatches(t *testing.T) {
+func TestWorkerMetricsCountsRecordsAndDispatches(t *testing.T) {
 	s := newTestStore(t, "metrics")
 	sink := &stubSink{}
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80"},
-		{Name: "cold", Condition: "temperature < 0"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 
 	w.Start()
 	defer w.Stop()
@@ -270,8 +251,7 @@ func TestWorkerMetricsCountsRulesAndDispatches(t *testing.T) {
 	// Wait one poll cycle so lastTs is set before we write.
 	time.Sleep(100 * time.Millisecond)
 
-	// Two records: one matches "hot" (one of two rules), the other matches
-	// nothing. Both records test both rules → 4 rules tested. One match.
+	// Two records: one matches, one doesn't. 2 records evaluated, 1 matched.
 	writeRecord(t, s, map[string]interface{}{"temperature": 95.0})
 	writeRecord(t, s, map[string]interface{}{"temperature": 50.0})
 
@@ -279,11 +259,11 @@ func TestWorkerMetricsCountsRulesAndDispatches(t *testing.T) {
 	time.Sleep(150 * time.Millisecond) // let counters settle
 
 	m := w.Metrics()
-	if m.RulesTested != 4 {
-		t.Errorf("RulesTested: got %d, want 4 (2 records × 2 rules)", m.RulesTested)
+	if m.RecordsEvaluated != 2 {
+		t.Errorf("RecordsEvaluated: got %d, want 2", m.RecordsEvaluated)
 	}
-	if m.RulesMatched != 1 {
-		t.Errorf("RulesMatched: got %d, want 1", m.RulesMatched)
+	if m.RecordsMatched != 1 {
+		t.Errorf("RecordsMatched: got %d, want 1", m.RecordsMatched)
 	}
 	if m.AlertsFired != 1 {
 		t.Errorf("AlertsFired: got %d, want 1", m.AlertsFired)
@@ -308,9 +288,7 @@ func (e errSink) Error() string { return string(e) }
 
 func TestWorkerMetricsCountsDrops(t *testing.T) {
 	s := newTestStore(t, "drops")
-	w := newWorker(t, s, failingSink{}, []store.AlertRuleConfig{
-		{Name: "always", Condition: "temperature > 0"},
-	}, "")
+	w := newWorker(t, s, failingSink{}, store.AlertCommon{Name: "always", Condition: "temperature > 0"}, "")
 	w.Start()
 	defer w.Stop()
 
@@ -338,9 +316,7 @@ func TestWorkerMetricsCountsDrops(t *testing.T) {
 func TestWorkerResetMetricsZeros(t *testing.T) {
 	s := newTestStore(t, "reset")
 	sink := &stubSink{}
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "x", Condition: "temperature > 0"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "x", Condition: "temperature > 0"}, "")
 	w.Start()
 	defer w.Stop()
 
@@ -349,13 +325,13 @@ func TestWorkerResetMetricsZeros(t *testing.T) {
 	waitForAlerts(t, sink, 1, 2*time.Second)
 
 	before := w.Metrics()
-	if before.RulesTested == 0 || before.AlertsFired == 0 {
+	if before.RecordsEvaluated == 0 || before.AlertsFired == 0 {
 		t.Fatalf("test setup: counters should be non-zero before reset, got %+v", before)
 	}
 
 	w.ResetMetrics()
 	after := w.Metrics()
-	if after.RulesTested != 0 || after.RulesMatched != 0 || after.AlertsFired != 0 || after.AlertsDropped != 0 {
+	if after.RecordsEvaluated != 0 || after.RecordsMatched != 0 || after.AlertsFired != 0 || after.AlertsDropped != 0 {
 		t.Errorf("expected zero counters after reset, got %+v", after)
 	}
 }
@@ -363,9 +339,7 @@ func TestWorkerResetMetricsZeros(t *testing.T) {
 func TestWorkerStopClosesSink(t *testing.T) {
 	s := newTestStore(t, "stop")
 	sink := &stubSink{}
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "any", Condition: "x > 0"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "any", Condition: "x > 0"}, "")
 	w.Start()
 	w.Stop()
 

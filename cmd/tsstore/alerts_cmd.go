@@ -23,22 +23,25 @@ Subcommands:
   list    <store>                                List all alerts for a store
   rm      <store> <alert-id>                     Delete an alert
 
+Required rule options (every create needs these):
+  --name <label>           Human label for this alert
+  --condition <expr>       Rule expression, e.g. "temperature > 80"
+
 Common create options:
-  --rule "name:condition"  Add a rule (repeatable). Example:
-                           --rule "high-temp:temperature > 80"
-  --cooldown <duration>    Apply cooldown to the last --rule (e.g., 5m)
-  --header K=V             Add custom header (repeatable, webhook/ws only)
+  --cooldown <duration>    Min time between alerts (e.g., 5m)
+  --external-ref <s>       Opaque tag echoed on every alert payload
+  --header K:V             Add custom header (repeatable, webhook/ws only)
   --poll <duration>        Poll interval (default 1s)
   --api-key <key>          API key (or set TSSTORE_API_KEY)
 
 Examples:
   tsstore alerts webhook add my-store \
     --url https://hooks.slack.com/services/... \
-    --rule "high-temp:temperature > 80" --cooldown 5m
+    --name high-temp --condition "temperature > 80" --cooldown 5m
 
   tsstore alerts mqtt add my-store \
     --broker tcp://mqtt:1883 --topic alerts/heat \
-    --rule "high-temp:temperature > 80"
+    --name high-temp --condition "temperature > 80"
 
   tsstore alerts list my-store
   tsstore alerts rm   my-store a1b2c3d4`)
@@ -66,39 +69,17 @@ func runAlertsCommand(args []string) {
 	}
 }
 
-// commonAlertFlags holds fields shared across webhook/ws/mqtt alert create.
+// commonAlertFlags holds the rule + dispatch fields shared by every alert
+// create command.
 type commonAlertFlags struct {
-	storeName string
-	apiKey    string
-	rules     []map[string]string // ordered: each rule has name, condition, cooldown
-	headers   []string
-	pollEvery string
-}
-
-// parseRuleFlag splits "name:condition" into a rule entry. Condition may
-// contain colons; only the FIRST colon separates name from condition.
-func parseRuleFlag(s string) (map[string]string, error) {
-	name, cond, ok := strings.Cut(s, ":")
-	if !ok || name == "" || cond == "" {
-		return nil, fmt.Errorf("invalid --rule %q (expected name:condition)", s)
-	}
-	return map[string]string{"name": strings.TrimSpace(name), "condition": strings.TrimSpace(cond)}, nil
-}
-
-// rulesAsJSONList converts parsed rules into the API's []AlertRuleConfig shape.
-func rulesAsJSONList(rules []map[string]string) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(rules))
-	for _, r := range rules {
-		entry := map[string]interface{}{
-			"name":      r["name"],
-			"condition": r["condition"],
-		}
-		if cd := r["cooldown"]; cd != "" {
-			entry["cooldown"] = cd
-		}
-		out = append(out, entry)
-	}
-	return out
+	storeName   string
+	apiKey      string
+	name        string
+	condition   string
+	cooldown    string
+	externalRef string
+	headers     []string
+	pollEvery   string
 }
 
 // parseHeaders turns ["K1:V1", "K2:V2"] into a map.
@@ -117,13 +98,6 @@ func parseHeaders(hdrs []string) (map[string]string, error) {
 	return out, nil
 }
 
-// parseCommonAlertFlags walks args once, extracting shared flags (rules,
-// cooldowns, headers, store name, api key, poll). The transport-specific
-// runner is expected to consume its own flags first via consumeFlag and
-// pass the remaining slice into this helper.
-//
-// Returns the parsed common flags and a slice of unrecognized args so the
-// caller can complain about them.
 func consumeFlag(args []string, i int, dst *string) (int, bool) {
 	if i+1 >= len(args) {
 		return i, false
@@ -140,13 +114,29 @@ func consumeAppend(args []string, i int, dst *[]string) (int, bool) {
 	return i + 1, true
 }
 
+// applyCommonRuleFields copies the rule + dispatch fields onto the
+// request body map. Used by all three transport-specific runners.
+func applyCommonRuleFields(body map[string]interface{}, c commonAlertFlags) {
+	body["name"] = c.name
+	body["condition"] = c.condition
+	if c.cooldown != "" {
+		body["cooldown"] = c.cooldown
+	}
+	if c.externalRef != "" {
+		body["external_ref"] = c.externalRef
+	}
+	if c.pollEvery != "" {
+		body["poll_interval"] = c.pollEvery
+	}
+}
+
 // runAlertsWebhook implements `tsstore alerts webhook add <store> [options]`.
 func runAlertsWebhook(args []string) {
 	if len(args) < 1 || args[0] != "add" {
-		fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --rule \"name:condition\" [options]")
+		fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --name <n> --condition <c> [options]")
 		os.Exit(1)
 	}
-	args = args[1:] // drop "add"
+	args = args[1:]
 
 	c := commonAlertFlags{}
 	var url, timeout string
@@ -154,31 +144,20 @@ func runAlertsWebhook(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --rule \"name:condition\" [--cooldown <d>] [--header K:V] [--poll <d>] [--timeout <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--header K:V] [--poll <d>] [--timeout <d>] [--api-key <k>]")
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
 		case "--api-key":
 			i, _ = consumeFlag(args, i, &c.apiKey)
-		case "--rule":
-			if i+1 >= len(args) {
-				fmt.Println("Error: --rule requires a value")
-				os.Exit(1)
-			}
-			rule, err := parseRuleFlag(args[i+1])
-			if err != nil {
-				fmt.Println("Error:", err)
-				os.Exit(1)
-			}
-			c.rules = append(c.rules, rule)
-			i++
+		case "--name":
+			i, _ = consumeFlag(args, i, &c.name)
+		case "--condition":
+			i, _ = consumeFlag(args, i, &c.condition)
 		case "--cooldown":
-			if len(c.rules) == 0 {
-				fmt.Println("Error: --cooldown must follow a --rule")
-				os.Exit(1)
-			}
-			i, _ = consumeFlag(args, i, new(string))
-			c.rules[len(c.rules)-1]["cooldown"] = args[i]
+			i, _ = consumeFlag(args, i, &c.cooldown)
+		case "--external-ref":
+			i, _ = consumeFlag(args, i, &c.externalRef)
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
 		case "--poll":
@@ -195,8 +174,8 @@ func runAlertsWebhook(args []string) {
 		}
 	}
 
-	if c.storeName == "" || url == "" || len(c.rules) == 0 {
-		fmt.Println("Error: store name, --url, and at least one --rule are required")
+	if c.storeName == "" || url == "" || c.name == "" || c.condition == "" {
+		fmt.Println("Error: store name, --url, --name, and --condition are required")
 		os.Exit(1)
 	}
 
@@ -212,15 +191,10 @@ func runAlertsWebhook(args []string) {
 		os.Exit(1)
 	}
 
-	body := map[string]interface{}{
-		"url":   url,
-		"rules": rulesAsJSONList(c.rules),
-	}
+	body := map[string]interface{}{"url": url}
+	applyCommonRuleFields(body, c)
 	if headers != nil {
 		body["headers"] = headers
-	}
-	if c.pollEvery != "" {
-		body["poll_interval"] = c.pollEvery
 	}
 	if timeout != "" {
 		body["timeout"] = timeout
@@ -233,7 +207,7 @@ func runAlertsWebhook(args []string) {
 // runAlertsWS implements `tsstore alerts ws add <store> [options]`.
 func runAlertsWS(args []string) {
 	if len(args) < 1 || args[0] != "add" {
-		fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --rule \"name:condition\" [options]")
+		fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --name <n> --condition <c> [options]")
 		os.Exit(1)
 	}
 	args = args[1:]
@@ -244,31 +218,20 @@ func runAlertsWS(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --rule \"name:condition\" [--cooldown <d>] [--header K:V] [--poll <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--header K:V] [--poll <d>] [--api-key <k>]")
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
 		case "--api-key":
 			i, _ = consumeFlag(args, i, &c.apiKey)
-		case "--rule":
-			if i+1 >= len(args) {
-				fmt.Println("Error: --rule requires a value")
-				os.Exit(1)
-			}
-			rule, err := parseRuleFlag(args[i+1])
-			if err != nil {
-				fmt.Println("Error:", err)
-				os.Exit(1)
-			}
-			c.rules = append(c.rules, rule)
-			i++
+		case "--name":
+			i, _ = consumeFlag(args, i, &c.name)
+		case "--condition":
+			i, _ = consumeFlag(args, i, &c.condition)
 		case "--cooldown":
-			if len(c.rules) == 0 {
-				fmt.Println("Error: --cooldown must follow a --rule")
-				os.Exit(1)
-			}
-			i, _ = consumeFlag(args, i, new(string))
-			c.rules[len(c.rules)-1]["cooldown"] = args[i]
+			i, _ = consumeFlag(args, i, &c.cooldown)
+		case "--external-ref":
+			i, _ = consumeFlag(args, i, &c.externalRef)
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
 		case "--poll":
@@ -283,8 +246,8 @@ func runAlertsWS(args []string) {
 		}
 	}
 
-	if c.storeName == "" || url == "" || len(c.rules) == 0 {
-		fmt.Println("Error: store name, --url, and at least one --rule are required")
+	if c.storeName == "" || url == "" || c.name == "" || c.condition == "" {
+		fmt.Println("Error: store name, --url, --name, and --condition are required")
 		os.Exit(1)
 	}
 
@@ -300,15 +263,10 @@ func runAlertsWS(args []string) {
 		os.Exit(1)
 	}
 
-	body := map[string]interface{}{
-		"url":   url,
-		"rules": rulesAsJSONList(c.rules),
-	}
+	body := map[string]interface{}{"url": url}
+	applyCommonRuleFields(body, c)
 	if headers != nil {
 		body["headers"] = headers
-	}
-	if c.pollEvery != "" {
-		body["poll_interval"] = c.pollEvery
 	}
 
 	cfg := loadStreamConfig()
@@ -318,7 +276,7 @@ func runAlertsWS(args []string) {
 // runAlertsMQTT implements `tsstore alerts mqtt add <store> [options]`.
 func runAlertsMQTT(args []string) {
 	if len(args) < 1 || args[0] != "add" {
-		fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --rule \"name:condition\" [options]")
+		fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --name <n> --condition <c> [options]")
 		os.Exit(1)
 	}
 	args = args[1:]
@@ -329,7 +287,7 @@ func runAlertsMQTT(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --rule \"name:condition\" [--cooldown <d>] [--qos 0|1|2] [--username U --password P] [--poll <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--qos 0|1|2] [--username U --password P] [--poll <d>] [--api-key <k>]")
 			return
 		case "--broker":
 			i, _ = consumeFlag(args, i, &broker)
@@ -343,25 +301,14 @@ func runAlertsMQTT(args []string) {
 			i, _ = consumeFlag(args, i, &password)
 		case "--api-key":
 			i, _ = consumeFlag(args, i, &c.apiKey)
-		case "--rule":
-			if i+1 >= len(args) {
-				fmt.Println("Error: --rule requires a value")
-				os.Exit(1)
-			}
-			rule, err := parseRuleFlag(args[i+1])
-			if err != nil {
-				fmt.Println("Error:", err)
-				os.Exit(1)
-			}
-			c.rules = append(c.rules, rule)
-			i++
+		case "--name":
+			i, _ = consumeFlag(args, i, &c.name)
+		case "--condition":
+			i, _ = consumeFlag(args, i, &c.condition)
 		case "--cooldown":
-			if len(c.rules) == 0 {
-				fmt.Println("Error: --cooldown must follow a --rule")
-				os.Exit(1)
-			}
-			i, _ = consumeFlag(args, i, new(string))
-			c.rules[len(c.rules)-1]["cooldown"] = args[i]
+			i, _ = consumeFlag(args, i, &c.cooldown)
+		case "--external-ref":
+			i, _ = consumeFlag(args, i, &c.externalRef)
 		case "--poll":
 			i, _ = consumeFlag(args, i, &c.pollEvery)
 		default:
@@ -374,8 +321,8 @@ func runAlertsMQTT(args []string) {
 		}
 	}
 
-	if c.storeName == "" || broker == "" || topic == "" || len(c.rules) == 0 {
-		fmt.Println("Error: store name, --broker, --topic, and at least one --rule are required")
+	if c.storeName == "" || broker == "" || topic == "" || c.name == "" || c.condition == "" {
+		fmt.Println("Error: store name, --broker, --topic, --name, and --condition are required")
 		os.Exit(1)
 	}
 
@@ -388,8 +335,8 @@ func runAlertsMQTT(args []string) {
 	body := map[string]interface{}{
 		"broker_url": broker,
 		"topic":      topic,
-		"rules":      rulesAsJSONList(c.rules),
 	}
+	applyCommonRuleFields(body, c)
 	if username != "" {
 		body["username"] = username
 	}
@@ -397,13 +344,9 @@ func runAlertsMQTT(args []string) {
 		body["password"] = password
 	}
 	if qos != "" {
-		// Server parses as byte; we just pass through as number.
 		var q int
 		fmt.Sscanf(qos, "%d", &q)
 		body["qos"] = q
-	}
-	if c.pollEvery != "" {
-		body["poll_interval"] = c.pollEvery
 	}
 
 	cfg := loadStreamConfig()

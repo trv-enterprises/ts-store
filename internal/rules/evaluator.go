@@ -12,35 +12,34 @@ import (
 	"github.com/tviviano/ts-store/internal/notify"
 )
 
-// AlertRule combines a parsed rule with webhook configuration.
-type AlertRule struct {
-	Rule     *Rule
-	Webhook  *notify.Webhook // nil if no webhook configured
-	Cooldown time.Duration   // minimum time between alerts
-}
-
-// Evaluator evaluates rules against incoming data and fires alerts.
+// Evaluator evaluates a single rule against incoming data and fires
+// alerts. Each alert subscription (webhook/WS/MQTT) owns one Evaluator;
+// there is no longer any "list of rules" concept here.
 type Evaluator struct {
-	storeName string
-	rules     []AlertRule
+	storeName   string
+	rule        *Rule
+	cooldown    time.Duration
+	externalRef string
 
-	// Cooldown tracking: rule name -> last fired time
-	lastFired map[string]time.Time
+	// Cooldown tracking. Protected by mu.
 	mu        sync.RWMutex
+	lastFired time.Time
 
-	// Input channel for async evaluation
+	// Input channel for async evaluation.
 	dataCh chan dataRecord
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 
-	// Callback for alert firing (e.g., send over WebSocket)
+	// Callback for alert firing (e.g., send over WebSocket / webhook /
+	// MQTT — wired by the worker).
 	onAlert func(alert notify.Alert)
 
-	// Activity counters. Atomic int64 — one increment per rule.Evaluate
-	// call (rulesTested) and per match (rulesMatched). Process-lifetime
-	// by default; the owning Worker exposes a reset path.
-	rulesTested  atomic.Int64
-	rulesMatched atomic.Int64
+	// Activity counters. Atomic int64 — one increment per incoming
+	// record (RecordsEvaluated) and per match (RecordsMatched).
+	// Process-lifetime by default; the owning Worker exposes a reset
+	// path.
+	recordsEvaluated atomic.Int64
+	recordsMatched   atomic.Int64
 }
 
 type dataRecord struct {
@@ -48,42 +47,30 @@ type dataRecord struct {
 	data      map[string]interface{}
 }
 
-// NewEvaluator creates a new rule evaluator.
-func NewEvaluator(storeName string, rules []AlertRule, onAlert func(notify.Alert)) *Evaluator {
+// NewEvaluator constructs an Evaluator for a single rule on a store.
+// externalRef is echoed on every Alert this evaluator fires.
+func NewEvaluator(storeName string, rule *Rule, cooldown time.Duration, externalRef string, onAlert func(notify.Alert)) *Evaluator {
 	return &Evaluator{
-		storeName: storeName,
-		rules:     rules,
-		lastFired: make(map[string]time.Time),
-		dataCh:    make(chan dataRecord, 1000), // Buffer to avoid blocking data path
-		stopCh:    make(chan struct{}),
-		onAlert:   onAlert,
+		storeName:   storeName,
+		rule:        rule,
+		cooldown:    cooldown,
+		externalRef: externalRef,
+		dataCh:      make(chan dataRecord, 1000), // Buffer to avoid blocking data path
+		stopCh:      make(chan struct{}),
+		onAlert:     onAlert,
 	}
 }
 
 // Start starts the evaluator goroutine.
 func (e *Evaluator) Start() {
-	// Start all webhooks
-	for _, r := range e.rules {
-		if r.Webhook != nil {
-			r.Webhook.Start()
-		}
-	}
-
 	e.wg.Add(1)
 	go e.runLoop()
 }
 
-// Stop stops the evaluator and all webhooks.
+// Stop stops the evaluator goroutine.
 func (e *Evaluator) Stop() {
 	close(e.stopCh)
 	e.wg.Wait()
-
-	// Stop all webhooks
-	for _, r := range e.rules {
-		if r.Webhook != nil {
-			r.Webhook.Stop()
-		}
-	}
 }
 
 // Evaluate queues data for async rule evaluation.
@@ -96,7 +83,7 @@ func (e *Evaluator) Evaluate(timestamp int64, data map[string]interface{}) {
 	}
 }
 
-// runLoop processes incoming data and evaluates rules.
+// runLoop processes incoming data and evaluates the rule.
 func (e *Evaluator) runLoop() {
 	defer e.wg.Done()
 
@@ -110,68 +97,54 @@ func (e *Evaluator) runLoop() {
 	}
 }
 
-// evaluateRecord evaluates all rules against a single record.
+// evaluateRecord evaluates the single rule against one record.
 func (e *Evaluator) evaluateRecord(rec dataRecord) {
-	now := time.Now()
-
-	for _, ar := range e.rules {
-		e.rulesTested.Add(1)
-		if !ar.Rule.Evaluate(rec.data) {
-			continue
-		}
-		e.rulesMatched.Add(1)
-
-		// Check cooldown
-		if !e.checkCooldown(ar.Rule.Name, ar.Cooldown, now) {
-			continue
-		}
-
-		// Build alert
-		alert := notify.Alert{
-			RuleName:    ar.Rule.Name,
-			Condition:   e.conditionString(ar.Rule),
-			Timestamp:   rec.timestamp,
-			Data:        rec.data,
-			StoreName:   e.storeName,
-			ExternalRef: ar.Rule.ExternalRef,
-		}
-
-		// Fire webhook if configured
-		if ar.Webhook != nil {
-			ar.Webhook.Send(alert)
-		}
-
-		// Call alert callback (e.g., send over WS)
-		if e.onAlert != nil {
-			e.onAlert(alert)
-		}
-
-		// Update last fired
-		e.mu.Lock()
-		e.lastFired[ar.Rule.Name] = now
-		e.mu.Unlock()
+	e.recordsEvaluated.Add(1)
+	if !e.rule.Evaluate(rec.data) {
+		return
 	}
+	e.recordsMatched.Add(1)
+
+	now := time.Now()
+	if !e.checkCooldown(now) {
+		return
+	}
+
+	alert := notify.Alert{
+		RuleName:    e.rule.Name,
+		Condition:   e.conditionString(),
+		Timestamp:   rec.timestamp,
+		Data:        rec.data,
+		StoreName:   e.storeName,
+		ExternalRef: e.externalRef,
+	}
+
+	if e.onAlert != nil {
+		e.onAlert(alert)
+	}
+
+	e.mu.Lock()
+	e.lastFired = now
+	e.mu.Unlock()
 }
 
 // checkCooldown returns true if the rule can fire (cooldown elapsed).
-func (e *Evaluator) checkCooldown(ruleName string, cooldown time.Duration, now time.Time) bool {
-	if cooldown == 0 {
+func (e *Evaluator) checkCooldown(now time.Time) bool {
+	if e.cooldown == 0 {
 		return true
 	}
-
 	e.mu.RLock()
-	lastFired, ok := e.lastFired[ruleName]
+	last := e.lastFired
 	e.mu.RUnlock()
-
-	if !ok {
+	if last.IsZero() {
 		return true
 	}
-
-	return now.Sub(lastFired) >= cooldown
+	return now.Sub(last) >= e.cooldown
 }
 
-// conditionString returns a human-readable condition string.
-func (e *Evaluator) conditionString(r *Rule) string {
+// conditionString returns a human-readable condition string for the rule.
+func (e *Evaluator) conditionString() string {
+	r := e.rule
 	if len(r.Conditions) == 0 {
 		return ""
 	}
@@ -202,16 +175,17 @@ func formatValue(v interface{}) string {
 	}
 }
 
-// RulesTested returns the number of rule evaluations performed since the
+// RecordsEvaluated returns the number of records evaluated since the
 // evaluator started or was last reset.
-func (e *Evaluator) RulesTested() int64 { return e.rulesTested.Load() }
+func (e *Evaluator) RecordsEvaluated() int64 { return e.recordsEvaluated.Load() }
 
-// RulesMatched returns the number of rule evaluations that returned true
-// since the evaluator started or was last reset. (Subset of RulesTested.)
-func (e *Evaluator) RulesMatched() int64 { return e.rulesMatched.Load() }
+// RecordsMatched returns the number of records that matched the rule
+// since the evaluator started or was last reset. (Subset of
+// RecordsEvaluated.)
+func (e *Evaluator) RecordsMatched() int64 { return e.recordsMatched.Load() }
 
-// ResetCounters zeros the rulesTested and rulesMatched counters.
+// ResetCounters zeros the recordsEvaluated and recordsMatched counters.
 func (e *Evaluator) ResetCounters() {
-	e.rulesTested.Store(0)
-	e.rulesMatched.Store(0)
+	e.recordsEvaluated.Store(0)
+	e.recordsMatched.Store(0)
 }

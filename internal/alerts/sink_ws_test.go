@@ -60,9 +60,7 @@ func TestWSSinkEndToEnd(t *testing.T) {
 	sink := NewWSSink(wsURL, nil)
 
 	s := newTestStore(t, "ws-sink")
-	w := newWorker(t, s, sink, []store.AlertRuleConfig{
-		{Name: "hot", Condition: "temperature > 80"},
-	}, "")
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 	w.Start()
 	defer w.Stop()
 

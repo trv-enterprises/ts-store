@@ -33,12 +33,12 @@ func TestMQTTAlertsRoundTrip(t *testing.T) {
 	}
 
 	a := MQTTAlert{
-		ID:        "alert-1",
-		BrokerURL: "tcp://broker.example:1883",
-		Topic:     "alerts/heat",
-		QoS:       1,
-		Rules:     []AlertRuleConfig{{Name: "hot", Condition: "t > 80", Cooldown: "30s"}},
-		CreatedAt: time.Unix(1700000000, 0).UTC(),
+		ID:          "alert-1",
+		BrokerURL:   "tcp://broker.example:1883",
+		Topic:       "alerts/heat",
+		QoS:         1,
+		AlertCommon: AlertCommon{Name: "hot", Condition: "t > 80", Cooldown: "30s"},
+		CreatedAt:   time.Unix(1700000000, 0).UTC(),
 	}
 	if err := s.AddMQTTAlert(a); err != nil {
 		t.Fatalf("AddMQTTAlert: %v", err)

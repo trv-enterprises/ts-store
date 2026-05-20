@@ -947,12 +947,12 @@ func resolvedDataPath(p string) string {
 // output. Sums per-worker alert counters into a single line; per-worker
 // detail is accessible via GET /alerts.
 type activityInfo struct {
-	Writes       int64  `json:"writes"`
-	Reads        int64  `json:"reads"`
-	RulesTested  int64  `json:"rules_tested"`
-	RulesMatched int64  `json:"rules_matched"`
-	AlertsFired  int64  `json:"alerts_fired"`
-	Since        string `json:"since,omitempty"`
+	Writes           int64  `json:"writes"`
+	Reads            int64  `json:"reads"`
+	RecordsEvaluated int64  `json:"records_evaluated"`
+	RecordsMatched   int64  `json:"records_matched"`
+	AlertsFired      int64  `json:"alerts_fired"`
+	Since            string `json:"since,omitempty"`
 }
 
 // fetchActivity pulls /metrics for the given store and folds the
@@ -974,9 +974,9 @@ func fetchActivity(client *http.Client, baseURL, storeName string) *activityInfo
 			Since  string `json:"since"`
 		} `json:"store"`
 		Alerts []struct {
-			RulesTested  int64 `json:"rules_tested"`
-			RulesMatched int64 `json:"rules_matched"`
-			AlertsFired  int64 `json:"alerts_fired"`
+			RecordsEvaluated int64 `json:"records_evaluated"`
+			RecordsMatched   int64 `json:"records_matched"`
+			AlertsFired      int64 `json:"alerts_fired"`
 		} `json:"alerts"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -988,40 +988,11 @@ func fetchActivity(client *http.Client, baseURL, storeName string) *activityInfo
 		Since:  payload.Store.Since,
 	}
 	for _, a := range payload.Alerts {
-		out.RulesTested += a.RulesTested
-		out.RulesMatched += a.RulesMatched
+		out.RecordsEvaluated += a.RecordsEvaluated
+		out.RecordsMatched += a.RecordsMatched
 		out.AlertsFired += a.AlertsFired
 	}
 	return out
-}
-
-// alertRuleNames extracts just the rule names from a list of configs.
-// Used to populate the rule_names field on status output without
-// dragging the full rule body into the response.
-func alertRuleNames(rules []store.AlertRuleConfig) []string {
-	if len(rules) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(rules))
-	for _, r := range rules {
-		out = append(out, r.Name)
-	}
-	return out
-}
-
-// formatRuleLabel renders the rule names from an alert as a compact,
-// one-line label for status output. The first name is always shown; the
-// remainder are summarized as "+N more" so a multi-rule alert doesn't
-// wrap the line. Returns "" when there are no rules, which signals to
-// the caller to omit the label entirely.
-func formatRuleLabel(names []string) string {
-	if len(names) == 0 {
-		return ""
-	}
-	if len(names) == 1 {
-		return names[0]
-	}
-	return fmt.Sprintf("%s +%d more", names[0], len(names)-1)
 }
 
 // mqttConnectionForStatus is a minimal struct for reading MQTT config
@@ -1161,13 +1132,12 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 	}
 
 	type connectionInfo struct {
-		ID        string   `json:"id"`
-		Status    string   `json:"status"`
-		URL       string   `json:"url,omitempty"`
-		Broker    string   `json:"broker_url,omitempty"`
-		Topic     string   `json:"topic,omitempty"`
-		Rules     int      `json:"rules,omitempty"`
-		RuleNames []string `json:"rule_names,omitempty"`
+		ID       string `json:"id"`
+		Status   string `json:"status"`
+		URL      string `json:"url,omitempty"`
+		Broker   string `json:"broker_url,omitempty"`
+		Topic    string `json:"topic,omitempty"`
+		RuleName string `json:"rule_name,omitempty"`
 	}
 
 	type storeStatus struct {
@@ -1236,34 +1206,31 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 		if wh, err := st.LoadWebhookAlerts(); err == nil && wh != nil {
 			for _, a := range wh.Alerts {
 				status.WebhookAlerts = append(status.WebhookAlerts, connectionInfo{
-					ID:        a.ID,
-					Status:    "configured",
-					URL:       a.URL,
-					Rules:     len(a.Rules),
-					RuleNames: alertRuleNames(a.Rules),
+					ID:       a.ID,
+					Status:   "configured",
+					URL:      a.URL,
+					RuleName: a.Name,
 				})
 			}
 		}
 		if wsa, err := st.LoadWSAlerts(); err == nil && wsa != nil {
 			for _, a := range wsa.Alerts {
 				status.WSAlerts = append(status.WSAlerts, connectionInfo{
-					ID:        a.ID,
-					Status:    "configured",
-					URL:       a.URL,
-					Rules:     len(a.Rules),
-					RuleNames: alertRuleNames(a.Rules),
+					ID:       a.ID,
+					Status:   "configured",
+					URL:      a.URL,
+					RuleName: a.Name,
 				})
 			}
 		}
 		if mqa, err := st.LoadMQTTAlerts(); err == nil && mqa != nil {
 			for _, a := range mqa.Alerts {
 				status.MQTTAlerts = append(status.MQTTAlerts, connectionInfo{
-					ID:        a.ID,
-					Status:    "configured",
-					Broker:    a.BrokerURL,
-					Topic:     a.Topic,
-					Rules:     len(a.Rules),
-					RuleNames: alertRuleNames(a.Rules),
+					ID:       a.ID,
+					Status:   "configured",
+					Broker:   a.BrokerURL,
+					Topic:    a.Topic,
+					RuleName: a.Name,
 				})
 			}
 		}
@@ -1332,11 +1299,11 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 			fmt.Printf("  Time range:   (empty)\n")
 		}
 		if s.Activity != nil {
-			fmt.Printf("  Activity:     %s writes, %s reads, %s rules tested (%s matched), %s alerts fired since %s\n",
+			fmt.Printf("  Activity:     %s writes, %s reads, %s records evaluated (%s matched), %s alerts fired since %s\n",
 				formatNumber(uint64(s.Activity.Writes)),
 				formatNumber(uint64(s.Activity.Reads)),
-				formatNumber(uint64(s.Activity.RulesTested)),
-				formatNumber(uint64(s.Activity.RulesMatched)),
+				formatNumber(uint64(s.Activity.RecordsEvaluated)),
+				formatNumber(uint64(s.Activity.RecordsMatched)),
 				formatNumber(uint64(s.Activity.AlertsFired)),
 				s.Activity.Since)
 		}
@@ -1355,19 +1322,19 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 		if len(s.WebhookAlerts) > 0 {
 			fmt.Printf("  Webhook alerts: %d\n", len(s.WebhookAlerts))
 			for _, a := range s.WebhookAlerts {
-				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], formatRuleLabel(a.RuleNames), a.URL)
+				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], a.RuleName, a.URL)
 			}
 		}
 		if len(s.WSAlerts) > 0 {
 			fmt.Printf("  WS alerts:      %d\n", len(s.WSAlerts))
 			for _, a := range s.WSAlerts {
-				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], formatRuleLabel(a.RuleNames), a.URL)
+				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], a.RuleName, a.URL)
 			}
 		}
 		if len(s.MQTTAlerts) > 0 {
 			fmt.Printf("  MQTT alerts:    %d\n", len(s.MQTTAlerts))
 			for _, a := range s.MQTTAlerts {
-				fmt.Printf("    - %s [%s]: %s -> %s\n", a.ID[:8], formatRuleLabel(a.RuleNames), a.Broker, a.Topic)
+				fmt.Printf("    - %s [%s]: %s -> %s\n", a.ID[:8], a.RuleName, a.Broker, a.Topic)
 			}
 		}
 		fmt.Println()
@@ -1394,12 +1361,11 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 	}
 
 	type connectionInfo struct {
-		ID        string   `json:"id"`
-		URL       string   `json:"url,omitempty"`
-		Broker    string   `json:"broker_url,omitempty"`
-		Topic     string   `json:"topic,omitempty"`
-		Rules     int      `json:"rules,omitempty"`
-		RuleNames []string `json:"rule_names,omitempty"`
+		ID       string `json:"id"`
+		URL      string `json:"url,omitempty"`
+		Broker   string `json:"broker_url,omitempty"`
+		Topic    string `json:"topic,omitempty"`
+		RuleName string `json:"rule_name,omitempty"`
 	}
 
 	type storeStatus struct {
@@ -1486,31 +1452,28 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 		if wh, err := st.LoadWebhookAlerts(); err == nil && wh != nil {
 			for _, a := range wh.Alerts {
 				status.WebhookAlerts = append(status.WebhookAlerts, connectionInfo{
-					ID:        a.ID,
-					URL:       a.URL,
-					Rules:     len(a.Rules),
-					RuleNames: alertRuleNames(a.Rules),
+					ID:       a.ID,
+					URL:      a.URL,
+					RuleName: a.Name,
 				})
 			}
 		}
 		if wsa, err := st.LoadWSAlerts(); err == nil && wsa != nil {
 			for _, a := range wsa.Alerts {
 				status.WSAlerts = append(status.WSAlerts, connectionInfo{
-					ID:        a.ID,
-					URL:       a.URL,
-					Rules:     len(a.Rules),
-					RuleNames: alertRuleNames(a.Rules),
+					ID:       a.ID,
+					URL:      a.URL,
+					RuleName: a.Name,
 				})
 			}
 		}
 		if mqa, err := st.LoadMQTTAlerts(); err == nil && mqa != nil {
 			for _, a := range mqa.Alerts {
 				status.MQTTAlerts = append(status.MQTTAlerts, connectionInfo{
-					ID:        a.ID,
-					Broker:    a.BrokerURL,
-					Topic:     a.Topic,
-					Rules:     len(a.Rules),
-					RuleNames: alertRuleNames(a.Rules),
+					ID:       a.ID,
+					Broker:   a.BrokerURL,
+					Topic:    a.Topic,
+					RuleName: a.Name,
 				})
 			}
 		}
@@ -1575,19 +1538,19 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 		if len(s.WebhookAlerts) > 0 {
 			fmt.Printf("  Webhook alerts: %d (configured)\n", len(s.WebhookAlerts))
 			for _, a := range s.WebhookAlerts {
-				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], formatRuleLabel(a.RuleNames), a.URL)
+				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], a.RuleName, a.URL)
 			}
 		}
 		if len(s.WSAlerts) > 0 {
 			fmt.Printf("  WS alerts:      %d (configured)\n", len(s.WSAlerts))
 			for _, a := range s.WSAlerts {
-				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], formatRuleLabel(a.RuleNames), a.URL)
+				fmt.Printf("    - %s [%s]: %s\n", a.ID[:8], a.RuleName, a.URL)
 			}
 		}
 		if len(s.MQTTAlerts) > 0 {
 			fmt.Printf("  MQTT alerts:    %d (configured)\n", len(s.MQTTAlerts))
 			for _, a := range s.MQTTAlerts {
-				fmt.Printf("    - %s [%s]: %s -> %s\n", a.ID[:8], formatRuleLabel(a.RuleNames), a.Broker, a.Topic)
+				fmt.Printf("    - %s [%s]: %s -> %s\n", a.ID[:8], a.RuleName, a.Broker, a.Topic)
 			}
 		}
 		fmt.Println()

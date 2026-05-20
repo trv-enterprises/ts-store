@@ -22,9 +22,9 @@ func TestAlertDetailMarshalFlattensStatus(t *testing.T) {
 			CreatedAt: time.Unix(0, 0).UTC(),
 		},
 		WebhookConfig: &store.WebhookAlert{
-			ID:    "abc12345",
-			URL:   "https://example.com/hook",
-			Rules: []store.AlertRuleConfig{{Name: "r1", Condition: "x > 0"}},
+			ID:          "abc12345",
+			URL:         "https://example.com/hook",
+			AlertCommon: store.AlertCommon{Name: "r1", Condition: "x > 0"},
 		},
 	}
 	b, err := json.Marshal(d)
@@ -56,9 +56,11 @@ func TestAlertDetailMarshalFlattensStatus(t *testing.T) {
 	if webhook["url"] != "https://example.com/hook" {
 		t.Errorf("webhook.url: %v", webhook["url"])
 	}
-	rules, ok := webhook["rules"].([]interface{})
-	if !ok || len(rules) != 1 {
-		t.Fatalf("webhook.rules: %v", webhook["rules"])
+	if webhook["name"] != "r1" {
+		t.Errorf("webhook.name: %v", webhook["name"])
+	}
+	if webhook["condition"] != "x > 0" {
+		t.Errorf("webhook.condition: %v", webhook["condition"])
 	}
 }
 

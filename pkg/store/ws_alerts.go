@@ -20,9 +20,9 @@ type WSAlert struct {
 	ID           string            `json:"id"`
 	URL          string            `json:"url"`               // ws:// or wss://
 	Headers      map[string]string `json:"headers,omitempty"` // Sent on the upgrade request
-	Rules        []AlertRuleConfig `json:"rules"`
 	PollInterval string            `json:"poll_interval,omitempty"` // default "1s"
 	CreatedAt    time.Time         `json:"created_at"`
+	AlertCommon
 }
 
 // WSAlertsConfig holds all WS alert configs for a store.

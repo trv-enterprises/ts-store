@@ -21,10 +21,10 @@ type WebhookAlert struct {
 	ID           string            `json:"id"`
 	URL          string            `json:"url"`
 	Headers      map[string]string `json:"headers,omitempty"`
-	Rules        []AlertRuleConfig `json:"rules"`
 	PollInterval string            `json:"poll_interval,omitempty"` // default "1s"
 	Timeout      string            `json:"timeout,omitempty"`       // default "10s"
 	CreatedAt    time.Time         `json:"created_at"`
+	AlertCommon
 }
 
 // WebhookAlertsConfig holds all webhook alert configs for a store.

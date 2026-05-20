@@ -35,21 +35,19 @@ func waitFor(t *testing.T, get func() int, n int, timeout time.Duration) {
 	t.Fatalf("timed out waiting for %d items, got %d", n, get())
 }
 
-func mustParseRule(t *testing.T, name, cond string) AlertRule {
+func mustParse(t *testing.T, name, cond string) *Rule {
 	t.Helper()
 	r, err := Parse(name, cond)
 	if err != nil {
 		t.Fatalf("Parse(%q, %q): %v", name, cond, err)
 	}
-	return AlertRule{Rule: r}
+	return r
 }
 
 func TestEvaluatorFiresOnMatch(t *testing.T) {
 	var mu sync.Mutex
 	var got []notify.Alert
-	e := NewEvaluator("store-a", []AlertRule{
-		mustParseRule(t, "hot", "temperature > 80"),
-	}, captureCallback(&got, &mu))
+	e := NewEvaluator("store-a", mustParse(t, "hot", "temperature > 80"), 0, "", captureCallback(&got, &mu))
 	e.Start()
 	defer e.Stop()
 
@@ -77,9 +75,7 @@ func TestEvaluatorFiresOnMatch(t *testing.T) {
 func TestEvaluatorIgnoresNonMatch(t *testing.T) {
 	var mu sync.Mutex
 	var got []notify.Alert
-	e := NewEvaluator("s", []AlertRule{
-		mustParseRule(t, "hot", "temperature > 80"),
-	}, captureCallback(&got, &mu))
+	e := NewEvaluator("s", mustParse(t, "hot", "temperature > 80"), 0, "", captureCallback(&got, &mu))
 	e.Start()
 	defer e.Stop()
 
@@ -97,9 +93,7 @@ func TestEvaluatorIgnoresNonMatch(t *testing.T) {
 func TestEvaluatorCooldownSuppressesRapidMatches(t *testing.T) {
 	var mu sync.Mutex
 	var got []notify.Alert
-	rule := mustParseRule(t, "hot", "temperature > 80")
-	rule.Cooldown = 1 * time.Hour
-	e := NewEvaluator("s", []AlertRule{rule}, captureCallback(&got, &mu))
+	e := NewEvaluator("s", mustParse(t, "hot", "temperature > 80"), 1*time.Hour, "", captureCallback(&got, &mu))
 	e.Start()
 	defer e.Stop()
 
@@ -121,43 +115,10 @@ func TestEvaluatorCooldownSuppressesRapidMatches(t *testing.T) {
 	}
 }
 
-func TestEvaluatorWebhookInvokedWhenSet(t *testing.T) {
-	// Quietly confirm: when AlertRule.Webhook is non-nil, evaluator.Send is
-	// called on the *Webhook. We don't dispatch an actual HTTP request — we
-	// just verify the queue receives the alert (a non-blocking Send returns
-	// immediately to the caller).
-	wh := notify.NewWebhook(notify.WebhookConfig{URL: "http://127.0.0.1:1/never-used"})
-	// Note: NOT calling wh.Start() — runLoop would actually try to POST.
-	// The Send() path used by the evaluator just enqueues, no IO.
-
-	rule := mustParseRule(t, "hot", "temperature > 80")
-	ar := AlertRule{Rule: rule.Rule, Webhook: wh}
-
-	var mu sync.Mutex
-	var cb []notify.Alert
-	e := NewEvaluator("s", []AlertRule{ar}, captureCallback(&cb, &mu))
-	e.Start()
-	defer e.Stop()
-
-	e.Evaluate(1, map[string]interface{}{"temperature": 90.0})
-
-	// The onAlert callback fires after the webhook enqueue, so when we see
-	// the callback fire, the webhook Send has already happened.
-	waitFor(t, func() int {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(cb)
-	}, 1, 2*time.Second)
-}
-
 func TestEvaluatorPassesExternalRefThrough(t *testing.T) {
 	var mu sync.Mutex
 	var got []notify.Alert
-
-	rule := mustParseRule(t, "hot", "temperature > 80")
-	rule.Rule.ExternalRef = "dashboards/x#component-42"
-
-	e := NewEvaluator("s", []AlertRule{rule}, captureCallback(&got, &mu))
+	e := NewEvaluator("s", mustParse(t, "hot", "temperature > 80"), 0, "dashboards/x#component-42", captureCallback(&got, &mu))
 	e.Start()
 	defer e.Stop()
 
@@ -177,12 +138,11 @@ func TestEvaluatorPassesExternalRefThrough(t *testing.T) {
 }
 
 func TestEvaluatorOmitsEmptyExternalRef(t *testing.T) {
-	// When a rule has no external_ref, the Alert.ExternalRef should be
+	// When the evaluator has no external_ref, Alert.ExternalRef should be
 	// empty and (with omitempty on the JSON tag) absent from the wire.
 	var mu sync.Mutex
 	var got []notify.Alert
-	rule := mustParseRule(t, "hot", "temperature > 80")
-	e := NewEvaluator("s", []AlertRule{rule}, captureCallback(&got, &mu))
+	e := NewEvaluator("s", mustParse(t, "hot", "temperature > 80"), 0, "", captureCallback(&got, &mu))
 	e.Start()
 	defer e.Stop()
 
@@ -202,9 +162,7 @@ func TestEvaluatorOmitsEmptyExternalRef(t *testing.T) {
 }
 
 func TestEvaluatorStopDoesntPanic(t *testing.T) {
-	e := NewEvaluator("s", []AlertRule{
-		mustParseRule(t, "hot", "temperature > 80"),
-	}, func(notify.Alert) {})
+	e := NewEvaluator("s", mustParse(t, "hot", "temperature > 80"), 0, "", func(notify.Alert) {})
 	e.Start()
 	// Stop without sending anything must be clean.
 	e.Stop()

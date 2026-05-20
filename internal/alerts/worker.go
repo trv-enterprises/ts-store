@@ -31,8 +31,7 @@ type Status struct {
 	ID            string    `json:"id"`
 	Type          string    `json:"type"` // "webhook" | "ws" | "mqtt"
 	Target        string    `json:"target"`
-	RulesCount    int       `json:"rules_count"`
-	RuleNames     []string  `json:"rule_names,omitempty"`
+	RuleName      string    `json:"rule_name"`
 	AlertsFired   int64     `json:"alerts_fired"`
 	LastTimestamp int64     `json:"last_timestamp,omitempty"`
 	State         string    `json:"state"` // running | stopped | error
@@ -40,8 +39,8 @@ type Status struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// Worker polls a store for new records, evaluates rules against each, and
-// dispatches matching records through the configured Sink. Workers are
+// Worker polls a store for new records, evaluates a single rule against
+// each, and dispatches matches through the configured Sink. Workers are
 // created and owned by the alerts Manager.
 type Worker struct {
 	mu sync.RWMutex
@@ -54,8 +53,7 @@ type Worker struct {
 	target    string // URL or broker/topic, for status display
 
 	evaluator    *rules.Evaluator
-	rulesCount   int
-	ruleNames    []string
+	ruleName     string
 	sink         Sink
 	pollInterval time.Duration
 
@@ -81,14 +79,14 @@ type Options struct {
 	ID           string
 	Type         string
 	Target       string
-	Rules        []store.AlertRuleConfig
+	Rule         store.AlertCommon
 	Sink         Sink
 	PollInterval string // parsed via duration.ParseDuration; empty -> default
 	CursorPath   string // for restart-resume in a future change; ignored on first start
 	CreatedAt    time.Time
 }
 
-// NewWorker builds a Worker. The rules are parsed here so creation fails
+// NewWorker builds a Worker. The rule is parsed here so creation fails
 // fast on bad config rather than at first tick. The Sink is owned by the
 // worker after construction and will be Close()d on Stop().
 func NewWorker(opts Options) (*Worker, error) {
@@ -98,8 +96,8 @@ func NewWorker(opts Options) (*Worker, error) {
 	if opts.Sink == nil {
 		return nil, fmt.Errorf("alerts.NewWorker: Sink is required")
 	}
-	if len(opts.Rules) == 0 {
-		return nil, fmt.Errorf("alerts.NewWorker: at least one rule is required")
+	if err := opts.Rule.Validate(); err != nil {
+		return nil, err
 	}
 
 	poll := defaultPollInterval
@@ -111,9 +109,18 @@ func NewWorker(opts Options) (*Worker, error) {
 		poll = d
 	}
 
-	alertRules, err := buildAlertRules(opts.Rules)
+	parsedRule, err := rules.Parse(opts.Rule.Name, opts.Rule.Condition)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("rule %q: %w", opts.Rule.Name, err)
+	}
+
+	var cooldown time.Duration
+	if opts.Rule.Cooldown != "" {
+		d, err := duration.ParseDuration(opts.Rule.Cooldown)
+		if err != nil {
+			return nil, fmt.Errorf("rule %q cooldown %q: %w", opts.Rule.Name, opts.Rule.Cooldown, err)
+		}
+		cooldown = d
 	}
 
 	w := &Worker{
@@ -127,44 +134,12 @@ func NewWorker(opts Options) (*Worker, error) {
 		cursorPath:   opts.CursorPath,
 		state:        "stopped",
 		createdAt:    opts.CreatedAt,
+		ruleName:     opts.Rule.Name,
 		stopCh:       make(chan struct{}),
 	}
 
-	// Evaluator dispatches every match through our sink. Per-rule webhooks
-	// are NOT used — dispatch is unified through Sink.Send.
-	w.evaluator = rules.NewEvaluator(opts.StoreName, alertRules, w.dispatch)
-	w.rulesCount = len(alertRules)
-	w.ruleNames = make([]string, 0, len(alertRules))
-	for _, ar := range alertRules {
-		w.ruleNames = append(w.ruleNames, ar.Rule.Name)
-	}
+	w.evaluator = rules.NewEvaluator(opts.StoreName, parsedRule, cooldown, opts.Rule.ExternalRef, w.dispatch)
 	return w, nil
-}
-
-// buildAlertRules parses the store-level rule configs into rules.AlertRule
-// values. Per-rule webhooks are not constructed: dispatch flows through the
-// worker's sink, so the AlertRule.Webhook field is left nil.
-func buildAlertRules(configs []store.AlertRuleConfig) ([]rules.AlertRule, error) {
-	out := make([]rules.AlertRule, 0, len(configs))
-	for _, rc := range configs {
-		rule, err := rules.Parse(rc.Name, rc.Condition)
-		if err != nil {
-			return nil, fmt.Errorf("rule %q: %w", rc.Name, err)
-		}
-		// Pass-through reference attached to every alert this rule fires.
-		// Not interpreted by ts-store.
-		rule.ExternalRef = rc.ExternalRef
-		ar := rules.AlertRule{Rule: rule}
-		if rc.Cooldown != "" {
-			d, err := duration.ParseDuration(rc.Cooldown)
-			if err != nil {
-				return nil, fmt.Errorf("rule %q cooldown %q: %w", rc.Name, rc.Cooldown, err)
-			}
-			ar.Cooldown = d
-		}
-		out = append(out, ar)
-	}
-	return out, nil
 }
 
 // Start runs the worker until Stop. Per the plan's "start from now" policy,
@@ -288,26 +263,26 @@ func (w *Worker) dispatch(alert notify.Alert) {
 }
 
 // Metrics is the activity snapshot for a Worker, exposed via the per-store
-// /metrics endpoint. RulesTested and RulesMatched come from the evaluator
-// (cheap atomic loads).
+// /metrics endpoint. RecordsEvaluated and RecordsMatched come from the
+// evaluator (cheap atomic loads).
 type Metrics struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"` // "webhook" | "ws" | "mqtt"
-	RulesTested   int64  `json:"rules_tested"`
-	RulesMatched  int64  `json:"rules_matched"`
-	AlertsFired   int64  `json:"alerts_fired"`
-	AlertsDropped int64  `json:"alerts_dropped"`
+	ID               string `json:"id"`
+	Type             string `json:"type"` // "webhook" | "ws" | "mqtt"
+	RecordsEvaluated int64  `json:"records_evaluated"`
+	RecordsMatched   int64  `json:"records_matched"`
+	AlertsFired      int64  `json:"alerts_fired"`
+	AlertsDropped    int64  `json:"alerts_dropped"`
 }
 
 // Metrics returns a snapshot of the worker's activity counters.
 func (w *Worker) Metrics() Metrics {
 	return Metrics{
-		ID:            w.id,
-		Type:          w.alertType,
-		RulesTested:   w.evaluator.RulesTested(),
-		RulesMatched:  w.evaluator.RulesMatched(),
-		AlertsFired:   atomic.LoadInt64(&w.alertsFired),
-		AlertsDropped: atomic.LoadInt64(&w.alertsDropped),
+		ID:               w.id,
+		Type:             w.alertType,
+		RecordsEvaluated: w.evaluator.RecordsEvaluated(),
+		RecordsMatched:   w.evaluator.RecordsMatched(),
+		AlertsFired:      atomic.LoadInt64(&w.alertsFired),
+		AlertsDropped:    atomic.LoadInt64(&w.alertsDropped),
 	}
 }
 
@@ -347,14 +322,11 @@ func (w *Worker) writeCursor(ts int64) {
 func (w *Worker) Status() Status {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	// ruleNames is set at construction and never mutated, so the slice
-	// header copy is safe — readers can't see it grow or shrink.
 	return Status{
 		ID:            w.id,
 		Type:          w.alertType,
 		Target:        w.target,
-		RulesCount:    w.rulesCount,
-		RuleNames:     w.ruleNames,
+		RuleName:      w.ruleName,
 		AlertsFired:   atomic.LoadInt64(&w.alertsFired),
 		LastTimestamp: w.lastTs,
 		State:         w.state,
