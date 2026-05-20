@@ -33,56 +33,20 @@ func (h *AlertsHandler) resolveManager(c *gin.Context) *alerts.Manager {
 	return mgr
 }
 
-// CreateWebhook handles POST /api/stores/:store/alerts/webhook
-func (h *AlertsHandler) CreateWebhook(c *gin.Context) {
+// Create handles POST /api/stores/:store/alerts. The "type" field on
+// the request body discriminates webhook / ws / mqtt; the matching
+// nested options object supplies the transport-specific fields.
+func (h *AlertsHandler) Create(c *gin.Context) {
 	mgr := h.resolveManager(c)
 	if mgr == nil {
 		return
 	}
-	var req alerts.CreateWebhookAlertRequest
+	var req alerts.CreateAlertRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	status, err := mgr.CreateWebhookAlert(req)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusCreated, status)
-}
-
-// CreateWS handles POST /api/stores/:store/alerts/ws
-func (h *AlertsHandler) CreateWS(c *gin.Context) {
-	mgr := h.resolveManager(c)
-	if mgr == nil {
-		return
-	}
-	var req alerts.CreateWSAlertRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	status, err := mgr.CreateWSAlert(req)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusCreated, status)
-}
-
-// CreateMQTT handles POST /api/stores/:store/alerts/mqtt
-func (h *AlertsHandler) CreateMQTT(c *gin.Context) {
-	mgr := h.resolveManager(c)
-	if mgr == nil {
-		return
-	}
-	var req alerts.CreateMQTTAlertRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	status, err := mgr.CreateMQTTAlert(req)
+	status, err := mgr.CreateAlert(req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

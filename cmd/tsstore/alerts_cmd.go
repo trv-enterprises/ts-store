@@ -191,17 +191,21 @@ func runAlertsWebhook(args []string) {
 		os.Exit(1)
 	}
 
-	body := map[string]interface{}{"url": url}
-	applyCommonRuleFields(body, c)
+	webhook := map[string]interface{}{"url": url}
 	if headers != nil {
-		body["headers"] = headers
+		webhook["headers"] = headers
 	}
 	if timeout != "" {
-		body["timeout"] = timeout
+		webhook["timeout"] = timeout
 	}
+	body := map[string]interface{}{
+		"type":    "webhook",
+		"webhook": webhook,
+	}
+	applyCommonRuleFields(body, c)
 
 	cfg := loadStreamConfig()
-	apiPost(cfg, apiKey, fmt.Sprintf("/api/stores/%s/alerts/webhook", c.storeName), body)
+	apiPost(cfg, apiKey, fmt.Sprintf("/api/stores/%s/alerts", c.storeName), body)
 }
 
 // runAlertsWS implements `tsstore alerts ws add <store> [options]`.
@@ -263,14 +267,18 @@ func runAlertsWS(args []string) {
 		os.Exit(1)
 	}
 
-	body := map[string]interface{}{"url": url}
-	applyCommonRuleFields(body, c)
+	ws := map[string]interface{}{"url": url}
 	if headers != nil {
-		body["headers"] = headers
+		ws["headers"] = headers
 	}
+	body := map[string]interface{}{
+		"type": "ws",
+		"ws":   ws,
+	}
+	applyCommonRuleFields(body, c)
 
 	cfg := loadStreamConfig()
-	apiPost(cfg, apiKey, fmt.Sprintf("/api/stores/%s/alerts/ws", c.storeName), body)
+	apiPost(cfg, apiKey, fmt.Sprintf("/api/stores/%s/alerts", c.storeName), body)
 }
 
 // runAlertsMQTT implements `tsstore alerts mqtt add <store> [options]`.
@@ -332,25 +340,29 @@ func runAlertsMQTT(args []string) {
 		os.Exit(1)
 	}
 
-	body := map[string]interface{}{
+	mqtt := map[string]interface{}{
 		"broker_url": broker,
 		"topic":      topic,
 	}
-	applyCommonRuleFields(body, c)
 	if username != "" {
-		body["username"] = username
+		mqtt["username"] = username
 	}
 	if password != "" {
-		body["password"] = password
+		mqtt["password"] = password
 	}
 	if qos != "" {
 		var q int
 		fmt.Sscanf(qos, "%d", &q)
-		body["qos"] = q
+		mqtt["qos"] = q
 	}
+	body := map[string]interface{}{
+		"type": "mqtt",
+		"mqtt": mqtt,
+	}
+	applyCommonRuleFields(body, c)
 
 	cfg := loadStreamConfig()
-	apiPost(cfg, apiKey, fmt.Sprintf("/api/stores/%s/alerts/mqtt", c.storeName), body)
+	apiPost(cfg, apiKey, fmt.Sprintf("/api/stores/%s/alerts", c.storeName), body)
 }
 
 func runAlertsList(args []string) {

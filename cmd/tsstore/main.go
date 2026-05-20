@@ -333,13 +333,12 @@ func runServer(args []string) {
 				mqttConns.DELETE("/:id", mqttHandler.Delete)
 			}
 
-			// Webhook/WS/MQTT alerts
+			// Unified alerts endpoint — POST body's "type" field discriminates
+			// webhook/ws/mqtt and selects the matching options block.
 			alertsGroup := storeRoutes.Group("/alerts")
 			{
 				alertsGroup.GET("", alertsHandler.List)
-				alertsGroup.POST("/webhook", alertsHandler.CreateWebhook)
-				alertsGroup.POST("/ws", alertsHandler.CreateWS)
-				alertsGroup.POST("/mqtt", alertsHandler.CreateMQTT)
+				alertsGroup.POST("", alertsHandler.Create)
 				alertsGroup.GET("/:id", alertsHandler.Get)
 				alertsGroup.DELETE("/:id", alertsHandler.Delete)
 			}

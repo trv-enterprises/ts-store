@@ -87,43 +87,110 @@ func (m *Manager) LoadAndStart() error {
 	return nil
 }
 
-// CreateWebhookAlertRequest is the wire shape for creating a webhook alert.
-type CreateWebhookAlertRequest struct {
-	URL          string            `json:"url"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	PollInterval string            `json:"poll_interval,omitempty"`
-	Timeout      string            `json:"timeout,omitempty"`
-	store.AlertCommon
+// WebhookOptions carries the webhook-only fields in a unified create
+// request.
+type WebhookOptions struct {
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Timeout string            `json:"timeout,omitempty"`
 }
 
-// CreateWebhookAlert validates the request, persists it, and starts a worker.
-func (m *Manager) CreateWebhookAlert(req CreateWebhookAlertRequest) (Status, error) {
-	if req.URL == "" {
-		return Status{}, fmt.Errorf("url is required")
-	}
+// WSOptions carries the WS-only fields in a unified create request.
+type WSOptions struct {
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// MQTTOptions carries the MQTT-only fields in a unified create request.
+type MQTTOptions struct {
+	BrokerURL string `json:"broker_url"`
+	Topic     string `json:"topic"`
+	Username  string `json:"username,omitempty"`
+	Password  string `json:"password,omitempty"`
+	QoS       byte   `json:"qos,omitempty"`
+}
+
+// CreateAlertRequest is the unified wire shape for `POST
+// /api/stores/:store/alerts`. Exactly one of Webhook/WS/MQTT must be
+// non-nil and must agree with Type.
+type CreateAlertRequest struct {
+	Type         string `json:"type"` // "webhook" | "ws" | "mqtt"
+	PollInterval string `json:"poll_interval,omitempty"`
+
+	store.AlertCommon
+
+	Webhook *WebhookOptions `json:"webhook,omitempty"`
+	WS      *WSOptions      `json:"ws,omitempty"`
+	MQTT    *MQTTOptions    `json:"mqtt,omitempty"`
+}
+
+// CreateAlert validates the unified request, dispatches to the
+// transport-specific persistence + worker construction, and returns the
+// worker status.
+func (m *Manager) CreateAlert(req CreateAlertRequest) (Status, error) {
 	if err := req.AlertCommon.Validate(); err != nil {
 		return Status{}, err
 	}
 
+	switch req.Type {
+	case "webhook":
+		if req.Webhook == nil {
+			return Status{}, fmt.Errorf("type=webhook requires \"webhook\" options")
+		}
+		if req.WS != nil || req.MQTT != nil {
+			return Status{}, fmt.Errorf("type=webhook must not include \"ws\" or \"mqtt\" options")
+		}
+		if req.Webhook.URL == "" {
+			return Status{}, fmt.Errorf("webhook.url is required")
+		}
+		return m.createWebhook(req)
+	case "ws":
+		if req.WS == nil {
+			return Status{}, fmt.Errorf("type=ws requires \"ws\" options")
+		}
+		if req.Webhook != nil || req.MQTT != nil {
+			return Status{}, fmt.Errorf("type=ws must not include \"webhook\" or \"mqtt\" options")
+		}
+		if req.WS.URL == "" {
+			return Status{}, fmt.Errorf("ws.url is required")
+		}
+		return m.createWS(req)
+	case "mqtt":
+		if req.MQTT == nil {
+			return Status{}, fmt.Errorf("type=mqtt requires \"mqtt\" options")
+		}
+		if req.Webhook != nil || req.WS != nil {
+			return Status{}, fmt.Errorf("type=mqtt must not include \"webhook\" or \"ws\" options")
+		}
+		if req.MQTT.BrokerURL == "" || req.MQTT.Topic == "" {
+			return Status{}, fmt.Errorf("mqtt.broker_url and mqtt.topic are required")
+		}
+		return m.createMQTT(req)
+	case "":
+		return Status{}, fmt.Errorf("type is required (webhook|ws|mqtt)")
+	default:
+		return Status{}, fmt.Errorf("unknown alert type %q (expected webhook|ws|mqtt)", req.Type)
+	}
+}
+
+func (m *Manager) createWebhook(req CreateAlertRequest) (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return Status{}, ErrManagerClosed
 	}
-
 	alert := store.WebhookAlert{
 		ID:           uuid.New().String()[:8],
-		URL:          req.URL,
-		Headers:      req.Headers,
+		URL:          req.Webhook.URL,
+		Headers:      req.Webhook.Headers,
 		PollInterval: req.PollInterval,
-		Timeout:      req.Timeout,
+		Timeout:      req.Webhook.Timeout,
 		CreatedAt:    time.Now().UTC(),
 		AlertCommon:  req.AlertCommon,
 	}
 	if err := m.store.AddWebhookAlert(alert); err != nil {
 		return Status{}, err
 	}
-
 	w, err := m.buildWebhookWorker(alert)
 	if err != nil {
 		_ = m.store.RemoveWebhookAlert(alert.ID)
@@ -134,32 +201,16 @@ func (m *Manager) CreateWebhookAlert(req CreateWebhookAlertRequest) (Status, err
 	return w.Status(), nil
 }
 
-// CreateWSAlertRequest is the wire shape for creating a WS alert.
-type CreateWSAlertRequest struct {
-	URL          string            `json:"url"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	PollInterval string            `json:"poll_interval,omitempty"`
-	store.AlertCommon
-}
-
-func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
-	if req.URL == "" {
-		return Status{}, fmt.Errorf("url is required")
-	}
-	if err := req.AlertCommon.Validate(); err != nil {
-		return Status{}, err
-	}
-
+func (m *Manager) createWS(req CreateAlertRequest) (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return Status{}, ErrManagerClosed
 	}
-
 	alert := store.WSAlert{
 		ID:           uuid.New().String()[:8],
-		URL:          req.URL,
-		Headers:      req.Headers,
+		URL:          req.WS.URL,
+		Headers:      req.WS.Headers,
 		PollInterval: req.PollInterval,
 		CreatedAt:    time.Now().UTC(),
 		AlertCommon:  req.AlertCommon,
@@ -167,7 +218,6 @@ func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
 	if err := m.store.AddWSAlert(alert); err != nil {
 		return Status{}, err
 	}
-
 	w, err := m.buildWSWorker(alert)
 	if err != nil {
 		_ = m.store.RemoveWSAlert(alert.ID)
@@ -178,41 +228,23 @@ func (m *Manager) CreateWSAlert(req CreateWSAlertRequest) (Status, error) {
 	return w.Status(), nil
 }
 
-// CreateMQTTAlertRequest is the wire shape for creating an MQTT alert.
-type CreateMQTTAlertRequest struct {
-	BrokerURL    string `json:"broker_url"`
-	Topic        string `json:"topic"`
-	Username     string `json:"username,omitempty"`
-	Password     string `json:"password,omitempty"`
-	QoS          byte   `json:"qos,omitempty"`
-	PollInterval string `json:"poll_interval,omitempty"`
-	store.AlertCommon
-}
-
-func (m *Manager) CreateMQTTAlert(req CreateMQTTAlertRequest) (Status, error) {
-	if req.BrokerURL == "" || req.Topic == "" {
-		return Status{}, fmt.Errorf("broker_url and topic are required")
+func (m *Manager) createMQTT(req CreateAlertRequest) (Status, error) {
+	qos := req.MQTT.QoS
+	if qos == 0 {
+		qos = 1 // default at-least-once
 	}
-	if err := req.AlertCommon.Validate(); err != nil {
-		return Status{}, err
-	}
-	if req.QoS == 0 {
-		req.QoS = 1 // default QoS 1 (at-least-once)
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return Status{}, ErrManagerClosed
 	}
-
 	alert := store.MQTTAlert{
 		ID:           uuid.New().String()[:8],
-		BrokerURL:    req.BrokerURL,
-		Topic:        req.Topic,
-		Username:     req.Username,
-		Password:     req.Password,
-		QoS:          req.QoS,
+		BrokerURL:    req.MQTT.BrokerURL,
+		Topic:        req.MQTT.Topic,
+		Username:     req.MQTT.Username,
+		Password:     req.MQTT.Password,
+		QoS:          qos,
 		PollInterval: req.PollInterval,
 		CreatedAt:    time.Now().UTC(),
 		AlertCommon:  req.AlertCommon,
@@ -220,7 +252,6 @@ func (m *Manager) CreateMQTTAlert(req CreateMQTTAlertRequest) (Status, error) {
 	if err := m.store.AddMQTTAlert(alert); err != nil {
 		return Status{}, err
 	}
-
 	w, err := m.buildMQTTWorker(alert)
 	if err != nil {
 		_ = m.store.RemoveMQTTAlert(alert.ID)
