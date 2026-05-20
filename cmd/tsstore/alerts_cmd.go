@@ -30,6 +30,10 @@ Required rule options (every create needs these):
 Common create options:
   --cooldown <duration>    Min time between alerts (e.g., 5m)
   --external-ref <s>       Opaque tag echoed on every alert payload
+  --restart now|resume     Restart policy (default now). "resume" reads
+                           the cursor on Start and replays records since.
+  --max-replay <duration>  When --restart=resume, cap how far back to
+                           replay (e.g., 1h). Default: unbounded.
   --header K:V             Add custom header (repeatable, webhook/ws only)
   --poll <duration>        Poll interval (default 1s)
   --api-key <key>          API key (or set TSSTORE_API_KEY)
@@ -72,14 +76,16 @@ func runAlertsCommand(args []string) {
 // commonAlertFlags holds the rule + dispatch fields shared by every alert
 // create command.
 type commonAlertFlags struct {
-	storeName   string
-	apiKey      string
-	name        string
-	condition   string
-	cooldown    string
-	externalRef string
-	headers     []string
-	pollEvery   string
+	storeName     string
+	apiKey        string
+	name          string
+	condition     string
+	cooldown      string
+	externalRef   string
+	restartPolicy string
+	maxReplay     string
+	headers       []string
+	pollEvery     string
 }
 
 // parseHeaders turns ["K1:V1", "K2:V2"] into a map.
@@ -125,9 +131,40 @@ func applyCommonRuleFields(body map[string]interface{}, c commonAlertFlags) {
 	if c.externalRef != "" {
 		body["external_ref"] = c.externalRef
 	}
+	if c.restartPolicy != "" {
+		body["restart_policy"] = c.restartPolicy
+	}
+	if c.maxReplay != "" {
+		body["max_replay"] = c.maxReplay
+	}
 	if c.pollEvery != "" {
 		body["poll_interval"] = c.pollEvery
 	}
+}
+
+// addCommonRuleFlags is the per-transport flag parser snippet for the
+// shared rule fields. Returns the (possibly advanced) index and whether
+// the flag was recognized.
+func addCommonRuleFlag(args []string, i int, c *commonAlertFlags, flag string) (int, bool) {
+	switch flag {
+	case "--name":
+		return consumeFlag(args, i, &c.name)
+	case "--condition":
+		return consumeFlag(args, i, &c.condition)
+	case "--cooldown":
+		return consumeFlag(args, i, &c.cooldown)
+	case "--external-ref":
+		return consumeFlag(args, i, &c.externalRef)
+	case "--restart":
+		return consumeFlag(args, i, &c.restartPolicy)
+	case "--max-replay":
+		return consumeFlag(args, i, &c.maxReplay)
+	case "--poll":
+		return consumeFlag(args, i, &c.pollEvery)
+	case "--api-key":
+		return consumeFlag(args, i, &c.apiKey)
+	}
+	return i, false
 }
 
 // runAlertsWebhook implements `tsstore alerts webhook add <store> [options]`.
@@ -144,24 +181,14 @@ func runAlertsWebhook(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--header K:V] [--poll <d>] [--timeout <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--restart now|resume] [--max-replay <d>] [--header K:V] [--poll <d>] [--timeout <d>] [--api-key <k>]")
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
-		case "--api-key":
-			i, _ = consumeFlag(args, i, &c.apiKey)
-		case "--name":
-			i, _ = consumeFlag(args, i, &c.name)
-		case "--condition":
-			i, _ = consumeFlag(args, i, &c.condition)
-		case "--cooldown":
-			i, _ = consumeFlag(args, i, &c.cooldown)
-		case "--external-ref":
-			i, _ = consumeFlag(args, i, &c.externalRef)
+		case "--api-key", "--name", "--condition", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
-		case "--poll":
-			i, _ = consumeFlag(args, i, &c.pollEvery)
 		case "--timeout":
 			i, _ = consumeFlag(args, i, &timeout)
 		default:
@@ -222,24 +249,14 @@ func runAlertsWS(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--header K:V] [--poll <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--restart now|resume] [--max-replay <d>] [--header K:V] [--poll <d>] [--api-key <k>]")
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
-		case "--api-key":
-			i, _ = consumeFlag(args, i, &c.apiKey)
-		case "--name":
-			i, _ = consumeFlag(args, i, &c.name)
-		case "--condition":
-			i, _ = consumeFlag(args, i, &c.condition)
-		case "--cooldown":
-			i, _ = consumeFlag(args, i, &c.cooldown)
-		case "--external-ref":
-			i, _ = consumeFlag(args, i, &c.externalRef)
+		case "--api-key", "--name", "--condition", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
-		case "--poll":
-			i, _ = consumeFlag(args, i, &c.pollEvery)
 		default:
 			if c.storeName == "" && !strings.HasPrefix(args[i], "-") {
 				c.storeName = args[i]
@@ -295,7 +312,7 @@ func runAlertsMQTT(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--qos 0|1|2] [--username U --password P] [--poll <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--restart now|resume] [--max-replay <d>] [--qos 0|1|2] [--username U --password P] [--poll <d>] [--api-key <k>]")
 			return
 		case "--broker":
 			i, _ = consumeFlag(args, i, &broker)
@@ -307,18 +324,8 @@ func runAlertsMQTT(args []string) {
 			i, _ = consumeFlag(args, i, &username)
 		case "--password":
 			i, _ = consumeFlag(args, i, &password)
-		case "--api-key":
-			i, _ = consumeFlag(args, i, &c.apiKey)
-		case "--name":
-			i, _ = consumeFlag(args, i, &c.name)
-		case "--condition":
-			i, _ = consumeFlag(args, i, &c.condition)
-		case "--cooldown":
-			i, _ = consumeFlag(args, i, &c.cooldown)
-		case "--external-ref":
-			i, _ = consumeFlag(args, i, &c.externalRef)
-		case "--poll":
-			i, _ = consumeFlag(args, i, &c.pollEvery)
+		case "--api-key", "--name", "--condition", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		default:
 			if c.storeName == "" && !strings.HasPrefix(args[i], "-") {
 				c.storeName = args[i]

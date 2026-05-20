@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -172,11 +173,13 @@ func TestWorkerCooldownSuppresses(t *testing.T) {
 	}
 }
 
-func TestWorkerWritesCursor(t *testing.T) {
+func TestWorkerWritesCursorOnResume(t *testing.T) {
 	s := newTestStore(t, "cursor")
 	sink := &stubSink{}
 	cursorPath := filepath.Join(t.TempDir(), "alert.cursor")
-	w := newWorker(t, s, sink, store.AlertCommon{Name: "any", Condition: "temperature > 0"}, cursorPath)
+	w := newWorker(t, s, sink,
+		store.AlertCommon{Name: "any", Condition: "temperature > 0", RestartPolicy: "resume"},
+		cursorPath)
 
 	w.Start()
 	defer w.Stop()
@@ -200,6 +203,101 @@ func TestWorkerWritesCursor(t *testing.T) {
 	if len(body) == 0 {
 		t.Errorf("cursor file empty")
 	}
+}
+
+func TestWorkerSkipsCursorWhenPolicyIsNow(t *testing.T) {
+	// Default policy ("") and explicit "now" must skip cursor writes so
+	// metric-stream workers don't churn disk every poll tick.
+	for _, policy := range []string{"", "now"} {
+		t.Run("policy="+policy, func(t *testing.T) {
+			s := newTestStore(t, "no-cursor")
+			sink := &stubSink{}
+			cursorPath := filepath.Join(t.TempDir(), "alert.cursor")
+			w := newWorker(t, s, sink,
+				store.AlertCommon{Name: "any", Condition: "temperature > 0", RestartPolicy: policy},
+				cursorPath)
+			w.Start()
+			defer w.Stop()
+
+			time.Sleep(100 * time.Millisecond)
+			writeRecord(t, s, map[string]interface{}{"temperature": 42.0})
+			waitForAlerts(t, sink, 1, 2*time.Second)
+			time.Sleep(150 * time.Millisecond)
+
+			if _, err := os.Stat(cursorPath); err == nil {
+				t.Errorf("cursor file must not be written when restart_policy=%q", policy)
+			}
+		})
+	}
+}
+
+func TestWorkerResumeReadsCursor(t *testing.T) {
+	// Write a cursor pointing at a time well before any records exist,
+	// then write a matching record. A resume-policy worker must read
+	// the cursor and pick up the record (whereas a "now" worker would
+	// have started past it).
+	s := newTestStore(t, "resume")
+	sink := &stubSink{}
+	cursorPath := filepath.Join(t.TempDir(), "alert.cursor")
+
+	// Pre-write the matching record FIRST (it goes in the past),
+	// then write the cursor pointing before it.
+	preTs := writeRecord(t, s, map[string]interface{}{"temperature": 88.0})
+	cursorTs := preTs - int64(time.Second) // 1s before the record
+	if err := os.WriteFile(cursorPath, []byte(strconv.FormatInt(cursorTs, 10)+"\n"), 0644); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+
+	w := newWorker(t, s, sink,
+		store.AlertCommon{Name: "hot", Condition: "temperature > 80", RestartPolicy: "resume"},
+		cursorPath)
+	w.Start()
+	defer w.Stop()
+
+	// Worker should replay the pre-existing record because the cursor
+	// points before it.
+	waitForAlerts(t, sink, 1, 2*time.Second)
+}
+
+func TestWorkerResumeBoundedByMaxReplay(t *testing.T) {
+	// Old matching record + cursor pointing before it. max_replay
+	// should floor the resume window past the old record so it is
+	// NOT replayed. A fresh record after Start must still fire.
+	s := newTestStore(t, "bounded")
+	sink := &stubSink{}
+	cursorPath := filepath.Join(t.TempDir(), "alert.cursor")
+
+	// Old matching record.
+	writeRecord(t, s, map[string]interface{}{"temperature": 90.0})
+
+	// Cursor pointing way back so unbounded resume would replay it.
+	oldTs := time.Now().Add(-1 * time.Hour).UnixNano()
+	if err := os.WriteFile(cursorPath, []byte(strconv.FormatInt(oldTs, 10)+"\n"), 0644); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+
+	// Sleep so the old record is comfortably older than max_replay (100ms).
+	time.Sleep(200 * time.Millisecond)
+
+	w := newWorker(t, s, sink,
+		store.AlertCommon{
+			Name: "hot", Condition: "temperature > 80",
+			RestartPolicy: "resume", MaxReplay: "100ms",
+		},
+		cursorPath)
+	w.Start()
+	defer w.Stop()
+
+	// Give the worker a couple of poll cycles. The pre-Start record
+	// is outside the 100ms replay window, so no alert.
+	time.Sleep(300 * time.Millisecond)
+	if got := sink.Received(); len(got) != 0 {
+		t.Errorf("max_replay should have excluded the old record, got %d alerts", len(got))
+	}
+
+	// Now a fresh record — that one should fire normally.
+	writeRecord(t, s, map[string]interface{}{"temperature": 91.0})
+	waitForAlerts(t, sink, 1, 2*time.Second)
 }
 
 func TestWorkerStartFromNowIgnoresHistory(t *testing.T) {

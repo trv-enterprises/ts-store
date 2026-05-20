@@ -43,6 +43,33 @@ func TestAlertCommon_Validate(t *testing.T) {
 			c:       AlertCommon{Name: "hot", Condition: "t > 80", ExternalRef: "a\x00b"},
 			wantErr: "NUL bytes",
 		},
+		{
+			name: "restart_policy now",
+			c:    AlertCommon{Name: "hot", Condition: "t > 80", RestartPolicy: "now"},
+		},
+		{
+			name: "restart_policy resume",
+			c:    AlertCommon{Name: "hot", Condition: "t > 80", RestartPolicy: "resume"},
+		},
+		{
+			name: "restart_policy resume with max_replay",
+			c:    AlertCommon{Name: "hot", Condition: "t > 80", RestartPolicy: "resume", MaxReplay: "1h"},
+		},
+		{
+			name:    "restart_policy invalid",
+			c:       AlertCommon{Name: "hot", Condition: "t > 80", RestartPolicy: "later"},
+			wantErr: "restart_policy must be",
+		},
+		{
+			name:    "max_replay without resume",
+			c:       AlertCommon{Name: "hot", Condition: "t > 80", MaxReplay: "1h"},
+			wantErr: "max_replay only valid",
+		},
+		{
+			name:    "max_replay with now policy",
+			c:       AlertCommon{Name: "hot", Condition: "t > 80", RestartPolicy: "now", MaxReplay: "1h"},
+			wantErr: "max_replay only valid",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

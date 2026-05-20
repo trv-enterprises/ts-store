@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,6 +57,13 @@ type Worker struct {
 	ruleName     string
 	sink         Sink
 	pollInterval time.Duration
+
+	// Restart policy. When restartPolicy == "resume", Start() reads
+	// cursorPath; otherwise lastTs is wall-clock now and we skip
+	// cursor writes entirely (cursorless workers don't touch disk
+	// every poll).
+	restartPolicy string
+	maxReplay     time.Duration
 
 	lastTs        int64
 	cursorPath    string
@@ -123,31 +131,64 @@ func NewWorker(opts Options) (*Worker, error) {
 		cooldown = d
 	}
 
+	var maxReplay time.Duration
+	if opts.Rule.MaxReplay != "" {
+		d, err := duration.ParseDuration(opts.Rule.MaxReplay)
+		if err != nil {
+			return nil, fmt.Errorf("rule %q max_replay %q: %w", opts.Rule.Name, opts.Rule.MaxReplay, err)
+		}
+		maxReplay = d
+	}
+
 	w := &Worker{
-		store:        opts.Store,
-		storeName:    opts.StoreName,
-		id:           opts.ID,
-		alertType:    opts.Type,
-		target:       opts.Target,
-		sink:         opts.Sink,
-		pollInterval: poll,
-		cursorPath:   opts.CursorPath,
-		state:        "stopped",
-		createdAt:    opts.CreatedAt,
-		ruleName:     opts.Rule.Name,
-		stopCh:       make(chan struct{}),
+		store:         opts.Store,
+		storeName:     opts.StoreName,
+		id:            opts.ID,
+		alertType:     opts.Type,
+		target:        opts.Target,
+		sink:          opts.Sink,
+		pollInterval:  poll,
+		cursorPath:    opts.CursorPath,
+		restartPolicy: opts.Rule.RestartPolicy,
+		maxReplay:     maxReplay,
+		state:         "stopped",
+		createdAt:     opts.CreatedAt,
+		ruleName:      opts.Rule.Name,
+		stopCh:        make(chan struct{}),
 	}
 
 	w.evaluator = rules.NewEvaluator(opts.StoreName, parsedRule, cooldown, opts.Rule.ExternalRef, w.dispatch)
 	return w, nil
 }
 
-// Start runs the worker until Stop. Per the plan's "start from now" policy,
-// lastTs is initialized to wall-clock now; the persisted cursor file is
-// updated but not consulted on this start.
+// Start runs the worker until Stop. The starting lastTs depends on
+// restart_policy:
+//   - "" or "now" — wall-clock now; the cursor is neither read nor
+//     written for this worker.
+//   - "resume"    — read the cursor file (or 0 if missing). When
+//     max_replay is set, floor lastTs at now - max_replay so a
+//     long-paused worker doesn't replay a flood of historical
+//     matches. If the cursor file is missing on first resume, we
+//     start from now — there's nothing meaningful to resume from.
 func (w *Worker) Start() {
 	w.mu.Lock()
-	w.lastTs = time.Now().UnixNano()
+	now := time.Now().UnixNano()
+	switch w.restartPolicy {
+	case "resume":
+		ts := readCursor(w.cursorPath)
+		if ts == 0 {
+			ts = now
+		}
+		if w.maxReplay > 0 {
+			floor := time.Now().Add(-w.maxReplay).UnixNano()
+			if ts < floor {
+				ts = floor
+			}
+		}
+		w.lastTs = ts
+	default: // "" or "now"
+		w.lastTs = now
+	}
 	w.state = "running"
 	w.mu.Unlock()
 
@@ -301,9 +342,16 @@ func (w *Worker) setError(msg string) {
 
 // writeCursor persists lastTs as a UnixNano integer to cursorPath, when
 // configured. Errors are logged but do not interrupt the poll loop —
-// losing a cursor write only means we replay a few seconds of work, and
-// today we don't even resume from it on restart.
+// losing a cursor write only means we replay a few seconds of work on
+// the next restart for a resume-policy worker; nothing for a now-policy
+// worker (which doesn't read the file).
+//
+// No-op for restart_policy="now" or "" (the common case): metric
+// streams don't need durable resume and we avoid disk I/O every tick.
 func (w *Worker) writeCursor(ts int64) {
+	if w.restartPolicy != "resume" {
+		return
+	}
 	if w.cursorPath == "" {
 		return
 	}
@@ -316,6 +364,28 @@ func (w *Worker) writeCursor(ts int64) {
 	if err := os.Rename(tmp, w.cursorPath); err != nil {
 		log.Printf("alerts %s/%s: cursor rename: %v", w.alertType, w.id, err)
 	}
+}
+
+// readCursor reads a UnixNano timestamp from path. Returns 0 if the
+// file is missing or unparseable; the caller treats 0 as "no resume
+// point, fall back to start-from-now."
+func readCursor(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	s := strings.TrimSpace(string(body))
+	if s == "" {
+		return 0
+	}
+	ts, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return ts
 }
 
 // Status returns a snapshot for HTTP/CLI display.

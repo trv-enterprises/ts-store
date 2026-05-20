@@ -24,6 +24,24 @@ type AlertCommon struct {
 	Condition   string `json:"condition"`
 	Cooldown    string `json:"cooldown,omitempty"`
 	ExternalRef string `json:"external_ref,omitempty"`
+
+	// RestartPolicy controls how the worker resumes after a process
+	// restart.
+	//   "" or "now" — start from wall-clock now (default). The worker
+	//                 does not read or write a cursor. Best for
+	//                 high-frequency metric streams where a brief gap
+	//                 is acceptable.
+	//   "resume"   — read the cursor on Start and replay records
+	//                 since lastTs. If MaxReplay is set, bound the
+	//                 resume window by now - MaxReplay. Best for
+	//                 event streams (e.g. journal logs) where a
+	//                 missed match is meaningful.
+	RestartPolicy string `json:"restart_policy,omitempty"`
+
+	// MaxReplay bounds how far back a resume-policy worker will replay.
+	// Only meaningful when RestartPolicy == "resume". Empty means
+	// unbounded (replay everything since the cursor).
+	MaxReplay string `json:"max_replay,omitempty"`
 }
 
 // Validate checks the user-supplied fields against the constraints
@@ -41,6 +59,15 @@ func (c AlertCommon) Validate() error {
 	}
 	if bytes.IndexByte([]byte(c.ExternalRef), 0) >= 0 {
 		return fmt.Errorf("alert %q: external_ref must not contain NUL bytes", c.Name)
+	}
+	switch c.RestartPolicy {
+	case "", "now", "resume":
+	default:
+		return fmt.Errorf("alert %q: restart_policy must be \"now\" or \"resume\" (got %q)",
+			c.Name, c.RestartPolicy)
+	}
+	if c.MaxReplay != "" && c.RestartPolicy != "resume" {
+		return fmt.Errorf("alert %q: max_replay only valid when restart_policy=\"resume\"", c.Name)
 	}
 	return nil
 }
