@@ -145,37 +145,32 @@ Output:
 
 ### Alerting
 
-Push connections can include alert rules that trigger when data matches conditions. See [docs/alerting-architecture.md](docs/alerting-architecture.md) for design details.
+Alerts are a **separate resource** from push connections. Each alert dispatches via webhook, WebSocket, or MQTT and is managed at `/api/stores/:store/alerts` with a unified `type`-discriminated create request:
 
-```json
-{
-  "mode": "push",
-  "url": "wss://dashboard.example.com/data",
-  "rules": [
-    {
-      "name": "high_temp",
-      "condition": "temperature > 80",
-      "webhook": "https://alerts.example.com/notify",
-      "webhook_headers": {"Authorization": "Bearer xxx"},
-      "cooldown": "5m"
-    },
-    {
-      "name": "error_log",
-      "condition": "message contains \"ERROR\"",
-      "cooldown": "1m"
+```bash
+curl -X POST "http://localhost:21080/api/stores/sensor-data/alerts" \
+  -H "X-API-Key: <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "webhook",
+    "name": "high_temp",
+    "condition": "temperature > 80",
+    "cooldown": "5m",
+    "restart_policy": "now",
+    "webhook": {
+      "url": "https://alerts.example.com/notify",
+      "headers": {"Authorization": "Bearer xxx"}
     }
-  ]
-}
+  }'
 ```
 
-**Condition operators:** `>`, `>=`, `<`, `<=`, `==`, `!=`, `contains`
+Replace the `type` value and matching nested options block with `"ws"` (+ `ws: {url, headers}`) or `"mqtt"` (+ `mqtt: {broker_url, topic, username, password, qos}`).
 
-**Compound conditions:** `AND`, `OR`
+**Common alert fields:** `name`, `condition`, `cooldown`, `external_ref`, `restart_policy` (`"now"` default, or `"resume"`), `max_replay` (only with `restart_policy="resume"`), `poll_interval`.
 
-When a rule fires:
-- An alert message is sent over the WebSocket (`{"type": "alert", ...}`)
-- If `webhook` is configured, an HTTP POST is sent to the URL
-- `cooldown` prevents alert storms (minimum time between alerts per rule)
+**Condition operators:** `>`, `>=`, `<`, `<=`, `==`, `!=`, `contains` — compounded with `AND` / `OR`. Field names may include dots and hyphens (`cpu.percent`, `temp.cpu_c`).
+
+See [docs/alerting-architecture.md](docs/alerting-architecture.md) for the full reference, including the payload format, restart policy semantics, and failure behavior.
 
 ### Remote Control: Seek
 
@@ -270,8 +265,7 @@ Returns:
   "status": "connected",
   "last_timestamp": 1234567890,
   "messages_sent": 1000,
-  "rules_count": 2,
-  "alerts_fired": 47,
+  "messages_received": 0,
   "errors": 0
 }
 ```

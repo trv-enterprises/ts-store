@@ -231,16 +231,7 @@ Content-Type: application/json
   "filter_ignore_case": true,
   "agg_window": "1m",
   "agg_fields": "temperature:avg,humidity:avg,events:sum",
-  "agg_default": "last",
-  "rules": [
-    {
-      "name": "high_temp",
-      "condition": "temperature > 80",
-      "webhook": "https://alerts.example.com/notify",
-      "webhook_headers": {"Authorization": "Bearer xxx"},
-      "cooldown": "5m"
-    }
-  ]
+  "agg_default": "last"
 }
 ```
 
@@ -256,7 +247,8 @@ Content-Type: application/json
 | `agg_window`         | string | no       | --      | Aggregation time window (e.g., `1m`, `5m`, `1h`) |
 | `agg_fields`         | string | no       | --      | Per-field aggregation functions (see [Aggregation](#aggregation)) |
 | `agg_default`        | string | no       | --      | Default aggregation function |
-| `rules`              | array  | no       | --      | Alert rules (see [Alerting](#alerting)) |
+
+> Alerts are a separate resource, not configured on push connections — see [Alerting](#alerting) below.
 
 **Response** (201):
 ```json
@@ -360,17 +352,47 @@ Aggregation is also available on REST query endpoints (`/data/newest` and `/data
 
 ### Alerting
 
-Push connections can evaluate rules against every incoming record and fire alerts when conditions are met.
+Alerts are an independent resource: each alert polls the store, evaluates one rule against every new record, and dispatches a payload through its configured sink (webhook, WebSocket, or MQTT). Alerts are **not** attached to push connections — they are managed under `/api/stores/:store/alerts` with a unified `type`-discriminated create endpoint.
 
-**Rule definition:**
+**Create an alert** (webhook example — replace `type` and the nested options block for `ws` or `mqtt`):
 
-| Field             | Type   | Required | Description |
-|-------------------|--------|----------|-------------|
-| `name`            | string | yes      | Unique rule identifier |
-| `condition`       | string | yes      | Expression to evaluate (see syntax below) |
-| `webhook`         | string | no       | URL to POST alert payload to |
-| `webhook_headers` | object | no       | Custom headers for webhook requests |
-| `cooldown`        | string | yes      | Minimum interval between firings (e.g., `30s`, `5m`, `1h`) |
+```bash
+curl -X POST "http://localhost:21080/api/stores/sensor-data/alerts" \
+  -H "X-API-Key: <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "webhook",
+    "name": "high_temp",
+    "condition": "temperature > 80",
+    "cooldown": "5m",
+    "restart_policy": "now",
+    "webhook": {
+      "url": "https://alerts.example.com/notify",
+      "headers": {"Authorization": "Bearer xxx"}
+    }
+  }'
+```
+
+**Common alert fields** (apply to every transport):
+
+| Field             | Type   | Required | Default | Description |
+|-------------------|--------|----------|---------|-------------|
+| `type`            | string | yes      | --      | `"webhook"`, `"ws"`, or `"mqtt"` |
+| `name`            | string | yes      | --      | Human label, echoed on every fire |
+| `condition`       | string | yes      | --      | Expression to evaluate (see syntax below) |
+| `cooldown`        | string | no       | --      | Minimum interval between firings (e.g., `30s`, `5m`, `1h`) |
+| `external_ref`    | string | no       | --      | Opaque pass-through (≤512 bytes); echoed verbatim on each fire |
+| `restart_policy`  | string | no       | `"now"` | `"now"` = start from wall-clock now on Start (no cursor). `"resume"` = read cursor on Start and replay since `lastTs`. |
+| `max_replay`      | string | no       | --      | Only valid when `restart_policy="resume"`. Cap how far back to replay (e.g., `1h`). Default: unbounded. |
+| `poll_interval`   | string | no       | `1s`    | How often the worker polls the store |
+
+**Transport-specific options** go in a nested object matching `type`:
+
+| `type` | Nested key | Required fields | Optional fields |
+|---|---|---|---|
+| `webhook` | `webhook` | `url` | `headers`, `timeout` |
+| `ws` | `ws` | `url` | `headers` |
+| `mqtt` | `mqtt` | `broker_url`, `topic` | `username`, `password`, `qos` (default 1) |
 
 **Condition syntax:**
 
@@ -384,36 +406,39 @@ Push connections can evaluate rules against every incoming record and fire alert
 | `!=`       | `count != 0` | Not equal |
 | `contains` | `message contains "ERROR"` | Substring match |
 
-**Compound conditions** use `AND` / `OR`:
+Field names may include dots and hyphens (`cpu.percent`, `temp.cpu_c`). Compound conditions use `AND` / `OR`:
+
 ```
 temperature > 80 AND humidity < 30
 status == "error" OR status == "critical"
 ```
 
-**When a rule fires:**
-
-1. An alert message is sent over the WebSocket connection:
+**When the rule fires**, the alert payload is identical across all three transports:
 
 ```json
 {
-  "type": "alert",
+  "rule_name": "high_temp",
+  "condition": "temperature > 80",
   "timestamp": 1704067200000000000,
-  "alert": {
-    "rule_name": "high_temp",
-    "condition": "temperature > 80",
-    "timestamp": 1704067200000000000,
-    "data": {
-      "temperature": 85.5,
-      "humidity": 45.2
-    },
-    "store_name": "sensor-data"
-  }
+  "data": {
+    "temperature": 85.5,
+    "humidity": 45.2
+  },
+  "store_name": "sensor-data",
+  "external_ref": "dashboards/warehouse#component-42"
 }
 ```
 
-2. If `webhook` is configured, an HTTP POST is sent to the webhook URL with the same alert payload.
+For WebSocket alerts, the payload is wrapped in a `{"type":"alert","alert":{...}}` frame on a fresh outbound connection. The `cooldown` timer prevents alert storms — once a rule fires, it won't fire again until the cooldown elapses.
 
-3. The `cooldown` timer starts -- the rule will not fire again until the cooldown period elapses, preventing alert storms.
+**Manage alerts:**
+```
+GET    /api/stores/:store/alerts           # list (all types, tagged)
+GET    /api/stores/:store/alerts/:id       # detail (config + status, secrets redacted)
+DELETE /api/stores/:store/alerts/:id       # stop worker, remove persisted config
+```
+
+See [docs/alerting-architecture.md](docs/alerting-architecture.md) for the full reference.
 
 ---
 
@@ -468,8 +493,7 @@ Response:
   "status": "connected",
   "last_timestamp": 1704067200000000000,
   "messages_sent": 1000,
-  "rules_count": 2,
-  "alerts_fired": 47,
+  "messages_received": 0,
   "errors": 0
 }
 ```

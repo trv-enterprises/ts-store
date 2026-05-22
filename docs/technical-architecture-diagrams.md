@@ -678,22 +678,27 @@ Security notes:
 ### Endpoint Security Matrix
 
 ```
-Endpoint                          Auth Required    Auth Type
-────────────────────────────────────────────────────────────
-GET  /health                      No               -
-GET  /api/stores                  No               -
-POST /api/stores                  Yes              Admin Key
-DELETE /api/stores/:store         Yes              Store API Key
-POST /api/stores/:store/reset     Yes              Store API Key
-GET  /api/stores/:store/stats     Yes              Store API Key
-POST /api/stores/:store/data      Yes              Store API Key
-GET  /api/stores/:store/data/*    Yes              Store API Key
-DELETE /api/stores/:store/data/*  Yes              Store API Key
-GET  /api/stores/:store/schema    Yes              Store API Key
-PUT  /api/stores/:store/schema    Yes              Store API Key
-GET  /api/stores/:store/ws/*      Yes              Store API Key
-*/api/stores/:store/ws/conns/*    Yes              Store API Key
-Unix Socket AUTH                  Yes              Store API Key
+Endpoint                                Auth Required    Auth Type
+──────────────────────────────────────────────────────────────────
+GET    /health                          No               -
+GET    /api/stores                      No               -
+GET    /api/stores/:store/stats         No               -
+GET    /api/stores/:store/metrics       No               -
+POST   /api/stores                      Yes              Admin Key
+DELETE /api/stores/:store               Yes              Store API Key
+POST   /api/stores/:store/reset         Yes              Store API Key
+POST   /api/stores/:store/metrics/reset Yes              Store API Key
+POST   /api/stores/:store/data          Yes              Store API Key
+GET    /api/stores/:store/data/*        Yes              Store API Key
+DELETE /api/stores/:store/data/*        Yes              Store API Key
+GET    /api/stores/:store/schema        Yes              Store API Key
+PUT    /api/stores/:store/schema        Yes              Store API Key
+GET    /api/stores/:store/ws/*          Yes              Store API Key
+*      /api/stores/:store/ws/conns/*    Yes              Store API Key
+*      /api/stores/:store/mqtt/conns/*  Yes              Store API Key
+*      /api/stores/:store/alerts        Yes              Store API Key
+*      /api/stores/:store/alerts/:id    Yes              Store API Key
+Unix Socket AUTH                        Yes              Store API Key
 ```
 
 ## Summary

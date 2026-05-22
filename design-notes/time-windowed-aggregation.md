@@ -1,5 +1,9 @@
 # Time-Windowed Aggregation for ts-store
 
+> **Scope:** This document describes a capability of **ts-store itself** — aggregation that happens inside the ts-store process at one of its output paths (REST API, WebSocket push, MQTT sink). On the dashboard side, this is configured **on the ts-store connection** (and/or per-component query params that the dashboard forwards to ts-store), so that ts-store delivers pre-aggregated records over the wire.
+>
+> This is **distinct from** the dashboard's own server-side bucket aggregator (`server-go/internal/streaming/`), which buckets records *after* they leave any source. The two layers are siblings; see the dashboard's [aggregation-sharing.md](../../dashboard/docs/design-notes/aggregation-sharing.md) for how they relate.
+
 ## Overview
 
 Add time-windowed aggregation (sum, avg, max, min) to all output paths: REST API, WebSocket push, and MQTT sink. Data collected at high frequency (e.g., every second) can be aggregated into windows (e.g., every minute) to reduce network traffic and noise.

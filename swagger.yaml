@@ -32,7 +32,7 @@ info:
 
     ## Duration Format
     The `since` parameter accepts durations like: `30s`, `15m`, `2h`, `7d`, `1w`
-  version: 0.1.0
+  version: 0.6.8
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
@@ -738,15 +738,19 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/AlertStatus'
-
-  /api/stores/{store}/alerts/webhook:
     post:
       tags:
         - Alerts
-      summary: Create a webhook alert
+      summary: Create an alert
       description: |
-        Creates a new webhook alert. When any rule matches a record in the
-        store, the worker POSTs an Alert payload to `url` with `headers`.
+        Creates a webhook, WebSocket, or MQTT alert. The request body's
+        `type` field discriminates: it must be `"webhook"`, `"ws"`, or
+        `"mqtt"`, and exactly one matching nested options object
+        (`webhook`, `ws`, or `mqtt`) must be provided.
+
+        Each alert carries exactly one rule (the `name`, `condition`,
+        `cooldown`, `external_ref`, `restart_policy`, `max_replay`
+        fields at the top level of the request).
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -758,7 +762,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateWebhookAlertRequest'
+              $ref: '#/components/schemas/CreateAlertRequest'
       responses:
         '201':
           description: Alert created
@@ -767,68 +771,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/AlertStatus'
         '400':
-          description: Invalid request
-
-  /api/stores/{store}/alerts/ws:
-    post:
-      tags:
-        - Alerts
-      summary: Create a WebSocket alert
-      description: |
-        Creates a new WS alert. Each rule match opens an outbound
-        WebSocket to `url`, sends one `type: alert` frame, and closes.
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateWSAlertRequest'
-      responses:
-        '201':
-          description: Alert created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AlertStatus'
-        '400':
-          description: Invalid request
-
-  /api/stores/{store}/alerts/mqtt:
-    post:
-      tags:
-        - Alerts
-      summary: Create an MQTT alert
-      description: |
-        Creates a new MQTT alert. The worker holds a persistent client to
-        `broker_url` and publishes Alert payloads to `topic` at the
-        configured QoS (default 1).
-      security:
-        - ApiKeyHeader: []
-        - BearerAuth: []
-        - ApiKeyQuery: []
-      parameters:
-        - $ref: '#/components/parameters/StoreName'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateMQTTAlertRequest'
-      responses:
-        '201':
-          description: Alert created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AlertStatus'
-        '400':
-          description: Invalid request
+          description: |
+            Invalid request — missing/unknown `type`, missing matching
+            options block, validation failure on rule fields, etc.
 
   /api/stores/{store}/alerts/{alertId}:
     get:
@@ -837,10 +782,11 @@ paths:
       summary: Get alert detail
       description: |
         Returns the alert's worker runtime status plus its persisted
-        configuration (rules, URL/broker/topic, headers, etc.). The
-        response is a flat object: top-level fields are the runtime
-        Status, and the matching transport config sits under one of
-        `webhook`, `ws`, or `mqtt` (only one will be present).
+        configuration (rule fields, URL/broker/topic, headers, etc.).
+        The response is a flat object: top-level fields are the
+        runtime Status and the rule fields (AlertCommon); the matching
+        transport config sits under one of `webhook`, `ws`, or `mqtt`
+        (only one will be present).
 
         Sensitive fields are redacted on read: MQTT `password` and
         well-known auth-style HTTP headers (`Authorization`,
@@ -1356,19 +1302,20 @@ components:
           type: string
           description: Default aggregation function(s) (e.g., "avg" or "avg,sum,min,max")
 
-    AlertRule:
+    AlertCommon:
       type: object
       required:
         - name
         - condition
       description: |
-        A single rule shared by all alert resources (webhook, ws, mqtt). The
-        transport-specific dispatch target lives on the parent alert resource,
-        not on the rule.
+        The rule + dispatch policy fields shared by every alert transport
+        (webhook, ws, mqtt). Embedded at the top level of CreateAlertRequest
+        and surfaced on AlertDetail. Field names in the `condition` may
+        include dots and hyphens (e.g. `cpu.percent`, `temp.cpu_c`).
       properties:
         name:
           type: string
-          description: Rule name/identifier
+          description: Human label for this alert, echoed on every fire.
           example: high_temp
         condition:
           type: string
@@ -1379,20 +1326,42 @@ components:
           example: temperature > 80
         cooldown:
           type: string
-          description: Minimum time between alerts (e.g., "5m", "1h")
+          description: Minimum time between fires (e.g., "5m", "1h").
           example: 5m
         external_ref:
           type: string
           maxLength: 512
           description: |
-            Opaque pass-through string echoed on every alert payload this
-            rule fires. ts-store does not parse or interpret it. Cap is 512
-            bytes; NUL bytes are rejected. Use for a dashboard component
-            id, a Grafana slug, or a JSON-encoded compound key.
+            Opaque pass-through string echoed verbatim on every alert
+            payload this alert fires. ts-store does not parse or interpret
+            it. Cap is 512 bytes; NUL bytes are rejected. Use for a
+            dashboard component id, a Grafana slug, or a JSON-encoded
+            compound key.
           example: dashboards/warehouse-sensors#component-42
+        restart_policy:
+          type: string
+          enum: ["", "now", "resume"]
+          description: |
+            How the worker resumes after a process restart.
+            - "" or "now" (default): start from wall-clock now; the
+              worker does not consult or write a cursor. Best for
+              high-frequency metric streams where a brief gap is OK.
+            - "resume": read the persisted cursor on Start and replay
+              records since lastTs. If `max_replay` is set, the resume
+              window is bounded to `now - max_replay`. Best for event
+              streams (e.g. journal logs) where a missed match matters.
+        max_replay:
+          type: string
+          description: |
+            Duration cap on the resume replay window. Only valid when
+            `restart_policy="resume"`. Empty means unbounded.
+          example: 1h
 
     AlertStatus:
       type: object
+      description: |
+        Runtime status of a single alert worker. Each alert has exactly
+        one rule, so `rule_name` is a single string (not an array).
       properties:
         id:
           type: string
@@ -1402,14 +1371,10 @@ components:
           enum: [webhook, ws, mqtt]
         target:
           type: string
-          description: URL (webhook/ws) or "broker -> topic" (mqtt)
-        rules_count:
-          type: integer
-        rule_names:
-          type: array
-          items:
-            type: string
-          description: Names of all rules configured on this alert, in order.
+          description: URL (webhook/ws) or "broker -> topic" (mqtt).
+        rule_name:
+          type: string
+          description: The single rule's name, mirrored here for status output.
         alerts_fired:
           type: integer
           format: int64
@@ -1428,63 +1393,44 @@ components:
     AlertDetail:
       description: |
         Flattened view of an alert's worker status plus its persisted
-        configuration. Status fields appear at the top level; the
-        transport-specific config is nested under `webhook`, `ws`, or
-        `mqtt` — exactly one will be present, matching `type`.
-        Sensitive values (MQTT password, common auth-style headers)
-        are redacted as `[redacted]`.
+        configuration. Status fields and the rule fields (AlertCommon)
+        appear at the top level; the transport-specific config is
+        nested under `webhook`, `ws`, or `mqtt` — exactly one will be
+        present, matching `type`. Sensitive values (MQTT password,
+        common auth-style headers) are redacted as `[redacted]`.
       allOf:
         - $ref: '#/components/schemas/AlertStatus'
+        - $ref: '#/components/schemas/AlertCommon'
         - type: object
           properties:
+            poll_interval:
+              type: string
+              description: Worker poll cadence.
+              example: 1s
             webhook:
               description: Present when type is "webhook".
               type: object
               properties:
-                id:
-                  type: string
                 url:
                   type: string
                 headers:
                   type: object
                   additionalProperties: { type: string }
-                rules:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/AlertRule'
-                poll_interval:
-                  type: string
                 timeout:
                   type: string
-                created_at:
-                  type: string
-                  format: date-time
             ws:
               description: Present when type is "ws".
               type: object
               properties:
-                id:
-                  type: string
                 url:
                   type: string
                 headers:
                   type: object
                   additionalProperties: { type: string }
-                rules:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/AlertRule'
-                poll_interval:
-                  type: string
-                created_at:
-                  type: string
-                  format: date-time
             mqtt:
               description: Present when type is "mqtt".
               type: object
               properties:
-                id:
-                  type: string
                 broker_url:
                   type: string
                 topic:
@@ -1497,21 +1443,12 @@ components:
                 qos:
                   type: integer
                   enum: [0, 1, 2]
-                rules:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/AlertRule'
-                poll_interval:
-                  type: string
-                created_at:
-                  type: string
-                  format: date-time
 
-    CreateWebhookAlertRequest:
+    WebhookOptions:
       type: object
       required:
         - url
-        - rules
+      description: Transport options for a webhook alert.
       properties:
         url:
           type: string
@@ -1520,25 +1457,20 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Custom HTTP headers (e.g., Authorization)
-        rules:
-          type: array
-          items:
-            $ref: '#/components/schemas/AlertRule'
-        poll_interval:
-          type: string
-          description: Poll cadence (default 1s)
-          example: 1s
+          description: Custom HTTP headers (e.g., Authorization).
         timeout:
           type: string
-          description: HTTP timeout per request (default 10s)
+          description: HTTP timeout per request (default 10s).
           example: 10s
 
-    CreateWSAlertRequest:
+    WSAlertOptions:
       type: object
       required:
         - url
-        - rules
+      description: |
+        Transport options for a WebSocket alert. Each fire opens a
+        fresh outbound WS connection, writes one
+        `{"type":"alert","alert":{...}}` frame, and closes.
       properties:
         url:
           type: string
@@ -1547,21 +1479,16 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Headers sent on the WebSocket upgrade request
-        rules:
-          type: array
-          items:
-            $ref: '#/components/schemas/AlertRule'
-        poll_interval:
-          type: string
-          example: 1s
+          description: Headers sent on the WebSocket upgrade request.
 
-    CreateMQTTAlertRequest:
+    MQTTAlertOptions:
       type: object
       required:
         - broker_url
         - topic
-        - rules
+      description: |
+        Transport options for an MQTT alert. The worker holds a
+        persistent client and publishes the alert payload to `topic`.
       properties:
         broker_url:
           type: string
@@ -1576,14 +1503,39 @@ components:
         qos:
           type: integer
           enum: [0, 1, 2]
-          description: MQTT QoS, default 1 (at-least-once)
-        rules:
-          type: array
-          items:
-            $ref: '#/components/schemas/AlertRule'
-        poll_interval:
-          type: string
-          example: 1s
+          default: 1
+          description: MQTT QoS. Defaults to 1 (at-least-once) when 0 or omitted.
+
+    CreateAlertRequest:
+      description: |
+        Unified create request for `POST /api/stores/{store}/alerts`.
+
+        The `type` field discriminates the transport. Exactly one of
+        `webhook`, `ws`, or `mqtt` must be present and must agree with
+        `type`. The remaining fields (from AlertCommon) configure the
+        single rule attached to this alert.
+      allOf:
+        - type: object
+          required:
+            - type
+          properties:
+            type:
+              type: string
+              enum: [webhook, ws, mqtt]
+              description: Transport discriminator.
+            poll_interval:
+              type: string
+              description: How often the worker polls the store (default 1s).
+              example: 1s
+        - $ref: '#/components/schemas/AlertCommon'
+        - type: object
+          properties:
+            webhook:
+              $ref: '#/components/schemas/WebhookOptions'
+            ws:
+              $ref: '#/components/schemas/WSAlertOptions'
+            mqtt:
+              $ref: '#/components/schemas/MQTTAlertOptions'
 
     WSConnectionStatus:
       type: object

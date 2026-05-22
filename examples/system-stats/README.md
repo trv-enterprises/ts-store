@@ -4,8 +4,8 @@ A minimal-overhead system statistics collector that writes to ts-store.
 
 ## Features
 
-- Reads directly from `/proc` for minimal overhead
-- Collects CPU, memory, disk I/O, network I/O, and disk space
+- Reads directly from `/proc` (and `/sys/class/thermal` for temperature fallback) for minimal overhead
+- Collects CPU, memory, swap, uptime, disk I/O, network I/O, disk space, and temperatures
 - Supports Unix socket (low latency) or HTTP API
 - Single static binary, no dependencies
 
@@ -77,9 +77,27 @@ The collector outputs flat JSON with dot-notation field names (compatible with s
   "disk_space.total": 100000000000,
   "disk_space.used": 50000000000,
   "disk_space.available": 50000000000,
-  "disk_space.pct": 50
+  "disk_space.pct": 50,
+  "swap.total": 2147483648,
+  "swap.used": 0,
+  "swap.pct": 0,
+  "uptime.sec": 86400,
+  "temp.cpu_package_c": 52.0,
+  "temp.cpu_max_core_c": 58.0,
+  "temp.nvme_c": 41.0
 }
 ```
+
+**Temperature fields** are tagged `omitempty` — hosts without a given sensor (no NVMe, no NIC temp, etc.) simply omit the field rather than report a misleading 0 °C. Supported fields:
+
+| Field | Source | Notes |
+|---|---|---|
+| `temp.cpu_package_c` | `coretemp`/`k10temp` "Package" label | x86 desktops/servers |
+| `temp.cpu_max_core_c` | hottest core under the same driver | x86 |
+| `temp.cpu_c` | `/sys/class/thermal/thermal_zone*` (`cpu-thermal`/`cpu_thermal`) | ARM / Raspberry Pi fallback |
+| `temp.nvme_c` | NVMe SMART | when present |
+| `temp.pch_c` | platform controller hub | x86 |
+| `temp.nic_c` | NIC hwmon | when present |
 
 ## Creating the Store
 
@@ -104,19 +122,29 @@ curl -X PUT http://localhost:21080/api/stores/system-stats/schema \
   -H "Content-Type: application/json" \
   -d '{
     "fields": [
-      {"index": 1, "name": "cpu.pct", "type": "int32"},
-      {"index": 2, "name": "memory.total", "type": "int64"},
-      {"index": 3, "name": "memory.used", "type": "int64"},
-      {"index": 4, "name": "memory.available", "type": "int64"},
-      {"index": 5, "name": "memory.pct", "type": "int32"},
-      {"index": 6, "name": "disk_io.read_bytes_sec", "type": "int64"},
-      {"index": 7, "name": "disk_io.write_bytes_sec", "type": "int64"},
-      {"index": 8, "name": "network.rx_bytes_sec", "type": "int64"},
-      {"index": 9, "name": "network.tx_bytes_sec", "type": "int64"},
+      {"index": 1,  "name": "cpu.pct", "type": "int32"},
+      {"index": 2,  "name": "memory.total", "type": "int64"},
+      {"index": 3,  "name": "memory.used", "type": "int64"},
+      {"index": 4,  "name": "memory.available", "type": "int64"},
+      {"index": 5,  "name": "memory.pct", "type": "int32"},
+      {"index": 6,  "name": "disk_io.read_bytes_sec", "type": "int64"},
+      {"index": 7,  "name": "disk_io.write_bytes_sec", "type": "int64"},
+      {"index": 8,  "name": "network.rx_bytes_sec", "type": "int64"},
+      {"index": 9,  "name": "network.tx_bytes_sec", "type": "int64"},
       {"index": 10, "name": "disk_space.total", "type": "int64"},
       {"index": 11, "name": "disk_space.used", "type": "int64"},
       {"index": 12, "name": "disk_space.available", "type": "int64"},
-      {"index": 13, "name": "disk_space.pct", "type": "int32"}
+      {"index": 13, "name": "disk_space.pct", "type": "int32"},
+      {"index": 14, "name": "swap.total", "type": "int64"},
+      {"index": 15, "name": "swap.used", "type": "int64"},
+      {"index": 16, "name": "swap.pct", "type": "int32"},
+      {"index": 17, "name": "uptime.sec", "type": "int64"},
+      {"index": 18, "name": "temp.cpu_package_c", "type": "float64"},
+      {"index": 19, "name": "temp.cpu_max_core_c", "type": "float64"},
+      {"index": 20, "name": "temp.cpu_c", "type": "float64"},
+      {"index": 21, "name": "temp.nvme_c", "type": "float64"},
+      {"index": 22, "name": "temp.pch_c", "type": "float64"},
+      {"index": 23, "name": "temp.nic_c", "type": "float64"}
     ]
   }'
 ```

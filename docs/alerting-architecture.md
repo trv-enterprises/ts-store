@@ -1,10 +1,10 @@
 # Alerting Architecture
 
-This document describes the design of the ts-store alerting system as of v0.6.
+This document describes the design of the ts-store alerting system as of v0.6.8.
 
 ## Overview
 
-Alerting is a first-class, transport-independent feature. A **rule** is a condition over the fields of a stored record (e.g. `temperature > 80`). When a rule matches an incoming record, an **alert** is dispatched through a configured **sink**. Three sink types are supported, each as its own resource:
+Alerting is a first-class, transport-independent feature. Each **alert** carries exactly one **rule** — a condition over the fields of a stored record (e.g. `temperature > 80`) — and a **sink** that dispatches a payload when the rule matches. Three sink types are supported, each as its own on-disk resource:
 
 | Resource | Sink | Use case |
 |---|---|---|
@@ -72,7 +72,9 @@ All three are persisted per-store as JSON, run as independent goroutines, and su
 2. **Schema expansion**: for schema-type stores, records are expanded via `store.ExpandData` so condition fields resolve to schema field names.
 3. **Evaluation**: parsed JSON is handed to `rules.Evaluator.Evaluate(ts, data)`, which buffers it in a 1000-element channel.
 4. **Match → dispatch**: in a separate goroutine, each rule is checked; on a match, cooldown is enforced; on first-allowed match, the callback fires `Sink.Send(alert)`.
-5. **Cursor**: the worker writes its `lastTs` to `<store>/<type>_alert_<id>.cursor` periodically. **On daemon restart, this file is not consulted**: workers start from `time.Now()` to avoid stale-alert stampedes on long outages. (See [Future work](#future-work).)
+5. **Cursor & restart policy**: each alert configures its own `restart_policy` (default `"now"`):
+   - `"now"` — the worker starts from `time.Now()` on every Start and skips cursor writes entirely. Best for high-frequency metric streams where a brief gap is acceptable.
+   - `"resume"` — the worker reads `<store>/<type>_alert_<id>.cursor` on Start and replays records since `lastTs`. If `max_replay` is set, the resume window is bounded to `now - max_replay` to cap the work after long outages. Best for event streams (e.g. journal logs) where a missed match is meaningful.
 
 ## Configuration
 
@@ -92,19 +94,21 @@ Per store, the on-disk layout includes:
   *_alert_<id>.cursor      ← per-alert cursor file
 ```
 
-### Common rule shape
+### Common alert fields
 
-All three alert resources share the same rule format:
+Every alert — webhook, WS, MQTT — carries the same rule + dispatch policy fields (the `AlertCommon` block, embedded into each transport-specific config):
 
-```json
-{
-  "name": "high-temp",
-  "condition": "temperature > 80",
-  "cooldown": "5m"
-}
-```
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Human label for this alert. |
+| `condition` | yes | Rule expression, e.g. `temperature > 80`. |
+| `cooldown` | no | Min time between fires (duration string, e.g. `5m`). |
+| `external_ref` | no | Opaque pass-through string (≤512 bytes, no NUL); echoed verbatim on every alert payload. |
+| `restart_policy` | no | `"now"` (default — start from wall-clock now, no cursor) or `"resume"` (replay from cursor on restart). |
+| `max_replay` | no | Duration cap on resume replay window. Only valid when `restart_policy="resume"`. Default: unbounded. |
+| `poll_interval` | no | How often the worker polls the store (default `1s`). |
 
-`condition` syntax: `field <op> value`, optionally compounded with `AND` / `OR`. Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`. Values: numbers, quoted strings, booleans.
+`condition` syntax: `field <op> value`, optionally compounded with `AND` / `OR`. Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`. Values: numbers, quoted strings, booleans. Field names may include dots and hyphens (`cpu.percent`, `temp.cpu_c`).
 
 ## HTTP API
 
@@ -112,55 +116,70 @@ All endpoints require the store's `X-API-Key` (same as streaming endpoints).
 
 | Method | Path | Body | Description |
 |---|---|---|---|
-| POST | `/api/stores/{store}/alerts/webhook` | `CreateWebhookAlertRequest` | Create a webhook alert |
-| POST | `/api/stores/{store}/alerts/ws` | `CreateWSAlertRequest` | Create a WS alert |
-| POST | `/api/stores/{store}/alerts/mqtt` | `CreateMQTTAlertRequest` | Create an MQTT alert |
-| GET  | `/api/stores/{store}/alerts` | — | List all alerts (all three types, tagged) |
-| GET  | `/api/stores/{store}/alerts/{id}` | — | Get one alert's status |
-| DELETE | `/api/stores/{store}/alerts/{id}` | — | Stop the worker and remove the persisted config |
+| POST   | `/api/stores/{store}/alerts` | `CreateAlertRequest` | Create an alert. The `type` field discriminates webhook / ws / mqtt. |
+| GET    | `/api/stores/{store}/alerts` | — | List all alerts (all three types, tagged with `type`). |
+| GET    | `/api/stores/{store}/alerts/{id}` | — | Get one alert's runtime status + persisted config (secrets redacted). |
+| DELETE | `/api/stores/{store}/alerts/{id}` | — | Stop the worker and remove the persisted config. |
 
-### Webhook alert request
+### Create request
+
+The POST body has a `type` discriminator (`"webhook"` | `"ws"` | `"mqtt"`) and exactly one matching nested options object. The common alert fields (above) live at the top level.
+
+#### Webhook
 
 ```json
 {
-  "url": "https://hooks.example.com/incoming",
-  "headers": { "Authorization": "Bearer xyz", "X-Source": "ts-store" },
-  "rules": [
-    { "name": "high-temp", "condition": "temperature > 80", "cooldown": "5m" }
-  ],
+  "type": "webhook",
+  "name": "high-temp",
+  "condition": "temperature > 80",
+  "cooldown": "5m",
   "poll_interval": "1s",
-  "timeout": "10s"
+  "webhook": {
+    "url": "https://hooks.example.com/incoming",
+    "headers": { "Authorization": "Bearer xyz", "X-Source": "ts-store" },
+    "timeout": "10s"
+  }
 }
 ```
 
-### WS alert request
+#### WebSocket
 
 ```json
 {
-  "url": "wss://alerts.example.com/in",
-  "headers": { "Authorization": "Bearer xyz" },
-  "rules": [{ "name": "high-temp", "condition": "temperature > 80" }],
-  "poll_interval": "1s"
+  "type": "ws",
+  "name": "high-temp",
+  "condition": "temperature > 80",
+  "ws": {
+    "url": "wss://alerts.example.com/in",
+    "headers": { "Authorization": "Bearer xyz" }
+  }
 }
 ```
 
-Each alert opens a fresh outbound WS connection, sends one `{"type":"alert", "alert":{...}}` frame, and closes. No keep-alive connection.
+Each fire opens a fresh outbound WS connection, sends one `{"type":"alert", "alert":{...}}` frame, and closes. No keep-alive connection.
 
-### MQTT alert request
+#### MQTT
 
 ```json
 {
-  "broker_url": "tcp://broker.example.com:1883",
-  "topic": "alerts/heat",
-  "username": "u",
-  "password": "p",
-  "qos": 1,
-  "rules": [{ "name": "high-temp", "condition": "temperature > 80" }],
-  "poll_interval": "1s"
+  "type": "mqtt",
+  "name": "high-temp",
+  "condition": "temperature > 80",
+  "mqtt": {
+    "broker_url": "tcp://broker.example.com:1883",
+    "topic": "alerts/heat",
+    "username": "u",
+    "password": "p",
+    "qos": 1
+  }
 }
 ```
 
-The MQTT client connects on first dispatch and stays connected. QoS defaults to 1 (at-least-once).
+The MQTT client connects on first dispatch and stays connected. `qos` defaults to 1 (at-least-once) when 0 or omitted.
+
+### Validation
+
+The server rejects requests where `type` is missing or unknown, where the nested options block for the chosen `type` is absent, or where any of the *other* transport blocks are also set. `max_replay` without `restart_policy="resume"` is rejected. `external_ref` over 512 bytes or containing NUL bytes is rejected.
 
 ### Alert payload
 
@@ -181,30 +200,37 @@ The body POSTed to the webhook (and the contents of the `alert` field on a WS fr
 
 #### `external_ref` — opaque pass-through
 
-Each rule may carry an `external_ref` string (≤512 bytes, no NUL bytes, otherwise unconstrained). ts-store does not parse or interpret it — receivers can stash whatever they need: a dashboard component id, a Grafana slug, a Slack channel name, or a JSON-encoded compound key like `{"dashboard_id":"…","namespace":"default"}`. When the rule fires, the value is echoed verbatim on the alert payload above. If the rule didn't set one, the field is omitted from the JSON.
+Each alert may carry an `external_ref` string (≤512 bytes, no NUL bytes, otherwise unconstrained). ts-store does not parse or interpret it — receivers can stash whatever they need: a dashboard component id, a Grafana slug, a Slack channel name, or a JSON-encoded compound key like `{"dashboard_id":"…","namespace":"default"}`. When the alert fires, the value is echoed verbatim on the alert payload above. If the alert didn't set one, the field is omitted from the JSON.
 
 ## CLI
+
+The CLI mirrors the HTTP API. Each transport has its own `add` subcommand, but all share the same rule + dispatch flags (`--name`, `--condition`, `--cooldown`, `--external-ref`, `--restart`, `--max-replay`, `--poll`, `--api-key`).
 
 ```sh
 # Webhook alert
 tsstore alerts webhook add <store> --url <url> \
-  --rule "high-temp:temperature > 80" --cooldown 5m \
-  [--header Authorization:Bearer\ xyz] [--poll 1s] [--api-key $KEY]
+  --name high-temp --condition "temperature > 80" --cooldown 5m \
+  [--header Authorization:Bearer\ xyz] [--timeout 10s] \
+  [--restart now|resume] [--max-replay 1h] [--external-ref <s>] \
+  [--poll 1s] [--api-key $KEY]
 
 # WS alert
 tsstore alerts ws add <store> --url <ws-url> \
-  --rule "high-temp:temperature > 80"
+  --name high-temp --condition "temperature > 80" \
+  [--header K:V] [--restart now|resume] [--max-replay 1h]
 
 # MQTT alert
 tsstore alerts mqtt add <store> --broker <url> --topic <t> \
-  --rule "high-temp:temperature > 80" [--qos 1] [--username u --password p]
+  --name high-temp --condition "temperature > 80" \
+  [--qos 0|1|2] [--username u --password p] \
+  [--restart now|resume] [--max-replay 1h]
 
 # List / delete
 tsstore alerts list <store>
 tsstore alerts rm   <store> <alert-id>
 ```
 
-Multiple `--rule`/`--cooldown` pairs are supported; `--cooldown` applies to the *last* `--rule`.
+Each invocation creates one alert with one rule. To attach multiple rules to the same target, create multiple alerts.
 
 ## Status output
 
@@ -216,9 +242,9 @@ Store: sensors
   Blocks:         5,485 / 6,144 (89.3% used)
   ...
   Webhook alerts: 1
-    - a1b2c3d4: https://hooks.example.com/incoming (1 rules)
+    - a1b2c3d4: high-temp -> https://hooks.example.com/incoming
   MQTT alerts:    2
-    - b2c3d4e5: tcp://mqtt:1883 -> alerts/temp (1 rules)
+    - b2c3d4e5: high-temp -> tcp://mqtt:1883 alerts/temp
 ```
 
 ## Failure semantics
@@ -229,12 +255,11 @@ Store: sensors
 | Webhook queue full (100) | Alert dropped, logged. Indicates downstream is too slow. |
 | WS dial fails | Single-alert failure, logged. Worker continues; next match retries the dial. |
 | MQTT publish fails | Worker logs and continues. The persistent client will auto-reconnect on its own. |
-| Daemon crash mid-poll | Cursor file may be slightly stale; on restart, worker starts from "now" anyway. |
+| Daemon crash mid-poll | If `restart_policy="now"` (default), the worker starts from "now" on restart and any in-flight matches are lost. If `restart_policy="resume"`, the worker replays from the last persisted cursor (optionally bounded by `max_replay`). |
 | Bad rule syntax in config | Worker construction fails at load time; logged; other alerts continue. |
 
 ## Future work
 
-- **Optional replay from persisted cursor**: today's "start from now" default avoids stampedes after long outages, but legitimate alerts that fired during the outage are missed. A future `replay: "now" | "resume"` (or `replay_after: <duration>`) on each alert config would let users opt into resume semantics, possibly with a cap (e.g. "replay at most 1 hour"). See the corresponding follow-up issue.
 - **Retry policies for webhook**: today, transient HTTP failures are not retried. A bounded exponential backoff inside `notify.Webhook` would be cheap to add.
 - **TLS / mTLS for MQTT**: `tcp://` brokers only. `ssl://` (TLS) and `wss://` (MQTT-over-WebSocket) need config knobs.
 - **Authentication on MQTT-over-WSS**: combine broker `wss://` URL with header auth for cloud-broker scenarios.

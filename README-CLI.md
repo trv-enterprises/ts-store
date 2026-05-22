@@ -128,6 +128,44 @@ export TSSTORE_ADMIN_KEY="your-secure-admin-key-here"
 
 Starts a local file server on port 21090, serves `swagger.yaml` with CORS headers, and opens https://editor.swagger.io in your browser with the spec pre-loaded.
 
+## Alerts
+
+`tsstore alerts` manages webhook, WS, and MQTT alert resources. Each `add` invocation creates one alert with one rule; create multiple alerts to attach multiple rules to the same target. All forms hit `POST /api/stores/:store/alerts` with a `type`-discriminated body.
+
+```bash
+# Webhook alert
+./tsstore alerts webhook add my-store \
+  --url https://hooks.slack.com/services/... \
+  --name high-temp --condition "temperature > 80" --cooldown 5m
+
+# WS alert
+./tsstore alerts ws add my-store \
+  --url wss://alerts.example.com/in \
+  --name error-log --condition "level == \"error\""
+
+# MQTT alert
+./tsstore alerts mqtt add my-store \
+  --broker tcp://mqtt:1883 --topic alerts/heat \
+  --name high-temp --condition "temperature > 80" --qos 1
+
+# List / delete
+./tsstore alerts list my-store
+./tsstore alerts rm   my-store <alert-id>
+```
+
+**Required for every create:** `--name <label>` and `--condition <expr>`.
+
+**Common create flags** (any transport):
+- `--cooldown <duration>` — minimum interval between fires (e.g., `5m`)
+- `--external-ref <s>` — opaque pass-through string echoed on every alert payload
+- `--restart now|resume` — restart policy (default `now`). `resume` reads the persisted cursor on Start and replays records since.
+- `--max-replay <duration>` — when `--restart=resume`, cap replay window (e.g., `1h`). Default: unbounded.
+- `--poll <duration>` — poll interval (default `1s`)
+- `--header K:V` — additional HTTP header, repeatable (webhook/ws only)
+- `--api-key <key>` — store API key (or set `TSSTORE_API_KEY`)
+
+**Transport-specific:** webhook adds `--timeout <duration>`. MQTT adds `--qos 0|1|2`, `--username`, `--password`.
+
 ---
 
 [Back to main README](README.md) | [API Reference](README-API.md) | [Data Input](README-DATA-INPUT.md) | [Data Output](README-DATA-OUTPUT.md)

@@ -131,6 +131,7 @@ Returns the store API key (shown only once):
 ```
 GET /api/stores
 ```
+No authentication required. Lists open stores by name.
 
 ### Delete Store (requires auth)
 ```
@@ -145,11 +146,24 @@ X-API-Key: <api-key>
 ```
 Clears all data from the store but keeps configuration, schema, and API keys. Useful for starting fresh without recreating the store.
 
-### Get Store Stats (requires auth)
+### Get Store Stats
 ```
 GET /api/stores/:store/stats
+```
+No authentication required. Returns operational metadata — block counts, time range, partition layout, disk usage. Deliberately public so dashboards and monitors don't need a per-store API key just to poll capacity/health. No stored data is exposed here.
+
+### Get Store Activity Metrics
+```
+GET /api/stores/:store/metrics
+```
+No authentication required. Returns per-store activity counters: writes, reads, records evaluated, rule matches, alerts fired, and a `since` timestamp marking when the counters last started. Same public posture as `/stats` — no data exposed.
+
+### Reset Store Activity Metrics (requires auth)
+```
+POST /api/stores/:store/metrics/reset
 X-API-Key: <api-key>
 ```
+Zeros the activity counters and advances the `since` timestamp to now. Useful for snapshotting throughput between two points in time.
 
 ## Schema Configuration (for schema-type stores)
 
