@@ -16,11 +16,11 @@ This will:
 5. Push to origin (triggers Docker image build via GitHub Actions)
 
 The Docker image is automatically published to `ghcr.io/trv-enterprises/ts-store`.
+Linux binaries are attached to the GitHub Release by the `release-binaries.yml` workflow on tag push.
 
-To create a GitHub release with binaries:
-```bash
-gh release create v0.3.1 dist/tsstore-v0.3.1-*
-```
+### Release notes
+
+**Claude writes release notes by hand for every tagged release.** The `release-binaries.yml` workflow auto-creates the GitHub Release with a bare commit-list body — that body is a placeholder and must be replaced. See [RELEASING.md](./RELEASING.md) for the structure (Highlights / Breaking changes / Compatibility), title format, and the `gh release edit` invocation. After any `make release`, draft notes from `git log <prev-tag>..<new-tag>` and post them to the release page. If a prior release shipped with only the auto-generated body, offer to backfill it.
 
 ## Build Commands
 
