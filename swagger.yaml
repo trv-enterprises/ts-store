@@ -86,8 +86,13 @@ paths:
     get:
       tags:
         - Stores
-      summary: List open stores
-      description: Returns a list of currently open stores.
+      summary: List stores
+      description: |
+        Returns all stores with their data type and rollup role.
+
+        **Breaking change (v0.8.0):** `stores` is now an array of objects
+        (`{name, data_type, role, ...}`); earlier versions returned an array of
+        name strings.
       responses:
         '200':
           description: List of stores
@@ -99,8 +104,32 @@ paths:
                   stores:
                     type: array
                     items:
-                      type: string
-                    example: ["my-store", "sensor-data"]
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        data_type:
+                          type: string
+                          enum: [binary, text, json, schema]
+                        role:
+                          type: string
+                          enum: [store, source, rollup]
+                          description: "rollup = a rollup target; source = has rollups; store = neither"
+                        rollup_of:
+                          type: string
+                          description: Source store name (when role=rollup)
+                        window:
+                          type: string
+                          description: Rollup window (when role=rollup)
+                    example:
+                      - name: sensors
+                        data_type: schema
+                        role: source
+                      - name: sensors-1h
+                        data_type: schema
+                        role: rollup
+                        rollup_of: sensors
+                        window: 1h
 
     post:
       tags:
@@ -889,6 +918,118 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/stores/{store}/rollups:
+    get:
+      tags:
+        - Rollups
+      summary: List rollups
+      description: Lists rollups whose source is this store.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: List of rollups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rollups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RollupStatus'
+    post:
+      tags:
+        - Rollups
+      summary: Create a rollup
+      description: |
+        Creates a rollup that aggregates this (source) store into clock-aligned
+        windows and writes one record per closed window into a target store. The
+        target schema store is auto-created and sized from `retention` if it
+        doesn't exist, and its API keys are linked to this source.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRollupRequest'
+            example:
+              window: 1h
+              agg_fields: cpu:avg+max,mem:avg
+              retention: 1y
+      responses:
+        '201':
+          description: Rollup created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RollupStatus'
+        '400':
+          description: Invalid request (bad window/agg spec, or target conflict)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/rollups/{rollupId}:
+    get:
+      tags:
+        - Rollups
+      summary: Get a rollup
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - name: rollupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rollup status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RollupStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags:
+        - Rollups
+      summary: Delete a rollup
+      description: Stops the worker and removes the rollup config. The target store is left intact.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - name: rollupId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rollup deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     ApiKeyHeader:
@@ -1279,6 +1420,86 @@ components:
         count:
           type: integer
           example: 10
+        rollup:
+          type: object
+          description: Present only when the store is a rollup target. Lets a consumer learn the window in the same call as the data.
+          properties:
+            role:
+              type: string
+              example: rollup
+            window:
+              type: string
+              example: 1h
+            rollup_of:
+              type: string
+              example: sensors
+
+    CreateRollupRequest:
+      type: object
+      required:
+        - window
+      properties:
+        name:
+          type: string
+        target_store:
+          type: string
+          description: Target store name. Defaults to "<source>-<canonical-window>".
+        window:
+          type: string
+          description: Aggregation window (1m, 1h, 1d, ...)
+          example: 1h
+        agg_fields:
+          type: string
+          description: Per-field aggregation, e.g. "cpu:avg+max,mem:avg"
+        agg_default:
+          type: string
+          description: Default aggregation function for numeric fields not listed.
+        poll_interval:
+          type: string
+          example: 30s
+        restart_policy:
+          type: string
+          enum: [resume, now]
+        retention:
+          type: string
+          description: How long the target keeps rows; sizes the target store.
+          example: 1y
+        edge_tolerance:
+          type: number
+          format: float
+          description: Max over-retention fraction; chooses partition count. Default 0.10.
+        force_recreate:
+          type: boolean
+          description: Flush/recreate the target to apply changed window/agg/retention params.
+
+    RollupStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        source_store:
+          type: string
+        target_store:
+          type: string
+        window:
+          type: string
+          example: 1h
+        state:
+          type: string
+          enum: [running, stopped, error]
+        last_window_end:
+          type: integer
+          format: int64
+        windows_written:
+          type: integer
+          format: int64
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
 
     SchemaField:
       type: object

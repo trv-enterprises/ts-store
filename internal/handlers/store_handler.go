@@ -95,10 +95,11 @@ func (h *StoreHandler) ResetMetrics(c *gin.Context) {
 }
 
 // List handles GET /api/stores
-// Returns list of all stores on disk.
+// Returns all stores on disk as objects with name, data_type, and rollup role.
+// NOTE: the response shape is an array of objects (each {name, data_type, role,
+// ...}); earlier versions returned a flat array of name strings.
 func (h *StoreHandler) List(c *gin.Context) {
-	stores := h.storeService.ListAll()
-	c.JSON(http.StatusOK, gin.H{"stores": stores})
+	c.JSON(http.StatusOK, gin.H{"stores": h.storeService.ListAllInfo()})
 }
 
 // Reset handles POST /api/stores/:store/reset

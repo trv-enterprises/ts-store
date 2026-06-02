@@ -40,9 +40,17 @@ type KeyEntry struct {
 }
 
 // KeyFile represents the structure of the keys.json file.
+//
+// LinkedSource, when set, makes this store defer key validation to another
+// store's key file (the "source"). A linked store holds no keys of its own;
+// it validates against the source so that rotating/adding/revoking the
+// source's keys applies to the linked store automatically (single source of
+// truth, no copied hashes that could drift). Used by auto-created rollup
+// target stores, which share their source store's keys.
 type KeyFile struct {
-	StoreName string     `json:"store_name"`
-	Keys      []KeyEntry `json:"keys"`
+	StoreName    string     `json:"store_name"`
+	LinkedSource string     `json:"linked_source,omitempty"`
+	Keys         []KeyEntry `json:"keys"`
 }
 
 // Manager handles API key operations for stores.
@@ -107,7 +115,9 @@ func (m *Manager) Generate(storeName, note string) (string, *KeyEntry, error) {
 }
 
 // Validate checks if an API key is valid for a store.
-// Returns the key entry if valid.
+// Returns the key entry if valid. If the store's key file has a LinkedSource,
+// validation is delegated to the source store's key file (one hop only) so
+// linked stores share their source's keys without copying hashes.
 func (m *Manager) Validate(storeName, apiKey string) (*KeyEntry, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -116,6 +126,17 @@ func (m *Manager) Validate(storeName, apiKey string) (*KeyEntry, error) {
 	keyFile, err := m.getKeyFileLocked(storeName)
 	if err != nil {
 		return nil, err
+	}
+
+	// Follow a single link to the source store's key file. One hop only:
+	// links are created solely for rollup targets, whose source is a real
+	// (unlinked) store, so deeper chains never arise.
+	if keyFile.LinkedSource != "" {
+		src, err := m.getKeyFileLocked(keyFile.LinkedSource)
+		if err != nil {
+			return nil, err
+		}
+		keyFile = src
 	}
 
 	// Hash the provided key
@@ -129,6 +150,56 @@ func (m *Manager) Validate(storeName, apiKey string) (*KeyEntry, error) {
 	}
 
 	return nil, ErrInvalidKey
+}
+
+// CreateLinkedKeyFile writes a key file for storeName that holds no keys of its
+// own and defers validation to sourceStore. Used when auto-creating a rollup
+// target so it shares its source store's API keys.
+func (m *Manager) CreateLinkedKeyFile(storeName, sourceStore string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	keyFile := &KeyFile{
+		StoreName:    storeName,
+		LinkedSource: sourceStore,
+		Keys:         []KeyEntry{},
+	}
+	if err := m.saveKeyFileLocked(storeName, keyFile); err != nil {
+		return err
+	}
+	m.cache[storeName] = keyFile
+	return nil
+}
+
+// LinkedDependents returns the names of stores whose key file links to
+// sourceStore. Scans store subdirectories under basePath. Used to refuse
+// deleting a store that other (linked) stores depend on for auth.
+func (m *Manager) LinkedDependents(sourceStore string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entries, err := os.ReadDir(m.basePath)
+	if err != nil {
+		return nil, err
+	}
+	var deps []string
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == sourceStore {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(m.basePath, entry.Name(), KeyFileName))
+		if err != nil {
+			continue
+		}
+		var kf KeyFile
+		if err := json.Unmarshal(data, &kf); err != nil {
+			continue
+		}
+		if kf.LinkedSource == sourceStore {
+			deps = append(deps, entry.Name())
+		}
+	}
+	return deps, nil
 }
 
 // Revoke removes an API key by its ID.

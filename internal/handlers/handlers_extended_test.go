@@ -75,17 +75,22 @@ func TestListStores(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// Listing returns objects: {name, data_type, role, ...}
 	var resp struct {
-		Stores []string `json:"stores"`
+		Stores []struct {
+			Name     string `json:"name"`
+			DataType string `json:"data_type"`
+			Role     string `json:"role"`
+		} `json:"stores"`
 	}
 	json.Unmarshal(w.Body.Bytes(), &resp)
 
 	found := map[string]bool{}
 	for _, s := range resp.Stores {
-		found[s] = true
+		found[s.Name] = true
 	}
 	if !found["list-a"] || !found["list-b"] {
-		t.Errorf("Expected both list-a and list-b in response, got %v", resp.Stores)
+		t.Errorf("Expected both list-a and list-b in response, got %+v", resp.Stores)
 	}
 }
 

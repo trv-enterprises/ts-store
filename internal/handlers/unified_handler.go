@@ -55,10 +55,31 @@ type DataResponse struct {
 	Data          any    `json:"data"`                     // string (base64 or text) or json.RawMessage
 }
 
+// RollupInfo describes the rollup nature of a store, echoed on data responses
+// for rollup target stores so a consumer learns the window (needed to interpret
+// the half-open window-end timestamps and to do count-weighted re-aggregation)
+// in the same call as the data.
+type RollupInfo struct {
+	Role     string `json:"role"`      // always "rollup" here
+	Window   string `json:"window"`    // canonical window, e.g. "1h"
+	RollupOf string `json:"rollup_of"` // source store name
+}
+
 // DataListResponse represents a list of data objects.
 type DataListResponse struct {
 	Objects []DataResponse `json:"objects"`
 	Count   int            `json:"count"`
+	Rollup  *RollupInfo    `json:"rollup,omitempty"` // present only for rollup target stores
+}
+
+// rollupInfoFor returns a RollupInfo for a store if it is a rollup target, else
+// nil (so the field is omitted for non-rollup stores).
+func rollupInfoFor(st *store.Store) *RollupInfo {
+	meta, err := st.ReadRollupMeta()
+	if err != nil || meta == nil {
+		return nil
+	}
+	return &RollupInfo{Role: "rollup", Window: meta.Window, RollupOf: meta.RollupOf}
 }
 
 // Put handles POST /api/stores/:store/data
@@ -294,6 +315,7 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	c.JSON(http.StatusOK, DataListResponse{
 		Objects: objects,
 		Count:   len(objects),
+		Rollup:  rollupInfoFor(st),
 	})
 }
 
@@ -394,6 +416,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	c.JSON(http.StatusOK, DataListResponse{
 		Objects: objects,
 		Count:   len(objects),
+		Rollup:  rollupInfoFor(st),
 	})
 }
 
@@ -537,6 +560,7 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	c.JSON(http.StatusOK, DataListResponse{
 		Objects: objects,
 		Count:   len(objects),
+		Rollup:  rollupInfoFor(st),
 	})
 }
 
@@ -773,6 +797,8 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 		}
 	}
 
+	// Aggregated output: the response window is agg_window, not the store's
+	// rollup window, so we don't echo the store's rollup descriptor here.
 	c.JSON(http.StatusOK, DataListResponse{
 		Objects: objects,
 		Count:   len(objects),
