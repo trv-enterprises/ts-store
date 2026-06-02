@@ -166,6 +166,39 @@ Starts a local file server on port 21090, serves `swagger.yaml` with CORS header
 
 **Transport-specific:** webhook adds `--timeout <duration>`. MQTT adds `--qos 0|1|2`, `--username`, `--password`.
 
+## Rollups
+
+`tsstore rollups` manages rollup aggregations: a background worker aggregates a high-frequency **source** store into clock-aligned windows and writes one record per closed window into a second **target** store (auto-created and sized from `--retention`). Subcommands hit `/api/stores/:store/rollups` and are scoped to the source store. See [Rollups](README-API.md#rollups-two-tier-aggregation) for the full model.
+
+```bash
+# Hourly min/max/avg for EVERY numeric field in system-stats, kept 1 year:
+./tsstore rollups add system-stats --window 1h --default "min,max,avg" --retention 1y
+
+# Per-field aggregation, minute windows kept 90 days:
+./tsstore rollups add sensors --window 1m \
+  --fields "temp:avg+max,humidity:avg" --retention 90d
+
+# List / inspect / delete
+./tsstore rollups list system-stats
+./tsstore rollups get  system-stats <rollup-id>
+./tsstore rollups rm   system-stats <rollup-id>
+```
+
+**Required for create:** `--window <duration>` and at least one of `--fields`/`--default`.
+
+**Create flags:**
+- `--default <funcs>` — functions applied to every numeric field, e.g. `min,max,avg` (the easy way to roll up all numeric parameters)
+- `--fields <spec>` — per-field functions, e.g. `cpu:avg+max,mem:avg`
+- `--retention <duration>` — how long the target keeps rows; sizes the target (default `1y`)
+- `--target <store>` — target store name (default `<source>-<window>`)
+- `--poll <duration>` — worker scan interval (default `30s`)
+- `--restart resume|now` — restart policy (default `resume`)
+- `--edge-tolerance <f>` — max over-retention fraction; picks partition count (default `0.10`)
+- `--force-recreate` — flush/recreate the target to apply changed window/agg/retention params
+- `--api-key <key>` — store API key (or set `TSSTORE_API_KEY`)
+
+Every rollup record carries a `window_count` field for correct count-weighted downstream re-aggregation; see [Reading Rollup Stores](README-DATA_RETRIEVAL.md#reading-rollup-stores).
+
 ---
 
 [Back to main README](README.md) | [API Reference](README-API.md) | [Data Input](README-DATA-INPUT.md) | [Data Output](README-DATA-OUTPUT.md)
