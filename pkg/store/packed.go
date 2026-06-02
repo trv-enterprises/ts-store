@@ -34,16 +34,17 @@ func (s *Store) canFitInCurrentBlock(objSize uint32) bool {
 
 // appendToCurrentBlock appends an object to the current head block.
 // Called when the object fits in remaining space.
-func (s *Store) appendToCurrentBlock(timestamp int64, data []byte) (*ObjectHandle, error) {
+func (s *Store) appendToCurrentBlock(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	blockNum := s.meta.HeadBlock
 	writeOffset := s.meta.WriteOffset
 
-	// Create object header
+	// Create object header. Reserved carries the per-record schema version.
 	objHeader := &block.ObjectHeader{
 		Timestamp:  timestamp,
 		DataLen:    uint32(len(data)),
 		Flags:      block.ObjFlagLastInBlock,
 		NextOffset: 0,
+		Reserved:   schemaVer,
 	}
 
 	// Update previous object's NextOffset to point to this one
@@ -79,16 +80,17 @@ func (s *Store) appendToCurrentBlock(timestamp int64, data []byte) (*ObjectHandl
 	s.meta.WriteOffset = dataOffset + uint32(len(data))
 
 	return &ObjectHandle{
-		Timestamp: timestamp,
-		BlockNum:  blockNum,
-		Offset:    writeOffset,
-		Size:      uint32(len(data)),
-		SpanCount: 1,
+		Timestamp:     timestamp,
+		BlockNum:      blockNum,
+		Offset:        writeOffset,
+		Size:          uint32(len(data)),
+		SpanCount:     1,
+		SchemaVersion: schemaVer,
 	}, nil
 }
 
 // writeToNewBlock writes an object to a fresh block (single block, not spanning).
-func (s *Store) writeToNewBlock(timestamp int64, data []byte) (*ObjectHandle, error) {
+func (s *Store) writeToNewBlock(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	// Allocate a new block
 	blockNum, err := s.allocateNextBlock()
 	if err != nil {
@@ -112,6 +114,7 @@ func (s *Store) writeToNewBlock(timestamp int64, data []byte) (*ObjectHandle, er
 		DataLen:    uint32(len(data)),
 		Flags:      block.ObjFlagLastInBlock,
 		NextOffset: 0,
+		Reserved:   schemaVer,
 	}
 	if err := s.writeObjectHeader(blockNum, objOffset, objHeader); err != nil {
 		return nil, err
@@ -140,16 +143,17 @@ func (s *Store) writeToNewBlock(timestamp int64, data []byte) (*ObjectHandle, er
 	s.meta.WriteOffset = dataOffset + uint32(len(data))
 
 	return &ObjectHandle{
-		Timestamp: timestamp,
-		BlockNum:  blockNum,
-		Offset:    objOffset,
-		Size:      uint32(len(data)),
-		SpanCount: 1,
+		Timestamp:     timestamp,
+		BlockNum:      blockNum,
+		Offset:        objOffset,
+		Size:          uint32(len(data)),
+		SpanCount:     1,
+		SchemaVersion: schemaVer,
 	}, nil
 }
 
 // writeSpanningObject writes an object that spans multiple blocks.
-func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle, error) {
+func (s *Store) writeSpanningObject(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	usablePerBlock := s.config.DataBlockSize - block.BlockHeaderSize
 	firstBlockUsable := usablePerBlock - block.ObjectHeaderSize // First block has object header
 
@@ -194,6 +198,7 @@ func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle
 			DataLen:    uint32(len(data)), // Total size
 			Flags:      objFlags,
 			NextOffset: 0,
+			Reserved:   schemaVer,
 		}
 
 		if err := s.writeBlockHeader(currentBlock, blockHeader); err != nil {
@@ -275,11 +280,12 @@ func (s *Store) writeSpanningObject(timestamp int64, data []byte) (*ObjectHandle
 	s.meta.WriteOffset = block.BlockHeaderSize + lastChunkSize
 
 	return &ObjectHandle{
-		Timestamp: timestamp,
-		BlockNum:  firstBlock,
-		Offset:    block.BlockHeaderSize,
-		Size:      uint32(len(data)),
-		SpanCount: spanCount,
+		Timestamp:     timestamp,
+		BlockNum:      firstBlock,
+		Offset:        block.BlockHeaderSize,
+		Size:          uint32(len(data)),
+		SpanCount:     spanCount,
+		SchemaVersion: schemaVer,
 	}, nil
 }
 
@@ -457,11 +463,12 @@ func (s *Store) scanBlockForTimestamp(blockNum uint32, timestamp int64) ([]byte,
 			}
 
 			return data, &ObjectHandle{
-				Timestamp: timestamp,
-				BlockNum:  blockNum,
-				Offset:    offset,
-				Size:      objHeader.DataLen,
-				SpanCount: spanCount,
+				Timestamp:     timestamp,
+				BlockNum:      blockNum,
+				Offset:        offset,
+				Size:          objHeader.DataLen,
+				SpanCount:     spanCount,
+				SchemaVersion: objHeader.Reserved,
 			}, nil
 		}
 
@@ -531,11 +538,12 @@ func (s *Store) scanBlockObjects(blockNum uint32) ([]*ObjectHandle, error) {
 		}
 
 		handles = append(handles, &ObjectHandle{
-			Timestamp: objHeader.Timestamp,
-			BlockNum:  blockNum,
-			Offset:    offset,
-			Size:      objHeader.DataLen,
-			SpanCount: spanCount,
+			Timestamp:     objHeader.Timestamp,
+			BlockNum:      blockNum,
+			Offset:        offset,
+			Size:          objHeader.DataLen,
+			SpanCount:     spanCount,
+			SchemaVersion: objHeader.Reserved,
 		})
 
 		// Move to next object

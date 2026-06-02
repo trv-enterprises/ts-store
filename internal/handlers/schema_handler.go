@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/middleware"
@@ -37,8 +38,15 @@ type SchemaResponse struct {
 	Fields  []schema.Field `json:"fields"`
 }
 
+// SchemaVersionsResponse lists all schema versions for a store.
+type SchemaVersionsResponse struct {
+	CurrentVersion int              `json:"current_version"`
+	Versions       []SchemaResponse `json:"versions"`
+}
+
 // Get handles GET /api/stores/:store/schema
-// Returns the current schema for schema-type stores.
+// Returns the current schema for schema-type stores, or a specific version when
+// the ?version=<N> query parameter is supplied.
 func (h *SchemaHandler) Get(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -50,6 +58,30 @@ func (h *SchemaHandler) Get(c *gin.Context) {
 
 	if st.DataType() != store.DataTypeSchema {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "schema endpoint only available for schema-type stores"})
+		return
+	}
+
+	// Specific version requested via ?version=N.
+	if v := c.Query("version"); v != "" {
+		version, err := strconv.Atoi(v)
+		if err != nil || version <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid version"})
+			return
+		}
+		ss := st.GetSchemaSet()
+		if ss == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no schema defined"})
+			return
+		}
+		sch, err := ss.GetSchema(version)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, SchemaResponse{
+			Version: sch.Version,
+			Fields:  sch.Fields,
+		})
 		return
 	}
 
@@ -66,6 +98,46 @@ func (h *SchemaHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, SchemaResponse{
 		Version: sch.Version,
 		Fields:  sch.Fields,
+	})
+}
+
+// ListVersions handles GET /api/stores/:store/schema/versions
+// Returns every schema version for a schema-type store, in ascending order.
+func (h *SchemaHandler) ListVersions(c *gin.Context) {
+	storeName := middleware.GetStoreName(c)
+
+	st, err := h.storeService.GetOrOpen(storeName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if st.DataType() != store.DataTypeSchema {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema endpoint only available for schema-type stores"})
+		return
+	}
+
+	ss := st.GetSchemaSet()
+	if ss == nil || ss.CurrentVersion == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no schema defined"})
+		return
+	}
+
+	versions := make([]SchemaResponse, 0, ss.CurrentVersion)
+	for v := 1; v <= ss.CurrentVersion; v++ {
+		sch, err := ss.GetSchema(v)
+		if err != nil {
+			continue
+		}
+		versions = append(versions, SchemaResponse{
+			Version: sch.Version,
+			Fields:  sch.Fields,
+		})
+	}
+
+	c.JSON(http.StatusOK, SchemaVersionsResponse{
+		CurrentVersion: ss.CurrentVersion,
+		Versions:       versions,
 	})
 }
 

@@ -309,6 +309,7 @@ func runServer(args []string) {
 
 			// Schema endpoint (only for schema-type stores)
 			storeRoutes.GET("/schema", schemaHandler.Get)
+			storeRoutes.GET("/schema/versions", schemaHandler.ListVersions)
 			storeRoutes.PUT("/schema", schemaHandler.Put)
 
 			// WebSocket endpoint (inbound connections)

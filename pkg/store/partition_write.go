@@ -12,7 +12,7 @@ import (
 // These operate within a single partition using append-only writes.
 
 // putObjectV2 stores an object in the V2 partitioned store.
-func (s *Store) putObjectV2(timestamp int64, data []byte) (*ObjectHandle, error) {
+func (s *Store) putObjectV2(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	objSize := block.ObjectHeaderSize + uint32(len(data))
 	usableSpace := s.globalMeta.BlockSize - block.BlockHeaderSize
 
@@ -28,11 +28,11 @@ func (s *Store) putObjectV2(timestamp int64, data []byte) (*ObjectHandle, error)
 
 	// Route to appropriate write strategy
 	if s.canFitInCurrentBlockV2(objSize) {
-		handle, err = s.appendToCurrentBlockV2(timestamp, data)
+		handle, err = s.appendToCurrentBlockV2(timestamp, data, schemaVer)
 	} else if objSize <= usableSpace {
-		handle, err = s.writeToNewBlockV2(timestamp, data)
+		handle, err = s.writeToNewBlockV2(timestamp, data, schemaVer)
 	} else {
-		handle, err = s.writeSpanningObjectV2(timestamp, data)
+		handle, err = s.writeSpanningObjectV2(timestamp, data, schemaVer)
 	}
 
 	if err != nil {
@@ -72,17 +72,18 @@ func (s *Store) canFitInCurrentBlockV2(objSize uint32) bool {
 }
 
 // appendToCurrentBlockV2 appends an object to the current head block within the partition.
-func (s *Store) appendToCurrentBlockV2(timestamp int64, data []byte) (*ObjectHandle, error) {
+func (s *Store) appendToCurrentBlockV2(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	p := s.currentPartition
 	blockNum := p.meta.HeadBlock
 	writeOffset := p.meta.WriteOffset
 
-	// Create object header
+	// Create object header. Reserved carries the per-record schema version.
 	objHeader := &block.ObjectHeader{
 		Timestamp:  timestamp,
 		DataLen:    uint32(len(data)),
 		Flags:      block.ObjFlagLastInBlock,
 		NextOffset: 0,
+		Reserved:   schemaVer,
 	}
 
 	// Update previous object's NextOffset to point to this one
@@ -118,17 +119,18 @@ func (s *Store) appendToCurrentBlockV2(timestamp int64, data []byte) (*ObjectHan
 	p.meta.WriteOffset = dataOffset + uint32(len(data))
 
 	return &ObjectHandle{
-		Timestamp:   timestamp,
-		BlockNum:    blockNum,
-		Offset:      writeOffset,
-		Size:        uint32(len(data)),
-		SpanCount:   1,
-		PartitionID: p.id,
+		Timestamp:     timestamp,
+		BlockNum:      blockNum,
+		Offset:        writeOffset,
+		Size:          uint32(len(data)),
+		SpanCount:     1,
+		PartitionID:   p.id,
+		SchemaVersion: schemaVer,
 	}, nil
 }
 
 // writeToNewBlockV2 writes an object to a fresh block within the partition.
-func (s *Store) writeToNewBlockV2(timestamp int64, data []byte) (*ObjectHandle, error) {
+func (s *Store) writeToNewBlockV2(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	p := s.currentPartition
 
 	// Allocate a new block
@@ -154,6 +156,7 @@ func (s *Store) writeToNewBlockV2(timestamp int64, data []byte) (*ObjectHandle, 
 		DataLen:    uint32(len(data)),
 		Flags:      block.ObjFlagLastInBlock,
 		NextOffset: 0,
+		Reserved:   schemaVer,
 	}
 	if err := p.writeObjectHeader(blockNum, objOffset, objHeader); err != nil {
 		return nil, err
@@ -182,17 +185,18 @@ func (s *Store) writeToNewBlockV2(timestamp int64, data []byte) (*ObjectHandle, 
 	p.meta.WriteOffset = dataOffset + uint32(len(data))
 
 	return &ObjectHandle{
-		Timestamp:   timestamp,
-		BlockNum:    blockNum,
-		Offset:      objOffset,
-		Size:        uint32(len(data)),
-		SpanCount:   1,
-		PartitionID: p.id,
+		Timestamp:     timestamp,
+		BlockNum:      blockNum,
+		Offset:        objOffset,
+		Size:          uint32(len(data)),
+		SpanCount:     1,
+		PartitionID:   p.id,
+		SchemaVersion: schemaVer,
 	}, nil
 }
 
 // writeSpanningObjectV2 writes an object that spans multiple blocks within the partition.
-func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte) (*ObjectHandle, error) {
+func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	p := s.currentPartition
 	usablePerBlock := p.blockSize - block.BlockHeaderSize
 	firstBlockUsable := usablePerBlock - block.ObjectHeaderSize
@@ -238,6 +242,7 @@ func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte) (*ObjectHand
 			DataLen:    uint32(len(data)), // Total size
 			Flags:      objFlags,
 			NextOffset: 0,
+			Reserved:   schemaVer,
 		}
 
 		if err := p.writeBlockHeader(currentBlock, blockHeader); err != nil {
@@ -318,12 +323,13 @@ func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte) (*ObjectHand
 	p.meta.WriteOffset = block.BlockHeaderSize + lastChunkSize
 
 	return &ObjectHandle{
-		Timestamp:   timestamp,
-		BlockNum:    firstBlock,
-		Offset:      block.BlockHeaderSize,
-		Size:        uint32(len(data)),
-		SpanCount:   spanCount,
-		PartitionID: p.id,
+		Timestamp:     timestamp,
+		BlockNum:      firstBlock,
+		Offset:        block.BlockHeaderSize,
+		Size:          uint32(len(data)),
+		SpanCount:     spanCount,
+		PartitionID:   p.id,
+		SchemaVersion: schemaVer,
 	}, nil
 }
 

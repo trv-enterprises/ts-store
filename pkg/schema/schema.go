@@ -264,6 +264,65 @@ func (ss *SchemaSet) CompactToFull(data []byte, version int) ([]byte, error) {
 	return json.Marshal(full)
 }
 
+// CompactToFullWide converts compact JSON to full JSON, null-filling every field
+// in the wide schema. The wide schema is the union of all schema versions, which —
+// because evolution is append-only — equals the current (latest) schema's field set.
+//
+// recordVersion is the schema version the record was written under; it is used to
+// map the record's compact indices back to field names. If recordVersion is 0, the
+// current version is used.
+//
+// Every field name in the current schema appears in the output. Fields the record
+// does not carry are emitted as JSON null. This gives readers a stable, wide column
+// set (Parquet/Avro semantics) regardless of which schema version wrote each record.
+func (ss *SchemaSet) CompactToFullWide(data []byte, recordVersion int) ([]byte, error) {
+	if recordVersion == 0 {
+		recordVersion = ss.CurrentVersion
+	}
+
+	if recordVersion == 0 {
+		return nil, ErrInvalidSchema
+	}
+
+	idxToName, ok := ss.indexToName[recordVersion]
+	if !ok {
+		return nil, fmt.Errorf("%w: version %d", ErrVersionMismatch, recordVersion)
+	}
+
+	// The current schema is the wide union of all versions (append-only guarantees it).
+	wide, ok := ss.Schemas[ss.CurrentVersion]
+	if !ok {
+		return nil, ErrInvalidSchema
+	}
+
+	var compact map[string]interface{}
+	if err := json.Unmarshal(data, &compact); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+
+	// Pre-seed every wide-schema field with null.
+	full := make(map[string]interface{}, len(wide.Fields))
+	for _, f := range wide.Fields {
+		full[f.Name] = nil
+	}
+
+	// Overlay the values the record actually carries, decoded via its own version.
+	for key, value := range compact {
+		idx, err := strconv.Atoi(key)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s", ErrInvalidCompactKey, key)
+		}
+		name, ok := idxToName[idx]
+		if !ok {
+			// Field not in this schema version - skip (allows forward compatibility).
+			continue
+		}
+		full[name] = value
+	}
+
+	return json.Marshal(full)
+}
+
 // ValidateData validates that JSON data conforms to the current schema.
 // Accepts either full or compact JSON format.
 func (ss *SchemaSet) ValidateData(data []byte) error {

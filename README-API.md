@@ -188,6 +188,29 @@ Returns:
 }
 ```
 
+### Get a Specific Schema Version
+```
+GET /api/stores/:store/schema?version=<N>
+X-API-Key: <api-key>
+```
+Returns the requested historical schema version (same shape as above), or `404` if that version does not exist.
+
+### List All Schema Versions
+```
+GET /api/stores/:store/schema/versions
+X-API-Key: <api-key>
+```
+Returns every schema version in ascending order:
+```json
+{
+  "current_version": 2,
+  "versions": [
+    {"version": 1, "fields": [ ... ]},
+    {"version": 2, "fields": [ ... ]}
+  ]
+}
+```
+
 ### Set/Update Schema
 ```
 PUT /api/stores/:store/schema
@@ -211,7 +234,22 @@ Content-Type: application/json
 - Input: `{"temperature": 72.5, "humidity": 45, "sensor_id": "room-1"}`
 - Stored: `{"1": 72.5, "2": 45, "3": "room-1"}`
 
-When retrieving data, the compact format is automatically expanded to full field names (default) or returned in compact format with `?format=compact`.
+**Per-record versioning:** Every record is tagged with the schema version it was written under. Read responses include that version as a `schema_version` field on each object, and it controls how the record is expanded.
+
+**Read-time expansion views:** When retrieving data from a schema store, the expansion view is selected with the `?schema_version=` query parameter (the legacy `?format=compact` is still honored):
+
+| Query | Result |
+|-------|--------|
+| (none) or `?schema_version=wide` | **Default.** Wide union schema: every field across all schema versions is present; fields a record lacks are returned as JSON `null`. (Parquet/Avro-style stable column set.) |
+| `?schema_version=record` | Each record is expanded against the exact version it was written under; fields added in later versions are simply absent (no `null`). |
+| `?schema_version=<N>` | Every record is expanded through schema version `N`; fields not in version `N` are dropped. |
+| `?format=compact` | Raw compact form with numeric indices, e.g. `{"1": 72.5, "2": 45}`. |
+
+Example — a record written under v1 `{temperature, humidity}` after the schema evolves to v2 adding `pressure`:
+- `wide` (default): `{"temperature": 72.5, "humidity": 45, "pressure": null}`
+- `record`: `{"temperature": 72.5, "humidity": 45}`
+
+> Aggregation queries (`?agg_window=`) always use record-version expansion (absent, not `null`) so missing fields don't skew counts and averages; the `?schema_version=` view does not affect aggregation.
 
 ## Swagger UI
 

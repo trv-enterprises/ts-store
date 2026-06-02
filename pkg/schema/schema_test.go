@@ -258,6 +258,125 @@ func TestSchemaEvolutionRejectModify(t *testing.T) {
 	}
 }
 
+// evolvedSchemaSet returns a SchemaSet with v1 {temperature,humidity} evolved to
+// v2 adding {pressure}.
+func evolvedSchemaSet(t *testing.T) *SchemaSet {
+	t.Helper()
+	ss := NewSchemaSet()
+	if _, err := ss.AddSchema(&Schema{Fields: []Field{
+		{Index: 1, Name: "temperature", Type: FieldTypeFloat32},
+		{Index: 2, Name: "humidity", Type: FieldTypeFloat32},
+	}}); err != nil {
+		t.Fatalf("AddSchema v1 failed: %v", err)
+	}
+	if _, err := ss.AddSchema(&Schema{Fields: []Field{
+		{Index: 1, Name: "temperature", Type: FieldTypeFloat32},
+		{Index: 2, Name: "humidity", Type: FieldTypeFloat32},
+		{Index: 3, Name: "pressure", Type: FieldTypeFloat32},
+	}}); err != nil {
+		t.Fatalf("AddSchema v2 failed: %v", err)
+	}
+	return ss
+}
+
+func TestCompactToFullWide_NullFillsOldRecord(t *testing.T) {
+	ss := evolvedSchemaSet(t)
+
+	// A v1 record lacks the v2-added "pressure" field.
+	v1Record := []byte(`{"1": 72.5, "2": 45}`)
+	full, err := ss.CompactToFullWide(v1Record, 1)
+	if err != nil {
+		t.Fatalf("CompactToFullWide failed: %v", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(full, &result); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if result["temperature"] != 72.5 {
+		t.Errorf("temperature: got %v want 72.5", result["temperature"])
+	}
+	if result["humidity"] != float64(45) {
+		t.Errorf("humidity: got %v want 45", result["humidity"])
+	}
+	// pressure must be present as an explicit null (wide schema).
+	if _, ok := result["pressure"]; !ok {
+		t.Error("pressure key missing; expected explicit null")
+	}
+	if result["pressure"] != nil {
+		t.Errorf("pressure: got %v want nil", result["pressure"])
+	}
+}
+
+func TestCompactToFullWide_V2RecordHasAllFields(t *testing.T) {
+	ss := evolvedSchemaSet(t)
+
+	v2Record := []byte(`{"1": 70, "2": 50, "3": 1013}`)
+	full, err := ss.CompactToFullWide(v2Record, 2)
+	if err != nil {
+		t.Fatalf("CompactToFullWide failed: %v", err)
+	}
+
+	var result map[string]interface{}
+	json.Unmarshal(full, &result)
+	if result["pressure"] != float64(1013) {
+		t.Errorf("pressure: got %v want 1013", result["pressure"])
+	}
+	if result["pressure"] == nil {
+		t.Error("pressure should be non-null for a v2 record")
+	}
+}
+
+func TestCompactToFullWide_VersionZeroUsesCurrent(t *testing.T) {
+	ss := evolvedSchemaSet(t)
+
+	v1Record := []byte(`{"1": 72.5, "2": 45}`)
+	full, err := ss.CompactToFullWide(v1Record, 0) // 0 -> current (2)
+	if err != nil {
+		t.Fatalf("CompactToFullWide failed: %v", err)
+	}
+	var result map[string]interface{}
+	json.Unmarshal(full, &result)
+	if _, ok := result["pressure"]; !ok {
+		t.Error("pressure key missing when falling back to current version")
+	}
+}
+
+func TestCompactToFullWide_UnknownIndexSkipped(t *testing.T) {
+	ss := evolvedSchemaSet(t)
+
+	// Index 9 is not in any schema version; it must be skipped, not error.
+	record := []byte(`{"1": 72.5, "9": "junk"}`)
+	full, err := ss.CompactToFullWide(record, 1)
+	if err != nil {
+		t.Fatalf("CompactToFullWide failed: %v", err)
+	}
+	var result map[string]interface{}
+	json.Unmarshal(full, &result)
+	if _, ok := result["9"]; ok {
+		t.Error("unknown index 9 should not appear in output")
+	}
+}
+
+// TestCompactToFull_StillAbsent is a regression guard: the original CompactToFull
+// must continue to OMIT fields a record lacks (absent, not null), since aggregation
+// relies on this behavior.
+func TestCompactToFull_StillAbsent(t *testing.T) {
+	ss := evolvedSchemaSet(t)
+
+	v1Record := []byte(`{"1": 72.5, "2": 45}`)
+	full, err := ss.CompactToFull(v1Record, 1)
+	if err != nil {
+		t.Fatalf("CompactToFull failed: %v", err)
+	}
+	var result map[string]interface{}
+	json.Unmarshal(full, &result)
+	if _, ok := result["pressure"]; ok {
+		t.Error("CompactToFull must omit absent fields (no null-fill)")
+	}
+}
+
 func TestValidateData(t *testing.T) {
 	ss := NewSchemaSet()
 	_, err := ss.AddSchema(&Schema{

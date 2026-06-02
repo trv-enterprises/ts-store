@@ -18,12 +18,13 @@ var (
 
 // ObjectHandle identifies a stored object.
 type ObjectHandle struct {
-	Timestamp   int64  `json:"timestamp"`
-	BlockNum    uint32 `json:"block_num"`
-	Offset      uint32 `json:"offset,omitempty"`       // Position within block (0 for V1 format)
-	Size        uint32 `json:"size"`
-	SpanCount   uint32 `json:"span_count,omitempty"`   // Number of blocks (1 = single block, 0 = legacy)
-	PartitionID uint32 `json:"partition_id,omitempty"` // V2: partition containing this object
+	Timestamp     int64  `json:"timestamp"`
+	BlockNum      uint32 `json:"block_num"`
+	Offset        uint32 `json:"offset,omitempty"`         // Position within block (0 for V1 format)
+	Size          uint32 `json:"size"`
+	SpanCount     uint32 `json:"span_count,omitempty"`     // Number of blocks (1 = single block, 0 = legacy)
+	PartitionID   uint32 `json:"partition_id,omitempty"`   // V2: partition containing this object
+	SchemaVersion uint32 `json:"schema_version,omitempty"` // Schema version the record was written under (0 = untagged/non-schema)
 }
 
 // MaxObjectSize returns the maximum object size for this store.
@@ -58,9 +59,16 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 	}
 	// ErrEmptyStore is OK - first insert
 
+	// Stamp the schema version this record is written under. Only meaningful for
+	// schema stores; stays 0 (untagged) for raw/binary/text/json stores.
+	var schemaVer uint32
+	if s.dataTypeLocked() == DataTypeSchema && s.schemaSet != nil {
+		schemaVer = uint32(s.schemaSet.CurrentVersion)
+	}
+
 	// Route to V2 if partitioned store
 	if s.isV2 {
-		h, err := s.putObjectV2(timestamp, data)
+		h, err := s.putObjectV2(timestamp, data, schemaVer)
 		if err == nil {
 			s.metrics.recordWrite(len(data))
 		}
@@ -76,13 +84,13 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 
 	// Case 1: Fits in remaining space of current block
 	if s.canFitInCurrentBlock(objSize) {
-		handle, err = s.appendToCurrentBlock(timestamp, data)
+		handle, err = s.appendToCurrentBlock(timestamp, data, schemaVer)
 	} else if objSize <= usableSpace {
 		// Case 2: Fits in a single new block
-		handle, err = s.writeToNewBlock(timestamp, data)
+		handle, err = s.writeToNewBlock(timestamp, data, schemaVer)
 	} else {
 		// Case 3: Spans multiple blocks
-		handle, err = s.writeSpanningObject(timestamp, data)
+		handle, err = s.writeSpanningObject(timestamp, data, schemaVer)
 	}
 
 	if err != nil {
@@ -305,12 +313,13 @@ func (s *Store) scanBlockForTimestampInPartition(p *Partition, blockNum uint32, 
 			}
 
 			return data, &ObjectHandle{
-				Timestamp:   timestamp,
-				BlockNum:    blockNum,
-				Offset:      offset,
-				Size:        objHeader.DataLen,
-				SpanCount:   spanCount,
-				PartitionID: p.id,
+				Timestamp:     timestamp,
+				BlockNum:      blockNum,
+				Offset:        offset,
+				Size:          objHeader.DataLen,
+				SpanCount:     spanCount,
+				PartitionID:   p.id,
+				SchemaVersion: objHeader.Reserved,
 			}, nil
 		}
 
@@ -372,11 +381,12 @@ func (s *Store) GetObjectByBlock(blockNum uint32) ([]byte, *ObjectHandle, error)
 		}
 
 		return data, &ObjectHandle{
-			Timestamp: objHeader.Timestamp,
-			BlockNum:  blockNum,
-			Offset:    block.BlockHeaderSize,
-			Size:      objHeader.DataLen,
-			SpanCount: 1,
+			Timestamp:     objHeader.Timestamp,
+			BlockNum:      blockNum,
+			Offset:        block.BlockHeaderSize,
+			Size:          objHeader.DataLen,
+			SpanCount:     1,
+			SchemaVersion: objHeader.Reserved,
 		}, nil
 	}
 
@@ -720,12 +730,13 @@ func (s *Store) scanBlockObjectsInPartition(p *Partition, blockNum uint32) ([]*O
 		}
 
 		handles = append(handles, &ObjectHandle{
-			Timestamp:   objHeader.Timestamp,
-			BlockNum:    blockNum,
-			Offset:      offset,
-			Size:        objHeader.DataLen,
-			SpanCount:   spanCount,
-			PartitionID: p.id,
+			Timestamp:     objHeader.Timestamp,
+			BlockNum:      blockNum,
+			Offset:        offset,
+			Size:          objHeader.DataLen,
+			SpanCount:     spanCount,
+			PartitionID:   p.id,
+			SchemaVersion: objHeader.Reserved,
 		})
 
 		if objHeader.NextOffset == 0 || objHeader.IsLastInBlock() {

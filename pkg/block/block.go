@@ -45,7 +45,12 @@ type ObjectHeader struct {
 	DataLen    uint32 // Length of this object's data (total size if spanning)
 	Flags      uint32 // Object flags
 	NextOffset uint32 // Offset to next object in block (0 = last or continuation)
-	Reserved   uint32 // Alignment/future use
+	// Reserved carries the schema version the record was written under (schema
+	// stores only). 0 means "untagged" — readers treat it as schema version 1,
+	// i.e. records written before per-record version tagging existed. For
+	// non-schema stores it is always 0. Stamped only on a record's first-block
+	// ObjectHeader (spanning continuation blocks carry no ObjectHeader).
+	Reserved uint32
 }
 
 const (

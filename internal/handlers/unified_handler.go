@@ -48,10 +48,11 @@ type ObjectHandleResponse struct {
 
 // DataResponse represents a single data object in responses.
 type DataResponse struct {
-	Timestamp int64  `json:"timestamp"`
-	BlockNum  uint32 `json:"block_num"`
-	Size      uint32 `json:"size"`
-	Data      any    `json:"data"` // string (base64 or text) or json.RawMessage
+	Timestamp     int64  `json:"timestamp"`
+	BlockNum      uint32 `json:"block_num"`
+	Size          uint32 `json:"size"`
+	SchemaVersion uint32 `json:"schema_version,omitempty"` // Schema version the record was written under (schema stores only)
+	Data          any    `json:"data"`                     // string (base64 or text) or json.RawMessage
 }
 
 // DataListResponse represents a list of data objects.
@@ -189,10 +190,10 @@ func (h *UnifiedHandler) GetByTime(c *gin.Context) {
 		return
 	}
 
-	// Check if client wants expanded format (default for schema stores)
-	expand := c.Query("format") != "compact"
+	// Determine the read-time expansion view (compact/wide/record/version).
+	spec := parseExpandSpec(c)
 
-	c.JSON(http.StatusOK, h.formatDataResponse(data, handle, st.DataType(), st, expand))
+	c.JSON(http.StatusOK, h.formatDataResponse(data, handle, st.DataType(), st, spec))
 }
 
 // DeleteByTime handles DELETE /api/stores/:store/data/time/:timestamp
@@ -258,7 +259,7 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 
 	// For list operations, include data by default (set include_data=false to exclude)
 	includeData := c.Query("include_data") != "false"
-	expand := c.Query("format") != "compact"
+	spec := parseExpandSpec(c)
 
 	objects := make([]DataResponse, 0, limit)
 	for _, handle := range handles {
@@ -281,8 +282,11 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 			BlockNum:  handle.BlockNum,
 			Size:      handle.Size,
 		}
+		if st.DataType() == store.DataTypeSchema {
+			obj.SchemaVersion = recordSchemaVersion(handle)
+		}
 		if includeData {
-			obj.Data = h.formatData(data, st.DataType(), st, expand)
+			obj.Data = h.formatData(data, st.DataType(), st, handle, spec)
 		}
 		objects = append(objects, obj)
 	}
@@ -355,7 +359,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	}
 
 	includeData := c.Query("include_data") != "false"
-	expand := c.Query("format") != "compact"
+	spec := parseExpandSpec(c)
 
 	objects := make([]DataResponse, 0, limit)
 	for _, handle := range handles {
@@ -378,8 +382,11 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 			BlockNum:  handle.BlockNum,
 			Size:      handle.Size,
 		}
+		if st.DataType() == store.DataTypeSchema {
+			obj.SchemaVersion = recordSchemaVersion(handle)
+		}
 		if includeData {
-			obj.Data = h.formatData(data, st.DataType(), st, expand)
+			obj.Data = h.formatData(data, st.DataType(), st, handle, spec)
 		}
 		objects = append(objects, obj)
 	}
@@ -495,7 +502,7 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	}
 
 	includeData := c.Query("include_data") == "true"
-	expand := c.Query("format") != "compact"
+	spec := parseExpandSpec(c)
 
 	objects := make([]DataResponse, 0, limit)
 	for _, handle := range handles {
@@ -518,8 +525,11 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 			BlockNum:  handle.BlockNum,
 			Size:      handle.Size,
 		}
+		if st.DataType() == store.DataTypeSchema {
+			obj.SchemaVersion = recordSchemaVersion(handle)
+		}
 		if includeData {
-			obj.Data = h.formatData(data, st.DataType(), st, expand)
+			obj.Data = h.formatData(data, st.DataType(), st, handle, spec)
 		}
 		objects = append(objects, obj)
 	}
@@ -530,19 +540,73 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	})
 }
 
-// formatDataResponse formats a single data response based on store type.
-func (h *UnifiedHandler) formatDataResponse(data []byte, handle *store.ObjectHandle, dataType store.DataType, st *store.Store, expand bool) DataResponse {
-	return DataResponse{
-		Timestamp: handle.Timestamp,
-		BlockNum:  handle.BlockNum,
-		Size:      handle.Size,
-		Data:      h.formatData(data, dataType, st, expand),
+// schemaView selects how a schema-store record is expanded on read.
+type schemaView int
+
+const (
+	viewCompact schemaView = iota // raw compact {"1":..,"2":..} (format=compact)
+	viewWide                      // wide union, null-filled (default)
+	viewRecord                    // expand against the record's own write version
+	viewVersion                   // expand against a fixed version (forceVersion)
+)
+
+// expandSpec captures the read-time expansion choice for a request, derived from
+// the ?format= and ?schema_version= query parameters.
+type expandSpec struct {
+	view         schemaView
+	forceVersion int // used only when view == viewVersion
+}
+
+// parseExpandSpec reads ?format= and ?schema_version= and returns the expansion spec.
+//
+//	?format=compact            -> raw compact bytes
+//	?schema_version=wide|""    -> wide null-filled union (default)
+//	?schema_version=record     -> each record's own write version (absent-not-null)
+//	?schema_version=<N>         -> force version N for every record
+func parseExpandSpec(c *gin.Context) expandSpec {
+	if c.Query("format") == "compact" {
+		return expandSpec{view: viewCompact}
+	}
+	switch sv := c.Query("schema_version"); sv {
+	case "", "wide":
+		return expandSpec{view: viewWide}
+	case "record":
+		return expandSpec{view: viewRecord}
+	default:
+		if n, err := strconv.Atoi(sv); err == nil && n > 0 {
+			return expandSpec{view: viewVersion, forceVersion: n}
+		}
+		// Unrecognized value falls back to the wide default.
+		return expandSpec{view: viewWide}
 	}
 }
 
-// formatData formats data based on store type.
-// For schema stores, if expand is true, converts compact format to full field names.
-func (h *UnifiedHandler) formatData(data []byte, dataType store.DataType, st *store.Store, expand bool) any {
+// formatDataResponse formats a single data response based on store type.
+func (h *UnifiedHandler) formatDataResponse(data []byte, handle *store.ObjectHandle, dataType store.DataType, st *store.Store, spec expandSpec) DataResponse {
+	resp := DataResponse{
+		Timestamp: handle.Timestamp,
+		BlockNum:  handle.BlockNum,
+		Size:      handle.Size,
+		Data:      h.formatData(data, dataType, st, handle, spec),
+	}
+	if dataType == store.DataTypeSchema {
+		resp.SchemaVersion = recordSchemaVersion(handle)
+	}
+	return resp
+}
+
+// recordSchemaVersion returns the schema version a record was written under,
+// mapping untagged records (0) to version 1 (they predate per-record tagging).
+func recordSchemaVersion(handle *store.ObjectHandle) uint32 {
+	if handle.SchemaVersion == 0 {
+		return 1
+	}
+	return handle.SchemaVersion
+}
+
+// formatData formats data based on store type. For schema stores the expansion
+// view is chosen by spec (compact/wide/record/version).
+func (h *UnifiedHandler) formatData(data []byte, dataType store.DataType, st *store.Store, handle *store.ObjectHandle, spec expandSpec) any {
 	switch dataType {
 	case store.DataTypeBinary:
 		return base64.StdEncoding.EncodeToString(data)
@@ -551,14 +615,24 @@ func (h *UnifiedHandler) formatData(data []byte, dataType store.DataType, st *st
 	case store.DataTypeJSON:
 		return json.RawMessage(data)
 	case store.DataTypeSchema:
-		if expand {
-			// Expand compact format to full field names
-			expanded, err := st.ExpandData(data, 0) // 0 = current version
-			if err == nil {
-				return json.RawMessage(expanded)
-			}
+		var (
+			expanded []byte
+			err      error
+		)
+		switch spec.view {
+		case viewCompact:
+			return json.RawMessage(data)
+		case viewRecord:
+			expanded, err = st.ExpandData(data, int(recordSchemaVersion(handle)))
+		case viewVersion:
+			expanded, err = st.ExpandData(data, spec.forceVersion)
+		default: // viewWide
+			expanded, err = st.ExpandDataWide(data, int(recordSchemaVersion(handle)))
 		}
-		// Return compact format if not expanding or expansion failed
+		if err == nil {
+			return json.RawMessage(expanded)
+		}
+		// Fall back to compact format if expansion failed.
 		return json.RawMessage(data)
 	default:
 		return base64.StdEncoding.EncodeToString(data)

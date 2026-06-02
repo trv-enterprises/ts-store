@@ -337,6 +337,7 @@ paths:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Timestamp'
         - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/SchemaVersionView'
       responses:
         '200':
           description: Data found
@@ -422,6 +423,7 @@ paths:
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/FilterIgnoreCase'
         - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/SchemaVersionView'
         - $ref: '#/components/parameters/AggWindow'
         - $ref: '#/components/parameters/AggFields'
         - $ref: '#/components/parameters/AggDefault'
@@ -458,6 +460,7 @@ paths:
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/FilterIgnoreCase'
         - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/SchemaVersionView'
       responses:
         '200':
           description: List of data objects
@@ -491,6 +494,7 @@ paths:
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/FilterIgnoreCase'
         - $ref: '#/components/parameters/Format'
+        - $ref: '#/components/parameters/SchemaVersionView'
         - $ref: '#/components/parameters/AggWindow'
         - $ref: '#/components/parameters/AggFields'
         - $ref: '#/components/parameters/AggDefault'
@@ -515,13 +519,20 @@ paths:
       tags:
         - Schema
       summary: Get schema
-      description: Returns the current schema for schema-type stores.
+      description: Returns the current schema for schema-type stores, or a specific historical version when the `version` query parameter is supplied.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
         - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
+        - name: version
+          in: query
+          required: false
+          description: Return this specific schema version instead of the current one.
+          schema:
+            type: integer
+            minimum: 1
       responses:
         '200':
           description: Schema found
@@ -530,7 +541,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/SchemaResponse'
         '400':
-          description: Store is not a schema-type store
+          description: Store is not a schema-type store, or invalid version
           content:
             application/json:
               schema:
@@ -538,7 +549,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: No schema defined
+          description: No schema defined, or requested version not found
           content:
             application/json:
               schema:
@@ -593,6 +604,48 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/schema/versions:
+    get:
+      tags:
+        - Schema
+      summary: List all schema versions
+      description: Returns every schema version for a schema-type store, in ascending order.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: Schema versions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current_version:
+                    type: integer
+                    example: 2
+                  versions:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SchemaResponse'
+        '400':
+          description: Store is not a schema-type store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No schema defined
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/stores/{store}/ws/connections:
     get:
@@ -950,6 +1003,19 @@ components:
         default: expanded
       description: For schema stores, 'compact' returns numeric field indices, 'expanded' returns field names
 
+    SchemaVersionView:
+      name: schema_version
+      in: query
+      schema:
+        type: string
+        default: wide
+      description: |
+        For schema stores, selects the read-time expansion view:
+        - `wide` (default): wide union schema across all versions; fields a record lacks are returned as JSON null
+        - `record`: expand each record against the version it was written under (missing fields absent, not null)
+        - `<N>` (integer): expand every record through schema version N
+        Ignored when `format=compact`. Does not affect aggregation queries.
+
     AggWindow:
       name: agg_window
       in: query
@@ -1186,6 +1252,11 @@ components:
           type: integer
           format: uint32
           example: 64
+        schema_version:
+          type: integer
+          format: uint32
+          description: For schema stores, the schema version this record was written under (omitted for non-schema stores).
+          example: 1
         data:
           description: |
             Data content (omitted if include_data=false).

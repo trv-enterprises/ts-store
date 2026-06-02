@@ -118,6 +118,25 @@ func (s *Store) ExpandData(data []byte, schemaVersion int) ([]byte, error) {
 	return s.schemaSet.CompactToFull(data, schemaVersion)
 }
 
+// ExpandDataWide converts compact data to full format with wide-schema null-fill:
+// the output includes every field across all schema versions, with JSON null for
+// fields the record does not carry. recordVersion is the schema version the record
+// was written under (0 = current). Only valid for schema stores.
+func (s *Store) ExpandDataWide(data []byte, recordVersion int) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.dataTypeLocked() != DataTypeSchema {
+		return nil, ErrSchemaNotSupported
+	}
+
+	if s.schemaSet == nil {
+		return nil, ErrSchemaRequired
+	}
+
+	return s.schemaSet.CompactToFullWide(data, recordVersion)
+}
+
 // saveSchemaLocked persists the schema to disk. Lock must be held.
 func (s *Store) saveSchemaLocked() error {
 	schemaPath := filepath.Join(s.path, schemaFileName)
