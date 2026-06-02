@@ -679,4 +679,38 @@ How data appears in retrieval responses depends on the store's data type:
 
 ---
 
+## Reading Rollup Stores
+
+A **rollup** store holds one aggregated record per closed time window of a source
+store (see [Rollups](README-API.md#rollups-two-tier-aggregation)). Reading one is
+the same as any schema store, with two things to know:
+
+**Timestamps are at the window END (half-open window).** A record covers
+`[label − window, label)` and is stamped at the window's end, aligned to UTC
+epoch boundaries. A `1h` record stamped `10:00:00Z` covers `09:00–10:00`; a raw
+sample at exactly `10:00:00.000Z` falls in the *next* window. Empty windows are
+skipped (gaps, not zero rows).
+
+**Every record has a `window_count` field** — the number of source samples in
+that window. It is what lets you re-aggregate to coarser tiers correctly:
+
+| To combine windows into a coarser one | Formula |
+|---|---|
+| `sum`, `min`, `max`, `count` | compose directly (`sum`→sum, `min`→min, …) |
+| `avg` | **count-weighted**: `Σ(window_avg × window_count) / Σ(window_count)` |
+
+A naive average of per-window averages is wrong when windows have different
+sample counts — always weight `avg` by `window_count`.
+
+Query responses for a rollup store echo a `rollup` descriptor so you know the
+window without a second call:
+
+```json
+{ "rollup": {"role": "rollup", "window": "1h", "rollup_of": "sensors"},
+  "objects": [ {"timestamp": ..., "data": {"cpu_avg": 22.5, "window_count": 3600}} ],
+  "count": 24 }
+```
+
+---
+
 [Back to main README](README.md) | [API Reference](README-API.md) | [Data Input](README-DATA-INPUT.md) | [Data Output](README-DATA-OUTPUT.md) | [CLI Reference](README-CLI.md)

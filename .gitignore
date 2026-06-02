@@ -43,3 +43,6 @@ Thumbs.db
 # Test data directories
 testdata/
 tmp/
+
+# Local Claude Code session/config files
+.claude/

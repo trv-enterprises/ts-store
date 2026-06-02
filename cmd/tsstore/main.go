@@ -265,6 +265,7 @@ func runServer(args []string) {
 	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManager)
 	mqttHandler := handlers.NewMQTTHandler(storeService.GetMQTTManager)
 	alertsHandler := handlers.NewAlertsHandler(storeService.GetAlertsManager)
+	rollupsHandler := handlers.NewRollupsHandler(storeService.GetRollupsManager)
 
 	// API routes
 	api := router.Group("/api")
@@ -342,6 +343,15 @@ func runServer(args []string) {
 				alertsGroup.POST("", alertsHandler.Create)
 				alertsGroup.GET("/:id", alertsHandler.Get)
 				alertsGroup.DELETE("/:id", alertsHandler.Delete)
+			}
+
+			// Rollup endpoints (scoped to the SOURCE store).
+			rollupsGroup := storeRoutes.Group("/rollups")
+			{
+				rollupsGroup.GET("", rollupsHandler.List)
+				rollupsGroup.POST("", rollupsHandler.Create)
+				rollupsGroup.GET("/:id", rollupsHandler.Get)
+				rollupsGroup.DELETE("/:id", rollupsHandler.Delete)
 			}
 		}
 	}
@@ -1125,10 +1135,16 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 	defer resp.Body.Close()
 
 	var storesResp struct {
-		Stores []string `json:"stores"`
+		Stores []struct {
+			Name string `json:"name"`
+		} `json:"stores"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&storesResp); err != nil {
 		return false
+	}
+	storeNames := make([]string, 0, len(storesResp.Stores))
+	for _, s := range storesResp.Stores {
+		storeNames = append(storeNames, s.Name)
 	}
 
 	type connectionInfo struct {
@@ -1164,7 +1180,7 @@ func statusFromServer(cfg *config.Config, jsonOutput bool) bool {
 
 	// For each store, we need to read files for size (API doesn't expose this)
 	// and query API for stats and connections
-	for _, storeName := range storesResp.Stores {
+	for _, storeName := range storeNames {
 		status := storeStatus{Name: storeName}
 
 		// Get stats from API (requires auth, so read from files instead)

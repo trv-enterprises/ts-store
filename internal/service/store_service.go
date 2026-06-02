@@ -7,14 +7,17 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/tviviano/ts-store/internal/alerts"
 	"github.com/tviviano/ts-store/internal/apikey"
 	"github.com/tviviano/ts-store/internal/config"
 	"github.com/tviviano/ts-store/internal/mqtt"
+	"github.com/tviviano/ts-store/internal/rollups"
 	"github.com/tviviano/ts-store/internal/ws"
 	"github.com/tviviano/ts-store/pkg/store"
 )
@@ -29,10 +32,11 @@ type StoreService struct {
 	mu           sync.RWMutex
 	cfg          *config.Config
 	keyManager   *apikey.Manager
-	stores         map[string]*store.Store    // storeName -> Store
-	wsManagers     map[string]*ws.Manager     // storeName -> WS Manager
-	mqttManagers   map[string]*mqtt.Manager   // storeName -> MQTT Manager
-	alertsManagers map[string]*alerts.Manager // storeName -> Alerts Manager
+	stores          map[string]*store.Store      // storeName -> Store
+	wsManagers      map[string]*ws.Manager       // storeName -> WS Manager
+	mqttManagers    map[string]*mqtt.Manager     // storeName -> MQTT Manager
+	alertsManagers  map[string]*alerts.Manager   // storeName -> Alerts Manager
+	rollupsManagers map[string]*rollups.Manager  // storeName -> Rollups Manager (keyed by SOURCE store)
 }
 
 // NewStoreService creates a new store service.
@@ -40,10 +44,11 @@ func NewStoreService(cfg *config.Config, keyManager *apikey.Manager) *StoreServi
 	return &StoreService{
 		cfg:            cfg,
 		keyManager:     keyManager,
-		stores:         make(map[string]*store.Store),
-		wsManagers:     make(map[string]*ws.Manager),
-		mqttManagers:   make(map[string]*mqtt.Manager),
-		alertsManagers: make(map[string]*alerts.Manager),
+		stores:          make(map[string]*store.Store),
+		wsManagers:      make(map[string]*ws.Manager),
+		mqttManagers:    make(map[string]*mqtt.Manager),
+		alertsManagers:  make(map[string]*alerts.Manager),
+		rollupsManagers: make(map[string]*rollups.Manager),
 	}
 }
 
@@ -143,6 +148,11 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 	s.alertsManagers[req.Name] = alertsManager
 	go alertsManager.LoadAndStart()
 
+	// Create and start rollups manager for this store (as a rollup SOURCE).
+	rollupsManager := rollups.NewManager(st, req.Name, s)
+	s.rollupsManagers[req.Name] = rollupsManager
+	go rollupsManager.LoadAndStart()
+
 	return &CreateStoreResponse{
 		Name:   req.Name,
 		APIKey: apiKey,
@@ -181,6 +191,11 @@ func (s *StoreService) Open(name string) error {
 	s.alertsManagers[name] = alertsManager
 	go alertsManager.LoadAndStart()
 
+	// Create and start rollups manager for this store (as a rollup SOURCE).
+	rollupsManager := rollups.NewManager(st, name, s)
+	s.rollupsManagers[name] = rollupsManager
+	go rollupsManager.LoadAndStart()
+
 	return nil
 }
 
@@ -192,6 +207,12 @@ func (s *StoreService) Close(name string) error {
 	st, ok := s.stores[name]
 	if !ok {
 		return ErrStoreNotOpen
+	}
+
+	// Stop rollups manager first (depends on store).
+	if manager, ok := s.rollupsManagers[name]; ok {
+		manager.Stop()
+		delete(s.rollupsManagers, name)
 	}
 
 	// Stop alerts manager first (depends on store).
@@ -220,10 +241,28 @@ func (s *StoreService) Close(name string) error {
 	return nil
 }
 
-// Delete deletes a store and its API keys.
+// Delete deletes a store and its API keys. Refuses if other (linked) stores
+// depend on this store's API keys — e.g. rollup targets that link here for auth.
 func (s *StoreService) Delete(name string) error {
+	if deps, err := s.keyManager.LinkedDependents(name); err == nil && len(deps) > 0 {
+		return fmt.Errorf("cannot delete %q: %d store(s) link to its API keys (%s); remove those rollups first",
+			name, len(deps), strings.Join(deps, ", "))
+	}
+	return s.deleteStoreInternal(name)
+}
+
+// deleteStoreInternal deletes a store without the linked-dependents guard. Used
+// by Delete (after the guard passes) and by the rollups Provider when recreating
+// a rollup target the caller owns.
+func (s *StoreService) deleteStoreInternal(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Stop rollups manager first (depends on store).
+	if manager, ok := s.rollupsManagers[name]; ok {
+		manager.Stop()
+		delete(s.rollupsManagers, name)
+	}
 
 	// Stop alerts manager first (depends on store).
 	if manager, ok := s.alertsManagers[name]; ok {
@@ -304,6 +343,11 @@ func (s *StoreService) GetOrOpen(name string) (*store.Store, error) {
 	s.alertsManagers[name] = alertsManager
 	go alertsManager.LoadAndStart()
 
+	// Create and start rollups manager for this store (as a rollup SOURCE).
+	rollupsManager := rollups.NewManager(st, name, s)
+	s.rollupsManagers[name] = rollupsManager
+	go rollupsManager.LoadAndStart()
+
 	return st, nil
 }
 
@@ -338,6 +382,47 @@ func (s *StoreService) ListAll() []string {
 		}
 	}
 	return names
+}
+
+// StoreInfo is the per-store summary returned by the enriched store listing.
+type StoreInfo struct {
+	Name     string `json:"name"`
+	DataType string `json:"data_type,omitempty"`
+	Role     string `json:"role"`                 // "source" | "rollup" | "store"
+	RollupOf string `json:"rollup_of,omitempty"`  // set when Role == "rollup"
+	Window   string `json:"window,omitempty"`     // set when Role == "rollup"
+}
+
+// ListAllInfo returns enriched info for every store on disk: data type and
+// rollup role/relationship. A store is "rollup" if it carries a rollup_meta
+// sidecar, "source" if it has at least one rollup config, else "store".
+func (s *StoreService) ListAllInfo() []StoreInfo {
+	names := s.ListAll()
+	out := make([]StoreInfo, 0, len(names))
+	for _, name := range names {
+		info := StoreInfo{Name: name, Role: "store"}
+
+		dir := filepath.Join(s.cfg.Store.BasePath, name)
+
+		// Rollup target? (cheap sidecar read, no store open)
+		if meta, err := store.ReadRollupMetaAt(dir); err == nil && meta != nil {
+			info.Role = "rollup"
+			info.RollupOf = meta.RollupOf
+			info.Window = meta.Window
+		} else if _, statErr := os.Stat(filepath.Join(dir, "rollup_configs.json")); statErr == nil {
+			// Has rollup configs -> it's a source. (Best-effort: presence of
+			// the file; an empty configs file still reads as "source".)
+			info.Role = "source"
+		}
+
+		// Data type (open lazily; stores stay cached open).
+		if st, err := s.GetOrOpen(name); err == nil {
+			info.DataType = st.DataType().String()
+		}
+
+		out = append(out, info)
+	}
+	return out
 }
 
 // Stats returns statistics for a store.
@@ -401,7 +486,19 @@ func (s *StoreService) CloseAll() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Stop all MQTT managers first
+	// Stop all rollups managers first
+	for name, manager := range s.rollupsManagers {
+		manager.Stop()
+		delete(s.rollupsManagers, name)
+	}
+
+	// Stop all alerts managers
+	for name, manager := range s.alertsManagers {
+		manager.Stop()
+		delete(s.alertsManagers, name)
+	}
+
+	// Stop all MQTT managers
 	for name, manager := range s.mqttManagers {
 		manager.Stop()
 		delete(s.mqttManagers, name)
@@ -443,4 +540,69 @@ func (s *StoreService) GetAlertsManager(name string) *alerts.Manager {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.alertsManagers[name]
+}
+
+// GetRollupsManager returns the rollups manager for a (source) store.
+func (s *StoreService) GetRollupsManager(name string) *rollups.Manager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.rollupsManagers[name]
+}
+
+// --- rollups.Provider implementation ---
+
+// GetOrOpenStore satisfies rollups.Provider.
+func (s *StoreService) GetOrOpenStore(name string) (*store.Store, error) {
+	return s.GetOrOpen(name)
+}
+
+// CreateRollupTarget creates a schema-store rollup target from cfg and links
+// its API keys to sourceStore, then opens it. Satisfies rollups.Provider.
+func (s *StoreService) CreateRollupTarget(cfg store.Config, sourceStore string) (*store.Store, error) {
+	s.mu.Lock()
+	// Fill in the base path the service owns.
+	cfg.Path = s.cfg.Store.BasePath
+	if _, ok := s.stores[cfg.Name]; ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("store %q already open", cfg.Name)
+	}
+	st, err := store.Create(cfg)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.stores[cfg.Name] = st
+	s.mu.Unlock()
+
+	// Link the target's API keys to the source (shared keys, no drift).
+	if err := s.keyManager.CreateLinkedKeyFile(cfg.Name, sourceStore); err != nil {
+		// Roll back the half-created store on link failure.
+		_ = s.deleteStoreInternal(cfg.Name)
+		return nil, fmt.Errorf("link target keys: %w", err)
+	}
+
+	// Start the auxiliary managers for the target like any opened store, but
+	// NOT a rollups manager (a target is not itself a source unless configured).
+	s.mu.Lock()
+	wsManager := ws.NewManager(st, cfg.Name)
+	s.wsManagers[cfg.Name] = wsManager
+	mqttManager := mqtt.NewManager(st, cfg.Name)
+	s.mqttManagers[cfg.Name] = mqttManager
+	alertsManager := alerts.NewManager(st, cfg.Name)
+	s.alertsManagers[cfg.Name] = alertsManager
+	rollupsManager := rollups.NewManager(st, cfg.Name, s)
+	s.rollupsManagers[cfg.Name] = rollupsManager
+	s.mu.Unlock()
+	go wsManager.LoadAndStart()
+	go mqttManager.LoadAndStart()
+	go alertsManager.LoadAndStart()
+	go rollupsManager.LoadAndStart()
+
+	return st, nil
+}
+
+// DeleteStore satisfies rollups.Provider (used on force_recreate). Bypasses the
+// linked-dependents guard since the rollup manager owns this target.
+func (s *StoreService) DeleteStore(name string) error {
+	return s.deleteStoreInternal(name)
 }

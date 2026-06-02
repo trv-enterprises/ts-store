@@ -251,6 +251,71 @@ Example — a record written under v1 `{temperature, humidity}` after the schema
 
 > Aggregation queries (`?agg_window=`) always use record-version expansion (absent, not `null`) so missing fields don't skew counts and averages; the `?schema_version=` view does not affect aggregation.
 
+## Rollups (two-tier aggregation)
+
+A **rollup** periodically aggregates a high-frequency **source** store into clock-aligned time windows and writes one record per closed window into a second **target** store. This gives you cheap long-range queries (e.g. a year of hourly averages) while keeping the raw high-frequency data for drill-down over short ranges.
+
+Rollup endpoints are scoped to the **source** store.
+
+### Create a rollup
+```
+POST /api/stores/:store/rollups
+X-API-Key: <api-key>
+Content-Type: application/json
+
+{
+  "window": "1h",                 // aggregation window (1m, 1h, 1d, ...)
+  "agg_fields": "cpu:avg+max,mem:avg",
+  "agg_default": "avg",           // optional: applied to numeric fields not listed
+  "retention": "1y",              // how long the target keeps rows (sizes the target)
+  "poll_interval": "30s",         // optional: how often the worker scans (default 30s)
+  "target_store": "",             // optional: defaults to "<source>-<window>"
+  "edge_tolerance": 0.10,         // optional: max over-retention fraction (picks partitions)
+  "force_recreate": false         // see "Changing a rollup" below
+}
+```
+
+On success the target store is **auto-created** if it doesn't exist:
+- It is a **schema store**; its schema is derived from the agg spec (e.g. `cpu_avg`, `cpu_max`, `mem`, plus a `window_count` field) and **auto-evolves** (append-only) if you later add aggregates.
+- It is **sized from `retention`**: capacity = `retention / window` records, with the partition count chosen so worst-case over-retention stays within `edge_tolerance`. Capacity is always rounded **up** (you get at least the requested retention).
+- Its **API keys are linked to the source** — the *same* API key authenticates both stores, and rotating the source's key applies to the target automatically.
+
+### Target store naming
+If `target_store` is omitted, the name is `<source>-<canonical-window>` (e.g. source `sensors`, window `60m` → `sensors-1h`; the window is normalized to its largest clean unit). Re-creating an identical rollup is idempotent (reuses the target). If a store of that name already exists but isn't a compatible rollup of this source, the request is rejected — pass an explicit `target_store` or `force_recreate`.
+
+### Record format & consuming rollups
+Each rollup record covers the **half-open window `[label − window, label)`** and is **timestamped at the window END** (UTC-epoch-aligned). So a `1h` record stamped `10:00:00Z` covers `09:00–10:00`; a raw sample at exactly `10:00:00.000Z` belongs to the *next* window.
+
+Every record carries **`window_count`** — the number of source samples in the window:
+```json
+{ "cpu_avg": 22.5, "cpu_max": 80.0, "mem": 41.2, "window_count": 3600 }
+```
+To roll minute/hourly data up further (e.g. to daily) **client-side**, `sum`/`min`/`max`/`count` compose directly, but **`avg` must be count-weighted**:
+```
+day_avg = Σ(window_avg × window_count) / Σ(window_count)
+```
+A naive average of the per-window averages is wrong when windows have different sample counts. (ts-store produces a single rollup tier; coarser tiers are the consumer's job, which is why `window_count` is always present.)
+
+Windows with **no source data are skipped** (no record written), so the series has gaps rather than zero rows.
+
+When you query a rollup target's data, the response envelope echoes a `rollup` descriptor so you know the window in the same call:
+```json
+{ "rollup": {"role": "rollup", "window": "1h", "rollup_of": "sensors"},
+  "objects": [ ... ], "count": 24 }
+```
+
+### List / get / delete
+```
+GET    /api/stores/:store/rollups          # list rollups on this source
+GET    /api/stores/:store/rollups/:id      # one rollup's status
+DELETE /api/stores/:store/rollups/:id      # remove rollup (target store left intact)
+```
+
+### Changing a rollup
+Rollup parameters can't be changed in place (a new window or agg spec invalidates already-written rows; a new retention changes the target's fixed capacity). To apply new parameters, POST with **`"force_recreate": true`** — the target is flushed/recreated, the cursor is reset, and the rollup is rebuilt from all source history still available. A parameter-changing POST **without** `force_recreate` is rejected.
+
+> Deleting a source store that has linked rollup targets is refused (the targets share its API keys). Remove the rollups first.
+
 ## Swagger UI
 
 Explore the API interactively using Swagger Editor:

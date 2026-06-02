@@ -1,0 +1,379 @@
+// Copyright (c) 2026 TRV Enterprises LLC
+// SPDX-License-Identifier: Apache-2.0
+// See LICENSE file for details.
+
+package rollups
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/tviviano/ts-store/internal/aggregation"
+	"github.com/tviviano/ts-store/internal/duration"
+	"github.com/tviviano/ts-store/pkg/store"
+)
+
+const (
+	defaultPollInterval = 30 * time.Second
+	// maxWindowsPerTick caps how many closed windows one tick processes so a
+	// cold start over a long backlog doesn't block the loop; the rest resume
+	// on the next tick.
+	maxWindowsPerTick = 500
+)
+
+// Status is the runtime status of a rollup worker.
+type Status struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name,omitempty"`
+	SourceStore   string    `json:"source_store"`
+	TargetStore   string    `json:"target_store"`
+	Window        string    `json:"window"`
+	State         string    `json:"state"` // running | stopped | error
+	LastWindowEnd int64     `json:"last_window_end,omitempty"`
+	WindowsWritten int64    `json:"windows_written"`
+	LastError     string    `json:"last_error,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// Worker rolls one source store's data into one target store, one closed
+// window at a time. Owned by the rollups Manager.
+type Worker struct {
+	mu sync.RWMutex
+
+	id          string
+	name        string
+	sourceName  string
+	targetName  string
+
+	source *store.Store
+	target *store.Store
+
+	windowNanos   int64
+	windowStr     string // canonical window, e.g. "1h"
+	aggConfig     *aggregation.Config
+	pollInterval  time.Duration
+	restartPolicy string
+	cursorPath    string
+
+	lastWindowEnd  int64
+	windowsWritten int64
+	state          string
+	lastError      string
+	createdAt      time.Time
+
+	stopCh chan struct{}
+	wg     sync.WaitGroup
+}
+
+// Options collects everything a Worker needs at construction.
+type Options struct {
+	ID         string
+	Name       string
+	SourceName string
+	TargetName string
+	Source     *store.Store
+	Target     *store.Store
+
+	WindowDuration string
+	AggFields      string
+	AggDefault     string
+	PollInterval   string
+	RestartPolicy  string // "resume" (default) | "now"
+	CursorPath     string
+	CreatedAt      time.Time
+}
+
+// NewWorker builds a Worker, parsing the window and aggregation spec up front
+// so creation fails fast on bad config.
+func NewWorker(opts Options) (*Worker, error) {
+	if opts.Source == nil || opts.Target == nil {
+		return nil, fmt.Errorf("rollups.NewWorker: Source and Target are required")
+	}
+
+	cw, window, err := canonicalWindow(opts.WindowDuration)
+	if err != nil {
+		return nil, err
+	}
+
+	fields, err := aggregation.ParseFieldAggs(opts.AggFields)
+	if err != nil {
+		return nil, err
+	}
+	numericMap := aggregation.BuildNumericMap(opts.Source.GetSchemaSet())
+	aggConfig, err := aggregation.NewConfig(window, fields, aggregation.AggFunc(opts.AggDefault), numericMap)
+	if err != nil {
+		return nil, err
+	}
+
+	poll := defaultPollInterval
+	if opts.PollInterval != "" {
+		d, err := duration.ParseDuration(opts.PollInterval)
+		if err != nil {
+			return nil, fmt.Errorf("invalid poll_interval %q: %w", opts.PollInterval, err)
+		}
+		poll = d
+	}
+
+	restart := opts.RestartPolicy
+	if restart == "" {
+		restart = "resume"
+	}
+
+	return &Worker{
+		id:            opts.ID,
+		name:          opts.Name,
+		sourceName:    opts.SourceName,
+		targetName:    opts.TargetName,
+		source:        opts.Source,
+		target:        opts.Target,
+		windowNanos:   window.Nanoseconds(),
+		windowStr:     cw,
+		aggConfig:     aggConfig,
+		pollInterval:  poll,
+		restartPolicy: restart,
+		cursorPath:    opts.CursorPath,
+		state:         "stopped",
+		createdAt:     opts.CreatedAt,
+		stopCh:        make(chan struct{}),
+	}, nil
+}
+
+// Start launches the background loop. The resume point is the max of: the
+// persisted cursor, and the target store's newest record (backstop against a
+// lost/stale cursor). If neither exists, the first tick starts from the
+// source's oldest record aligned to a window boundary.
+func (w *Worker) Start() {
+	w.mu.Lock()
+	resume := int64(0)
+	if w.restartPolicy == "resume" {
+		resume = readCursor(w.cursorPath)
+	}
+	if targetNewest := w.targetNewest(); targetNewest > resume {
+		resume = targetNewest
+	}
+	w.lastWindowEnd = resume
+	w.state = "running"
+	w.mu.Unlock()
+
+	w.wg.Add(1)
+	go w.runLoop()
+}
+
+// Stop signals the loop to exit and waits. Safe to call multiple times.
+func (w *Worker) Stop() {
+	w.mu.Lock()
+	if w.state == "stopped" {
+		w.mu.Unlock()
+		return
+	}
+	close(w.stopCh)
+	w.mu.Unlock()
+
+	w.wg.Wait()
+
+	w.mu.Lock()
+	w.state = "stopped"
+	w.mu.Unlock()
+}
+
+func (w *Worker) runLoop() {
+	defer w.wg.Done()
+
+	// Run once promptly, then on the ticker.
+	if err := w.rollupOnce(); err != nil {
+		w.setError(err.Error())
+	}
+
+	ticker := time.NewTicker(w.pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		case <-ticker.C:
+			if err := w.rollupOnce(); err != nil {
+				w.setError(err.Error())
+			}
+		}
+	}
+}
+
+// rollupOnce processes all newly-closed windows since the cursor: for each
+// window [wStart, wStart+window) it reads the source records, aggregates them,
+// and writes one record to the target stamped at the window END. Windows are
+// processed in ascending order so target writes stay strictly increasing.
+func (w *Worker) rollupOnce() error {
+	w.mu.RLock()
+	cursor := w.lastWindowEnd
+	w.mu.RUnlock()
+
+	now := time.Now().UnixNano()
+	// Last fully-closed window boundary (exclusive upper bound on window ends).
+	lastClosedEnd := (now / w.windowNanos) * w.windowNanos
+
+	nextStart := cursor
+	if nextStart == 0 {
+		oldest := w.sourceOldest()
+		if oldest <= 0 {
+			return nil // source empty; nothing to roll up yet
+		}
+		nextStart = (oldest / w.windowNanos) * w.windowNanos
+	}
+
+	processed := 0
+	for wStart := nextStart; wStart < lastClosedEnd; wStart += w.windowNanos {
+		if processed >= maxWindowsPerTick {
+			break // resume on next tick
+		}
+		select {
+		case <-w.stopCh:
+			return nil
+		default:
+		}
+
+		windowEnd := wStart + w.windowNanos
+		// Inclusive-both-ends range read; windowEnd-1 makes the upper bound
+		// EXCLUSIVE of windowEnd, realizing the half-open window [wStart, windowEnd).
+		handles, err := w.source.GetObjectsInRange(wStart, windowEnd-1, 0)
+		if err != nil {
+			return fmt.Errorf("range read [%d,%d): %w", wStart, windowEnd, err)
+		}
+
+		if len(handles) == 0 {
+			// Empty window: skip (no record). Still advance the cursor so we
+			// don't rescan this window forever.
+			w.advanceCursor(windowEnd)
+			processed++
+			continue
+		}
+
+		records := make([]aggregation.TimestampedRecord, 0, len(handles))
+		for _, h := range handles {
+			data, err := w.source.GetObject(h)
+			if err != nil {
+				continue
+			}
+			jsonData := data
+			if w.source.DataType() == store.DataTypeSchema {
+				if expanded, expErr := w.source.ExpandData(data, 0); expErr == nil {
+					jsonData = expanded
+				}
+			}
+			var parsed map[string]interface{}
+			if json.Unmarshal(jsonData, &parsed) == nil {
+				records = append(records, aggregation.TimestampedRecord{Timestamp: h.Timestamp, Data: parsed})
+			}
+		}
+
+		results := aggregation.AggregateBatch(records, w.aggConfig)
+		if len(results) == 0 {
+			w.advanceCursor(windowEnd)
+			processed++
+			continue
+		}
+		// One window's records yield one result; use the first (defensive).
+		res := results[0]
+		out := make(map[string]interface{}, len(res.Data)+1)
+		for k, v := range res.Data {
+			out[k] = v
+		}
+		out[windowCountField] = res.Count
+
+		payload, err := json.Marshal(out)
+		if err != nil {
+			return fmt.Errorf("marshal rollup record: %w", err)
+		}
+		compact, err := w.target.ValidateAndCompact(payload)
+		if err != nil {
+			return fmt.Errorf("compact rollup record: %w", err)
+		}
+		if _, err := w.target.PutObject(windowEnd, compact); err != nil {
+			return fmt.Errorf("write rollup record @%d: %w", windowEnd, err)
+		}
+
+		atomic.AddInt64(&w.windowsWritten, 1)
+		w.advanceCursor(windowEnd)
+		processed++
+	}
+
+	return nil
+}
+
+func (w *Worker) advanceCursor(windowEnd int64) {
+	w.mu.Lock()
+	w.lastWindowEnd = windowEnd
+	w.mu.Unlock()
+	w.writeCursor(windowEnd)
+}
+
+func (w *Worker) sourceOldest() int64 {
+	return w.source.Stats().OldestTimestamp
+}
+
+func (w *Worker) targetNewest() int64 {
+	return w.target.Stats().NewestTimestamp
+}
+
+func (w *Worker) setError(msg string) {
+	w.mu.Lock()
+	w.lastError = msg
+	w.state = "error"
+	w.mu.Unlock()
+}
+
+// writeCursor persists the last written window-end. No-op for "now" policy.
+func (w *Worker) writeCursor(ts int64) {
+	if w.restartPolicy != "resume" || w.cursorPath == "" {
+		return
+	}
+	tmp := w.cursorPath + ".tmp"
+	body := strconv.FormatInt(ts, 10) + "\n"
+	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
+		log.Printf("rollup %s: cursor write: %v", w.id, err)
+		return
+	}
+	if err := os.Rename(tmp, w.cursorPath); err != nil {
+		log.Printf("rollup %s: cursor rename: %v", w.id, err)
+	}
+}
+
+func readCursor(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	s := strings.TrimSpace(string(body))
+	ts, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return ts
+}
+
+// Status returns a snapshot for HTTP/CLI display.
+func (w *Worker) Status() Status {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return Status{
+		ID:             w.id,
+		Name:           w.name,
+		SourceStore:    w.sourceName,
+		TargetStore:    w.targetName,
+		Window:         w.windowStr,
+		State:          w.state,
+		LastWindowEnd:  w.lastWindowEnd,
+		WindowsWritten: atomic.LoadInt64(&w.windowsWritten),
+		LastError:      w.lastError,
+		CreatedAt:      w.createdAt,
+	}
+}
