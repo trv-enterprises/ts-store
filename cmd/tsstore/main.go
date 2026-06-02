@@ -74,6 +74,12 @@ func main() {
 			os.Exit(1)
 		}
 		runAlertsCommand(os.Args[2:])
+	case "rollups":
+		if len(os.Args) < 3 {
+			printRollupsUsage()
+			os.Exit(1)
+		}
+		runRollupsCommand(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
@@ -97,6 +103,7 @@ Commands:
   status    Show status of all stores
   stream    Create outbound data streams (WebSocket push, MQTT sink)
   alerts    Manage webhook, WS, and MQTT alert resources
+  rollups   Manage rollup aggregations (source -> aggregated target store)
   key       Manage API keys (requires device access)
   calc      Calculate storage footprint
   swagger   Open Swagger UI in browser to explore the API
