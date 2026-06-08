@@ -115,6 +115,33 @@ func TestCreateStoreRejectsUnknownField(t *testing.T) {
 	}
 }
 
+// TestCreateDuplicateStoreReturns409 confirms that re-creating an existing
+// store yields 409 Conflict (not 500). Idempotent callers — e.g. the
+// simulators deploy playbook — rely on the distinct status to treat
+// "already exists" as a no-op instead of a server fault.
+func TestCreateDuplicateStoreReturns409(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	body := `{"name": "dup-store"}`
+
+	first, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	first.Header.Set("Content-Type", "application/json")
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, first)
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("first create: expected 201, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	second, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	second.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, second)
+	if w2.Code != http.StatusConflict {
+		t.Errorf("duplicate create: expected 409, got %d: %s", w2.Code, w2.Body.String())
+	}
+}
+
 // TestCreateSchemaStore confirms the correct field name (`data_type`) actually
 // produces a schema store via the API.
 func TestCreateSchemaStore(t *testing.T) {

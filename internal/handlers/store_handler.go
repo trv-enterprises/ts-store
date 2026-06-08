@@ -7,10 +7,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/service"
+	"github.com/tviviano/ts-store/pkg/store"
 )
 
 // StoreHandler handles store management endpoints.
@@ -46,6 +48,13 @@ func (h *StoreHandler) Create(c *gin.Context) {
 
 	resp, err := h.storeService.Create(&req)
 	if err != nil {
+		// A store that already exists is a client-side conflict, not a server
+		// fault — return 409 so idempotent callers (e.g. the deploy playbook)
+		// can treat "already exists" as a no-op rather than a 500.
+		if errors.Is(err, store.ErrStoreExists) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
