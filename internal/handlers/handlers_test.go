@@ -96,6 +96,51 @@ func TestCreateStore(t *testing.T) {
 	}
 }
 
+// TestCreateStoreRejectsUnknownField guards the `type` vs `data_type` footgun:
+// posting an unknown field (e.g. `type` instead of `data_type`) must 400 rather
+// than silently dropping it and creating a JSON store.
+func TestCreateStoreRejectsUnknownField(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	body := `{"name": "typo-store", "type": "schema"}`
+	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for unknown field, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateSchemaStore confirms the correct field name (`data_type`) actually
+// produces a schema store via the API.
+func TestCreateSchemaStore(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	body := `{"name": "schema-store", "data_type": "schema"}`
+	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	st, err := storeService.Get("schema-store")
+	if err != nil {
+		t.Fatalf("Get schema-store: %v", err)
+	}
+	if got := st.DataType().String(); got != "schema" {
+		t.Errorf("Expected data type 'schema', got '%s'", got)
+	}
+}
+
 func TestAuthRequired(t *testing.T) {
 	router, storeService, _, _ := setupTestRouter(t)
 	defer storeService.CloseAll()

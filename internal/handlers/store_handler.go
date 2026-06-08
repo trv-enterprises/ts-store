@@ -6,6 +6,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -26,10 +27,20 @@ func NewStoreHandler(storeService *service.StoreService) *StoreHandler {
 
 // Create handles POST /api/stores
 // Creates a new store and returns the API key (shown only once).
+//
+// Binding is strict: unknown JSON fields are rejected with 400. This guards a
+// known footgun — posting `type` instead of `data_type` would otherwise be
+// silently dropped and yield a JSON store regardless of the intended type.
 func (h *StoreHandler) Create(c *gin.Context) {
 	var req service.CreateStoreRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
 		return
 	}
 
