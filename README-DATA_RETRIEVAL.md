@@ -110,6 +110,7 @@ GET /api/stores/:store/data/newest
 |----------------------|-------|--------|---------|-------------|
 | `limit`              | query | int    | 10      | Max records to return |
 | `since`              | query | string | --      | Relative duration from now (e.g., `2h`, `24h`, `7d`) |
+| `window`             | query | string | *1h / 48h* | **Only applies when `filter` is set.** Aggressive default lookback so a filtered scan doesn't read the whole store: `1h` plain, `48h` when `agg_window` is set. Override with a duration, or `window=0` for an unbounded full scan. An explicit `since` overrides it. Ignored without a filter. |
 | `include_data`       | query | bool   | true    | Set `false` to return metadata only |
 | `filter`             | query | string | --      | Substring match against serialized data |
 | `filter_ignore_case` | query | bool   | false   | Case-insensitive substring matching |
@@ -119,6 +120,22 @@ GET /api/stores/:store/data/newest
 | `agg_default`        | query | string | --      | Default aggregation function (e.g., `avg` or `avg,sum,min,max`) |
 
 **Response** (200): Same `DataListResponse` format as [List Oldest Data](#list-oldest-data). When aggregation parameters are provided, each object in the response contains aggregated values instead of raw data (see [Aggregation](#aggregation)).
+
+**Filtered scans and the `scan` field.** Because `filter` is applied after fetch, a filtered query with no time bound would read the whole store to return a few matches. So a filtered `/newest` with no explicit `since` defaults to an aggressive lookback window (`1h` plain, `48h` for aggregation) and includes a `scan` object describing it:
+
+```json
+{
+  "objects": [ ... ],
+  "count": 50,
+  "scan": { "window": "1h", "window_applied": true, "limit_reached": true }
+}
+```
+
+- `window` -- the effective lookback applied.
+- `window_applied` -- `true` when a window bounded the scan; `false` for `window=0` (full scan).
+- `limit_reached` -- `true` when the scan stopped at `limit` with matching records still unexamined *within the window*. It does **not** assert matches exist beyond the window (the scan never looked there). To search the full history, pass `window=0` or an explicit `since`.
+
+> **Behavior change.** Filtered `/newest` queries previously scanned the entire store. They now default to the last `1h` (`48h` with `agg_window`). Pass `window=0` or a time bound to restore a full scan. The `scan` field is additive; unfiltered queries are unchanged and omit it.
 
 ---
 

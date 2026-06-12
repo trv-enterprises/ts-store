@@ -65,11 +65,23 @@ type RollupInfo struct {
 	RollupOf string `json:"rollup_of"` // source store name
 }
 
+// ScanInfo describes how a filtered /newest scan was bounded, so a caller can
+// tell a short result set ("only 50 of your limit=100") apart from genuine
+// exhaustion, and learn it was a windowed (not full-store) scan. It is present
+// only on filtered /newest responses where a window was applied; the objects
+// array is untouched by its presence.
+type ScanInfo struct {
+	Window        string `json:"window"`         // effective lookback window, e.g. "1h" / "48h"
+	WindowApplied bool   `json:"window_applied"` // true when the aggressive/explicit window bounded the scan
+	LimitReached  bool   `json:"limit_reached"`  // true when the scan stopped at limit with records still unexamined
+}
+
 // DataListResponse represents a list of data objects.
 type DataListResponse struct {
 	Objects []DataResponse `json:"objects"`
 	Count   int            `json:"count"`
 	Rollup  *RollupInfo    `json:"rollup,omitempty"` // present only for rollup target stores
+	Scan    *ScanInfo      `json:"scan,omitempty"`   // present only for filtered /newest scans bounded by a window
 }
 
 // rollupInfoFor returns a RollupInfo for a store if it is a rollup target, else
@@ -319,9 +331,46 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	})
 }
 
+// Aggressive default lookback windows for a filtered /newest scan with no
+// explicit time bound. A filtered scan reads the whole store otherwise; these
+// keep "fetch a few recent matches" cheap. The aggregation default is wider so
+// minute/hourly/daily rollups aren't silently truncated.
+const (
+	defaultFilterWindow    = time.Hour      // plain filtered fetch
+	defaultFilterWindowAgg = 48 * time.Hour // filtered aggregation
+)
+
+// resolveFilterWindow determines the lookback window for a filtered /newest
+// query that has no explicit time bound. It reads the optional `window` param:
+// absent → the aggressive default (1h plain, 48h aggregation); `window=0` →
+// unbounded (full-store scan); otherwise the given duration. Returns the window
+// and whether a window should be applied (false only for window=0).
+func resolveFilterWindow(c *gin.Context, hasAgg bool) (time.Duration, bool, error) {
+	windowStr := c.Query("window")
+	if windowStr == "" {
+		if hasAgg {
+			return defaultFilterWindowAgg, true, nil
+		}
+		return defaultFilterWindow, true, nil
+	}
+	dur, err := ParseDuration(windowStr)
+	if err != nil {
+		return 0, false, err
+	}
+	if dur <= 0 {
+		// window=0: explicit unbounded full scan.
+		return 0, false, nil
+	}
+	return dur, true, nil
+}
+
 // ListNewest handles GET /api/stores/:store/data/newest
 // Supports optional ?since=<duration> parameter (e.g., since=2h, since=30m, since=7d)
 // Supports aggregation with ?agg_window=<duration> (e.g., agg_window=1m)
+// When ?filter= is set with no explicit time bound, an aggressive default
+// lookback window is applied (1h plain, 48h aggregation) so the filtered scan
+// does not read the whole store; override with ?window=<dur> or window=0 for
+// an unbounded scan. The window param is ignored without a filter.
 func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -353,6 +402,14 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 
 	var handles []*store.ObjectHandle
 
+	// A filtered scan is applied post-fetch, so without a time bound it would read
+	// the whole store to return a handful of matches. When the caller gives no
+	// explicit time bound, apply an aggressive default lookback window: 1h for a
+	// plain fetch, 48h for aggregation (so minute/hourly/daily rollups aren't
+	// silently truncated). The window param overrides the default; window=0 means
+	// unbounded (the old full-store scan). The window only matters when filtering.
+	var scan *ScanInfo
+
 	// Check for since parameter
 	sinceStr := c.Query("since")
 	if sinceStr != "" {
@@ -362,6 +419,24 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 			return
 		}
 		handles, err = st.GetObjectsSince(dur, fetchLimit)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else if filter != "" {
+		// Filtered, no explicit time bound: resolve the effective window.
+		effectiveWindow, windowApplied, err := resolveFilterWindow(c, hasAgg)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid window duration: " + err.Error()})
+			return
+		}
+		if windowApplied {
+			handles, err = st.GetObjectsSince(effectiveWindow, 0)
+			scan = &ScanInfo{Window: effectiveWindow.String(), WindowApplied: true}
+		} else {
+			// window=0: explicit unbounded full scan.
+			handles, err = st.GetNewestObjects(0)
+		}
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -376,7 +451,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 
 	// Aggregation path
 	if hasAgg {
-		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit)
+		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit, scan)
 		return
 	}
 
@@ -386,6 +461,11 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	objects := make([]DataResponse, 0, limit)
 	for _, handle := range handles {
 		if len(objects) >= limit {
+			// Stopped at the limit with records still unexamined: report it so a
+			// caller can tell this apart from genuine exhaustion of the window.
+			if scan != nil {
+				scan.LimitReached = true
+			}
 			break
 		}
 
@@ -417,6 +497,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 		Objects: objects,
 		Count:   len(objects),
 		Rollup:  rollupInfoFor(st),
+		Scan:    scan,
 	})
 }
 
@@ -518,9 +599,10 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 		}
 	}
 
-	// Aggregation path
+	// Aggregation path. /range takes explicit time bounds, so no scan window
+	// signal applies here.
 	if hasAgg {
-		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit)
+		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit, nil)
 		return
 	}
 
@@ -665,7 +747,7 @@ func (h *UnifiedHandler) formatData(data []byte, dataType store.DataType, st *st
 
 // aggregateAndRespond reads raw records, applies filtering, runs batch aggregation,
 // and writes the aggregated response. Only valid for JSON and schema stores.
-func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, handles []*store.ObjectHandle, filter string, filterIgnoreCase bool, aggWindowStr string, limit int) {
+func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, handles []*store.ObjectHandle, filter string, filterIgnoreCase bool, aggWindowStr string, limit int, scan *ScanInfo) {
 	dataType := st.DataType()
 	if dataType != store.DataTypeJSON && dataType != store.DataTypeSchema {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "aggregation is only supported for json and schema stores"})
@@ -696,9 +778,13 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 		return
 	}
 
-	// Safety cap on raw records
+	// Safety cap on raw records. If the cap truncates the input, the aggregation
+	// did not see every record in the window — surface that via the scan signal.
 	if len(handles) > maxRawRecordsForAgg {
 		handles = handles[:maxRawRecordsForAgg]
+		if scan != nil {
+			scan.LimitReached = true
+		}
 	}
 
 	// Build timestamped records, applying filter and expanding data
@@ -802,6 +888,7 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 	c.JSON(http.StatusOK, DataListResponse{
 		Objects: objects,
 		Count:   len(objects),
+		Scan:    scan,
 	})
 }
 

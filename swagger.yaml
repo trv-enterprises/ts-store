@@ -509,6 +509,13 @@ paths:
         Returns the N newest data objects with data. Supports relative time queries with `since` parameter.
         Use `include_data=false` to return metadata only.
 
+        **Filtered scans:** When `filter` is set without an explicit time bound, an aggressive
+        default lookback window is applied so the filtered scan does not read the whole store:
+        1h for a plain fetch, 48h when `agg_window` is set. Override with `window=<duration>`,
+        or `window=0` for an unbounded full-store scan; an explicit `since` overrides the default.
+        The response includes a `scan` object describing the window and whether the scan stopped
+        at `limit`. The `window` param is ignored without a filter.
+
         **Aggregation:** Add `agg_window` to aggregate data into time windows.
         Only supported for JSON and schema stores.
       security:
@@ -519,6 +526,7 @@ paths:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Since'
+        - $ref: '#/components/parameters/Window'
         - $ref: '#/components/parameters/IncludeData'
         - $ref: '#/components/parameters/Filter'
         - $ref: '#/components/parameters/FilterIgnoreCase'
@@ -1112,6 +1120,21 @@ components:
       description: Relative time duration (e.g., 30s, 15m, 2h, 7d, 1w)
       example: 2h
 
+    Window:
+      name: window
+      in: query
+      schema:
+        type: string
+      description: >-
+        Only applies when `filter` is set on /newest. A filtered scan is applied
+        post-fetch, so without a time bound it reads the whole store. When no
+        explicit time bound is given, an aggressive default lookback window keeps
+        the scan cheap: 1h for a plain fetch, 48h when `agg_window` is set.
+        Set `window=<duration>` to override, or `window=0` for an unbounded
+        full-store scan. An explicit `since` overrides this. Ignored without a
+        filter.
+      example: 1h
+
     IncludeData:
       name: include_data
       in: query
@@ -1433,6 +1456,25 @@ components:
             rollup_of:
               type: string
               example: sensors
+        scan:
+          type: object
+          description: >-
+            Present only on a filtered /newest query that was bounded by a
+            lookback window. Lets a caller tell a short result set apart from
+            genuine exhaustion, and learn the scan did not read the whole store.
+          properties:
+            window:
+              type: string
+              description: Effective lookback window applied to the filtered scan.
+              example: 1h
+            window_applied:
+              type: boolean
+              description: True when the aggressive/explicit window bounded the scan (false for window=0).
+              example: true
+            limit_reached:
+              type: boolean
+              description: True when the scan stopped at limit with matching records still unexamined within the window.
+              example: false
 
     CreateRollupRequest:
       type: object

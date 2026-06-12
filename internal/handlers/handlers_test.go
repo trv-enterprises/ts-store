@@ -7,9 +7,12 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/apikey"
@@ -287,7 +290,7 @@ func TestListNewest(t *testing.T) {
 	// Insert multiple entries
 	for i := 0; i < 5; i++ {
 		insertBody := `{"timestamp": ` + string(rune('0'+i)) + `000000000, "data": {"index": ` + string(rune('0'+i)) + `}}`
-		insertBody = `{"timestamp": ` + json.Number([]byte{byte('1'), byte('0'+i), '0', '0', '0', '0', '0', '0', '0', '0'}).String() + `, "data": {"index": ` + json.Number([]byte{byte('0' + i)}).String() + `}}`
+		insertBody = `{"timestamp": ` + json.Number([]byte{byte('1'), byte('0' + i), '0', '0', '0', '0', '0', '0', '0', '0'}).String() + `, "data": {"index": ` + json.Number([]byte{byte('0' + i)}).String() + `}}`
 
 		req, _ = http.NewRequest("POST", "/api/stores/list-test/data", bytes.NewBufferString(insertBody))
 		req.Header.Set("Content-Type", "application/json")
@@ -460,5 +463,227 @@ func TestDeleteByTimestamp(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Expected 404 after delete, got %d", w.Code)
+	}
+}
+
+// seedFilterWindowStore creates a JSON store and inserts records at fixed
+// offsets before now, each carrying {"tag": "match", "ts": <offset label>}.
+// Returns the store name and API key. Used by the filtered-window tests.
+func seedFilterWindowStore(t *testing.T, router *gin.Engine, name string, offsets []time.Duration) string {
+	t.Helper()
+
+	body := fmt.Sprintf(`{"name": %q}`, name)
+	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create %s: %d: %s", name, w.Code, w.Body.String())
+	}
+
+	var createResp service.CreateStoreResponse
+	json.Unmarshal(w.Body.Bytes(), &createResp)
+
+	// The store requires monotonically increasing timestamps, so insert
+	// oldest-first: sort offsets descending (largest offset = oldest).
+	sorted := append([]time.Duration(nil), offsets...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] > sorted[j] })
+
+	now := time.Now()
+	for _, off := range sorted {
+		ts := now.Add(-off).UnixNano()
+		insertBody, _ := json.Marshal(map[string]any{
+			"timestamp": ts,
+			"data":      map[string]any{"tag": "match", "off": off.String()},
+		})
+		req, _ = http.NewRequest("POST", "/api/stores/"+name+"/data", bytes.NewBuffer(insertBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", createResp.APIKey)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("insert at -%s: %d: %s", off, w.Code, w.Body.String())
+		}
+	}
+	return createResp.APIKey
+}
+
+func queryNewest(t *testing.T, router *gin.Engine, name, apiKey, query string) DataListResponse {
+	t.Helper()
+	req, _ := http.NewRequest("GET", "/api/stores/"+name+"/data/newest?"+query, nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("newest?%s: %d: %s", query, w.Code, w.Body.String())
+	}
+	var resp DataListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal newest?%s: %v", query, err)
+	}
+	return resp
+}
+
+// TestFilteredNewestDefaultWindow confirms a filtered /newest with no explicit
+// time bound only scans the last 1h: a matching record older than 1h is not
+// returned, and the response reports window_applied with the 1h window.
+func TestFilteredNewestDefaultWindow(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	// One match within 1h, one well outside it.
+	apiKey := seedFilterWindowStore(t, router, "fw-default", []time.Duration{30 * time.Minute, 6 * time.Hour})
+
+	resp := queryNewest(t, router, "fw-default", apiKey, "filter=match")
+
+	if resp.Count != 1 {
+		t.Errorf("expected 1 match within default 1h window, got %d", resp.Count)
+	}
+	if resp.Scan == nil {
+		t.Fatal("expected scan info on filtered windowed query, got nil")
+	}
+	if !resp.Scan.WindowApplied {
+		t.Error("expected window_applied=true")
+	}
+	if resp.Scan.Window != time.Hour.String() {
+		t.Errorf("expected window %q, got %q", time.Hour.String(), resp.Scan.Window)
+	}
+}
+
+// TestFilteredNewestWindowZeroUnbounded confirms window=0 restores the full
+// store scan: the >1h-old match is returned and window_applied is false.
+func TestFilteredNewestWindowZeroUnbounded(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedFilterWindowStore(t, router, "fw-zero", []time.Duration{30 * time.Minute, 6 * time.Hour})
+
+	resp := queryNewest(t, router, "fw-zero", apiKey, "filter=match&window=0")
+
+	if resp.Count != 2 {
+		t.Errorf("expected 2 matches with window=0 (full scan), got %d", resp.Count)
+	}
+	if resp.Scan != nil && resp.Scan.WindowApplied {
+		t.Errorf("expected window_applied=false for window=0, got scan=%+v", resp.Scan)
+	}
+}
+
+// TestFilteredNewestExplicitWindow confirms an explicit window widens the scan.
+func TestFilteredNewestExplicitWindow(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedFilterWindowStore(t, router, "fw-explicit", []time.Duration{30 * time.Minute, 6 * time.Hour, 50 * time.Hour})
+
+	resp := queryNewest(t, router, "fw-explicit", apiKey, "filter=match&window=12h")
+
+	if resp.Count != 2 {
+		t.Errorf("expected 2 matches within 12h window, got %d", resp.Count)
+	}
+	if resp.Scan == nil || resp.Scan.Window != (12*time.Hour).String() {
+		t.Errorf("expected window 12h, got scan=%+v", resp.Scan)
+	}
+}
+
+// TestFilteredNewestSinceOverridesWindow confirms an explicit since bound wins
+// over the aggressive default (and no scan window signal is emitted).
+func TestFilteredNewestSinceOverridesWindow(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedFilterWindowStore(t, router, "fw-since", []time.Duration{30 * time.Minute, 6 * time.Hour})
+
+	resp := queryNewest(t, router, "fw-since", apiKey, "filter=match&since=24h")
+
+	if resp.Count != 2 {
+		t.Errorf("expected 2 matches with since=24h, got %d", resp.Count)
+	}
+	if resp.Scan != nil {
+		t.Errorf("expected no scan signal when since overrides window, got %+v", resp.Scan)
+	}
+}
+
+// TestFilteredNewestAggDefaultWindow confirms the aggregation default is 48h:
+// a match at ~40h is included, one at ~50h is not.
+func TestFilteredNewestAggDefaultWindow(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedFilterWindowStore(t, router, "fw-agg", []time.Duration{40 * time.Hour, 50 * time.Hour})
+
+	resp := queryNewest(t, router, "fw-agg", apiKey, "filter=match&agg_window=1m")
+
+	if resp.Scan == nil {
+		t.Fatal("expected scan info on filtered agg query, got nil")
+	}
+	if resp.Scan.Window != (48 * time.Hour).String() {
+		t.Errorf("expected agg default window 48h, got %q", resp.Scan.Window)
+	}
+	// The 40h match aggregates into a window; the 50h match is outside 48h.
+	// Each surviving record becomes its own 1m aggregation window, so exactly
+	// one aggregated object is expected.
+	if resp.Count != 1 {
+		t.Errorf("expected 1 aggregated window (40h match only), got %d", resp.Count)
+	}
+}
+
+// TestFilteredNewestLimitReached confirms limit_reached is set when the scan
+// stops at the limit with matching records still unexamined within the window.
+func TestFilteredNewestLimitReached(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	// Five matches all within the default 1h window.
+	apiKey := seedFilterWindowStore(t, router, "fw-limit", []time.Duration{
+		1 * time.Minute, 2 * time.Minute, 3 * time.Minute, 4 * time.Minute, 5 * time.Minute,
+	})
+
+	resp := queryNewest(t, router, "fw-limit", apiKey, "filter=match&limit=2")
+
+	if resp.Count != 2 {
+		t.Errorf("expected 2 returned (limit), got %d", resp.Count)
+	}
+	if resp.Scan == nil || !resp.Scan.LimitReached {
+		t.Errorf("expected limit_reached=true, got scan=%+v", resp.Scan)
+	}
+}
+
+// TestFilteredNewestExhaustedNotLimitReached confirms limit_reached is false
+// when the window is exhausted below the limit.
+func TestFilteredNewestExhaustedNotLimitReached(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedFilterWindowStore(t, router, "fw-exhaust", []time.Duration{1 * time.Minute, 2 * time.Minute})
+
+	resp := queryNewest(t, router, "fw-exhaust", apiKey, "filter=match&limit=10")
+
+	if resp.Count != 2 {
+		t.Errorf("expected 2 matches, got %d", resp.Count)
+	}
+	if resp.Scan == nil {
+		t.Fatal("expected scan info, got nil")
+	}
+	if resp.Scan.LimitReached {
+		t.Error("expected limit_reached=false when window exhausted below limit")
+	}
+}
+
+// TestUnfilteredNewestNoScanSignal confirms an unfiltered /newest is unchanged:
+// the window param is ignored and no scan signal is emitted.
+func TestUnfilteredNewestNoScanSignal(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedFilterWindowStore(t, router, "fw-unfiltered", []time.Duration{30 * time.Minute, 6 * time.Hour})
+
+	// No filter, even with a window param — must behave as before (full newest).
+	resp := queryNewest(t, router, "fw-unfiltered", apiKey, "limit=10&window=1m")
+
+	if resp.Count != 2 {
+		t.Errorf("expected 2 records (window ignored without filter), got %d", resp.Count)
+	}
+	if resp.Scan != nil {
+		t.Errorf("expected no scan signal on unfiltered query, got %+v", resp.Scan)
 	}
 }
