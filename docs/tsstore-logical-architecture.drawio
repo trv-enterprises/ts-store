@@ -1,10 +1,246 @@
-<mxfile host="Electron" modified="2026-01-30T22:20:08.354Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/21.3.7 Chrome/112.0.5615.204 Electron/24.5.0 Safari/537.36" etag="O7wVk53kydRGSItze-r2" version="21.3.7" type="device">
-  <diagram name="Architecture Overview" id="architecture-overview">
-    <mxGraphModel dx="1774" dy="1187" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" background="#FFFFFF" math="0" shadow="0">
+<mxfile host="Electron" modified="2026-06-20T21:03:31.801Z" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/21.3.7 Chrome/112.0.5615.204 Electron/24.5.0 Safari/537.36" etag="WaoC5TveRcDMBoHw7HMj" version="21.3.7" type="device" pages="2">
+  <diagram name="Architecture v0.9.0" id="architecture-overview-v090">
+    <mxGraphModel dx="1163" dy="765" grid="0" gridSize="10" guides="0" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="1050" background="#FFFFFF" math="0" shadow="0">
+      <root>
+        <mxCell id="v2-0" />
+        <mxCell id="v2-1" parent="v2-0" />
+        <mxCell id="v2-title" value="ts-store logical architecture (v0.9.0)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=32;fontStyle=1" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="24" width="760" height="34" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-in-http" value="HTTP REST API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="v2-1" vertex="1">
+          <mxGeometry x="60" y="151" width="144" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-in-cli" value="CLI Commands&lt;br&gt;(serve/create/status&lt;br&gt;/stream/alerts/rollups/key)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="v2-1" vertex="1">
+          <mxGeometry x="60" y="216" width="144" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-in-sock" value="Unix Socket" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="v2-1" vertex="1">
+          <mxGeometry x="60" y="291" width="144" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-in-wspull" value="WebSocket Pull&#xa;(remote → ts-store ingest)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="v2-1" vertex="1">
+          <mxGeometry x="60" y="357" width="144" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-main" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=3;" parent="v2-1" vertex="1">
+          <mxGeometry x="280" y="100" width="700" height="470" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-main-title" value="ts-store" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;" parent="v2-1" vertex="1">
+          <mxGeometry x="570" y="108" width="120" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-grp-storage" value="Storage" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a5c00;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="146" width="120" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-v2" value="V2 Partitioned Storage&#xa;(partition-N, default)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="166" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-v1" value="V1 Circular Buffer&#xa;(legacy)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="462" y="166" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-index" value="Time-Based Index" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="624" y="166" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-recovery" value="Crash Recovery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="786" y="166" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-grp-data" value="Data model" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a5c00;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="226" width="120" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-types" value="Data Types&#xa;(binary/text/json/schema)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="246" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-schemaver" value="Schema Versioning&#xa;(per-record, append-only evolution)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="462" y="246" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-packed" value="Packed / Spanning&#xa;Objects" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="624" y="246" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-multistore" value="Multi-Store&#xa;Management" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="786" y="246" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-grp-query" value="Query" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a5c00;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="306" width="120" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-range" value="Range Queries&#xa;(+ filter window)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="326" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-aggregation" value="Read-Time Aggregation&#xa;(agg_window: avg/sum/min/max/count/last)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="462" y="326" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-auth" value="API Key Auth" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="624" y="326" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-grp-proc" value="Background processors (poll the store, fan out)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a5c00;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="392" width="360" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-alerts" value="Alerting&#xa;rules.Evaluator → cooldown → sink&#xa;(one poll worker per alert — see issue #4)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="412" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-rollups" value="Rollups (two-tier aggregation)&#xa;source store → time-windowed → target store&#xa;resumable per-rollup cursor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="v2-1" vertex="1">
+          <mxGeometry x="624" y="412" width="312" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-cap-note" value="Streaming (ws/mqtt connections) and Alerting (*_alerts) are separate concerns: streaming pushes every record; alerts fire only on rule matches." style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=10;fontStyle=2;fontColor=#555555;" parent="v2-1" vertex="1">
+          <mxGeometry x="300" y="488" width="636" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-grp-stream" value="Streaming outputs" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#6c3483;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="181" width="200" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-wspush" value="WebSocket Push&#xa;(ts-store → remote)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="203" width="160" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-mqttsink" value="MQTT Sink&#xa;(publish, QoS 1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="268" width="160" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-httpresp" value="HTTP Response" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="120" width="160" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-grp-alert" value="Alert sinks (on rule match)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#6c3483;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="335" width="200" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-webhook" value="Webhook Alert&#xa;(HTTP POST)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="357" width="160" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-wsalert" value="WebSocket Alert&#xa;(open-on-fire frame)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="426" width="160" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-out-mqttalert" value="MQTT Alert&#xa;(publish topic)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="v2-1" vertex="1">
+          <mxGeometry x="1070" y="494" width="160" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-arr-http" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.15;" parent="v2-1" source="v2-in-http" target="v2-main" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-arr-cli" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.3;" parent="v2-1" source="v2-in-cli" target="v2-main" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-arr-sock" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.45;" parent="v2-1" source="v2-in-sock" target="v2-main" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-arr-wspull" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.6;" parent="v2-1" source="v2-in-wspull" target="v2-main" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-arr-wspush" style="endArrow=classic;html=1;entryX=0;entryY=0.5;exitX=1;exitY=0.238;exitDx=0;exitDy=0;exitPerimeter=0;" parent="v2-1" target="v2-out-wspush" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="980" y="225.86" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="v2-arr-mqttsink" style="endArrow=classic;html=1;entryX=0;entryY=0.5;exitX=1;exitY=0.378;exitDx=0;exitDy=0;exitPerimeter=0;" parent="v2-1" target="v2-out-mqttsink" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="980" y="291.65999999999997" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="v2-arr-httpresp" style="endArrow=classic;html=1;exitX=1;exitY=0.36;entryX=0;entryY=0.5;" parent="v2-1" target="v2-out-httpresp" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="980" y="143.20000000000005" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="v2-arr-webhook" style="endArrow=classic;html=1;entryX=0;entryY=0.5;dashed=1;exitX=1;exitY=0.575;exitDx=0;exitDy=0;exitPerimeter=0;" parent="v2-1" target="v2-out-webhook" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="980" y="380.25" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="v2-arr-wsalert" style="endArrow=classic;html=1;entryX=0;entryY=0.5;dashed=1;exitX=1;exitY=0.721;exitDx=0;exitDy=0;exitPerimeter=0;" parent="v2-1" target="v2-out-wsalert" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="980" y="448.8700000000001" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="v2-arr-mqttalert" style="endArrow=classic;html=1;entryX=0;entryY=0.5;dashed=1;exitX=1;exitY=0.866;exitDx=0;exitDy=0;exitPerimeter=0;" parent="v2-1" target="v2-out-mqttalert" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="980" y="517.02" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="v2-files-cyl" value="" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#dae8fc;" parent="v2-1" vertex="1">
+          <mxGeometry x="280" y="610" width="960" height="380" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-files-label" value="Per-store on-disk layout  (&lt;base&gt;/&lt;store&gt;/)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;" parent="v2-1" vertex="1">
+          <mxGeometry x="560" y="616" width="400" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-files-core-grp" value="Core (always present)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a2c28;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="650" width="300" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-meta" value="meta.tsdb&#xa;(store metadata)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="672" width="170" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-partition" value="partition-N/&#xa;data.tsdb · index.tsdb · meta.tsdb&#xa;(V2 default; V1 keeps these at root)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="v2-1" vertex="1">
+          <mxGeometry x="505" y="672" width="240" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-keys" value="keys.json&#xa;(API keys)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="v2-1" vertex="1">
+          <mxGeometry x="760" y="672" width="170" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-schema" value="schema.json&#xa;(versioned; schema stores)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="945" y="672" width="170" height="46" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-files-stream-grp" value="Streaming connections (optional)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a2c28;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="730" width="300" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-wsconn" value="ws_connections.json" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="752" width="190" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-mqttconn" value="mqtt_connections.json" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="525" y="752" width="190" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-mqttcur" value="mqtt_&lt;id&gt;.cursor&#xa;(MQTT push resume)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="730" y="752" width="190" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-files-alert-grp" value="Alerting (optional)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a2c28;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="804" width="300" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-alerts" value="webhook_alerts.json · ws_alerts.json · mqtt_alerts.json" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="826" width="395" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-alertcur" value="&lt;type&gt;_alert_&lt;id&gt;.cursor&#xa;(per-alert resume; restart_policy=resume)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="730" y="826" width="290" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-files-rollup-grp" value="Rollups (optional; on rollup target stores)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=11;fontStyle=2;fontColor=#7a2c28;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="878" width="320" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-f-rollup" value="rollup_configs.json · rollup_meta.json · rollup_&lt;id&gt;.cursor" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="320" y="900" width="460" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-legend-box" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#666666;strokeDashArray=3 3;" parent="v2-1" vertex="1">
+          <mxGeometry x="60" y="430" width="170" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-legend-title" value="Legend" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;" parent="v2-1" vertex="1">
+          <mxGeometry x="70" y="434" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-in" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="v2-1" vertex="1">
+          <mxGeometry x="70" y="458" width="20" height="14" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-in-t" value="Input" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" parent="v2-1" vertex="1">
+          <mxGeometry x="96" y="455" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-out" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" parent="v2-1" vertex="1">
+          <mxGeometry x="70" y="478" width="20" height="14" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-out-t" value="Output" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" parent="v2-1" vertex="1">
+          <mxGeometry x="96" y="475" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-cap" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="v2-1" vertex="1">
+          <mxGeometry x="70" y="498" width="20" height="14" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-cap-t" value="Capability" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" parent="v2-1" vertex="1">
+          <mxGeometry x="96" y="495" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-proc" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="v2-1" vertex="1">
+          <mxGeometry x="70" y="518" width="20" height="14" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-proc-t" value="Background processor" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" parent="v2-1" vertex="1">
+          <mxGeometry x="96" y="515" width="130" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-file" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="v2-1" vertex="1">
+          <mxGeometry x="70" y="538" width="20" height="14" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-file-t" value="On-disk file" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;" parent="v2-1" vertex="1">
+          <mxGeometry x="96" y="535" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="v2-lg-dash-t" value="dashed = optional" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontStyle=2;fontSize=10;" parent="v2-1" vertex="1">
+          <mxGeometry x="70" y="556" width="150" height="18" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram name="Architecture v0.6.x" id="architecture-overview">
+    <mxGraphModel dx="1570" dy="1033" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="850" background="#FFFFFF" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="-bZDJhliSuToPgGMHOXt-2" value="" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#dae8fc;" vertex="1" parent="1">
+        <mxCell id="-bZDJhliSuToPgGMHOXt-2" value="" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#dae8fc;" parent="1" vertex="1">
           <mxGeometry x="215" y="449" width="700" height="200" as="geometry" />
         </mxCell>
         <mxCell id="main-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2;arcSize=5;" parent="1" vertex="1">
@@ -139,7 +375,7 @@
         <mxCell id="file-mqtt" value="mqtt_connections.json&#xa;(optional)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeDashArray=3 3;" parent="1" vertex="1">
           <mxGeometry x="645" y="566.5" width="151" height="51" as="geometry" />
         </mxCell>
-        <mxCell id="-bZDJhliSuToPgGMHOXt-4" value="ts-store logical architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=32;fontStyle=1" vertex="1" parent="1">
+        <mxCell id="-bZDJhliSuToPgGMHOXt-4" value="ts-store logical architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=32;fontStyle=1" parent="1" vertex="1">
           <mxGeometry x="177" y="52" width="776" height="30" as="geometry" />
         </mxCell>
       </root>

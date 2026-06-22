@@ -46,3 +46,6 @@ tmp/
 
 # Local Claude Code session/config files
 .claude/
+
+# draw.io autosave/backup files
+.$*.drawio.bkp

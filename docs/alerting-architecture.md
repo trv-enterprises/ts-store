@@ -1,6 +1,6 @@
 # Alerting Architecture
 
-This document describes the design of the ts-store alerting system as of v0.6.8.
+This document describes the design of the ts-store alerting system as of v0.9.0. The alerting design is unchanged since v0.6.8 — each alert still runs its own polling worker (see [Architecture](#architecture)). A future refactor to reduce the per-alert polling cost is tracked but not yet scheduled (see [Future work](#future-work)).
 
 ## Overview
 
@@ -260,6 +260,11 @@ Store: sensors
 
 ## Future work
 
+- **Reduce N×scan cost of per-alert polling** ([#4](https://github.com/trv-enterprises/ts-store/issues/4)): each alert runs its own poll loop, so N alerts on one store do N redundant `GetObjectsInRange` scans per second. This is fine at the current scale (1–3 alerts per store) but grows linearly with alert count — relevant because the dashboard's rule wizard creates one alert per rule. Issue #4 is the canonical tracking item and weighs two candidate approaches; **the choice is deferred until this is actually scheduled** (revisit when a store routinely has more than ~3 alerts, or sub-second alerting becomes a hard requirement):
+  - **Option A — in-process pub/sub event bus.** The store's write path publishes records; workers subscribe instead of polling. Eliminates polling entirely (~0ms latency, no cursor files) at the cost of write-path changes and a larger blast radius.
+  - **Option B — one shared poll loop per store.** Collapse N per-alert loops into a single `StoreEvaluator` that scans once per tick and fans records out to per-alert evaluators. Alerts-internal change only (no write-path changes), but keeps the up-to-1s latency and needs decisions on poll-interval reconciliation, per-alert filter handling, and a single per-store cursor.
+
+  Per-alert sinks, cooldowns, and dispatch semantics stay unchanged in either approach.
 - **Retry policies for webhook**: today, transient HTTP failures are not retried. A bounded exponential backoff inside `notify.Webhook` would be cheap to add.
 - **TLS / mTLS for MQTT**: `tcp://` brokers only. `ssl://` (TLS) and `wss://` (MQTT-over-WebSocket) need config knobs.
 - **Authentication on MQTT-over-WSS**: combine broker `wss://` URL with header auth for cloud-broker scenarios.
