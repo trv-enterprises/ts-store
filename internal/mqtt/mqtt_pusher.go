@@ -117,10 +117,24 @@ func (p *Pusher) Status() ConnectionStatus {
 		From:          p.config.From,
 		Status:        p.status,
 		CreatedAt:     p.config.CreatedAt,
-		LastTimestamp:  p.lastTimestamp,
+		LastTimestamp: p.lastTimestamp,
 		MessagesSent:  p.messagesSent,
 		Errors:        p.errors,
 		LastError:     p.lastError,
+		CursorMode:    cursorModeLabel(p.config.CursorPersistInterval),
+	}
+}
+
+// cursorModeLabel maps cursor_persist_interval to a human label for status:
+// >0 persists a cursor file, 0 is in-memory only, -1 is one-shot (no reconnect).
+func cursorModeLabel(interval int) string {
+	switch {
+	case interval > 0:
+		return "persist"
+	case interval < 0:
+		return "no-reconnect"
+	default:
+		return "memory"
 	}
 }
 

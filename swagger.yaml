@@ -56,6 +56,10 @@ tags:
     description: Schema management for schema-type stores
   - name: WebSocket
     description: Outbound WebSocket connection management (data streaming)
+  - name: MQTT
+    description: Outbound MQTT sink connection management (data streaming)
+  - name: Connections
+    description: Consolidated read-only view of a store's connections
   - name: Alerts
     description: Rule-based alerts with webhook, WS, or MQTT dispatch
 
@@ -683,6 +687,172 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+
+  /api/stores/{store}/connections:
+    get:
+      tags:
+        - Connections
+      summary: List all connections for a store (consolidated)
+      description: |
+        Returns every connection wired to the store in one call: WebSocket
+        connections (push = outbound, pull = inbound) and MQTT sink connections.
+        Add `include_alerts=true` to also return the configured alert rules with
+        their runtime counters. Saves calling `/ws/connections`,
+        `/mqtt/connections`, and `/alerts` separately.
+
+        A store with no connections of a given kind returns an empty array for
+        that key rather than an error.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - name: include_alerts
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: When true, include configured alert rules (with runtime counters) under the `alerts` key.
+      responses:
+        '200':
+          description: Consolidated connection list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ws:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WSConnectionStatus'
+                  mqtt:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MQTTConnectionStatus'
+                  alerts:
+                    type: array
+                    description: Present only when include_alerts=true.
+                    items:
+                      $ref: '#/components/schemas/AlertListEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/mqtt/connections:
+    get:
+      tags:
+        - MQTT
+      summary: List MQTT connections
+      description: Returns all MQTT sink connections for the store.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      responses:
+        '200':
+          description: List of MQTT connections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connections:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MQTTConnectionStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - MQTT
+      summary: Create MQTT connection
+      description: |
+        Create an outbound MQTT sink connection. ts-store connects to the broker
+        and publishes the store's records to the configured topic.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMQTTConnectionRequest'
+      responses:
+        '201':
+          description: Connection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MQTTConnectionStatus'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/stores/{store}/mqtt/connections/{connId}:
+    get:
+      tags:
+        - MQTT
+      summary: Get MQTT connection status
+      description: Returns detailed status of an MQTT connection.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Connection status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MQTTConnectionStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - MQTT
+      summary: Delete MQTT connection
+      description: Stop and remove an MQTT connection.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
+        - ApiKeyQuery: []
+      parameters:
+        - $ref: '#/components/parameters/StoreName'
+        - $ref: '#/components/parameters/ConnectionId'
+      responses:
+        '200':
+          description: Connection deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: connection deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/stores/{store}/ws/connections:
     get:
@@ -1904,6 +2074,108 @@ components:
           format: int64
         last_error:
           type: string
+
+    MQTTConnectionStatus:
+      type: object
+      description: Runtime status of an outbound MQTT sink connection.
+      properties:
+        id:
+          type: string
+          example: abc123
+        broker_url:
+          type: string
+          example: tcp://broker:1883
+        topic:
+          type: string
+          example: sensors/data
+        from:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [connecting, connected, disconnected, error]
+        created_at:
+          type: string
+          format: date-time
+        last_timestamp:
+          type: integer
+          format: int64
+          description: Last published timestamp
+        messages_sent:
+          type: integer
+          format: int64
+        errors:
+          type: integer
+          format: int64
+        last_error:
+          type: string
+        cursor_mode:
+          type: string
+          enum: [persist, memory, no-reconnect]
+          description: >-
+            How the connection resumes after a restart, derived from
+            cursor_persist_interval: persist (>0), memory (0), no-reconnect (-1).
+
+    CreateMQTTConnectionRequest:
+      type: object
+      required:
+        - broker_url
+        - topic
+      properties:
+        broker_url:
+          type: string
+          example: tcp://broker:1883
+        topic:
+          type: string
+          example: sensors/data
+        client_id:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        from:
+          type: integer
+          format: int64
+          description: Start timestamp — 0 = oldest, -1 = now.
+        include_timestamp:
+          type: boolean
+          description: 'Wrap the published payload as {"timestamp": ..., "data": ...}.'
+        cursor_persist_interval:
+          type: integer
+          description: "Seconds: >0 persist a cursor every N sec, 0 in-memory only (default), -1 one-shot / no auto-reconnect."
+        agg_window:
+          type: string
+          example: 1m
+        agg_fields:
+          type: string
+          example: temperature:avg,humidity:avg
+        agg_default:
+          type: string
+          example: avg
+
+    AlertListEntry:
+      type: object
+      description: >-
+        An alert's status joined with its runtime activity counters. Returned by
+        the alerts list and by the consolidated connections endpoint
+        (include_alerts=true).
+      allOf:
+        - $ref: '#/components/schemas/AlertStatus'
+        - type: object
+          properties:
+            records_evaluated:
+              type: integer
+              format: int64
+              description: Records the rule has evaluated.
+            records_matched:
+              type: integer
+              format: int64
+              description: Records that matched the rule.
+            alerts_dropped:
+              type: integer
+              format: int64
+              description: Fires whose sink.Send returned an error (delivery failures).
 
   responses:
     Unauthorized:

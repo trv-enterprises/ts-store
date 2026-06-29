@@ -54,13 +54,16 @@ func (h *AlertsHandler) Create(c *gin.Context) {
 	c.JSON(http.StatusCreated, status)
 }
 
-// List handles GET /api/stores/:store/alerts — returns all three types tagged.
+// List handles GET /api/stores/:store/alerts — returns all three types tagged,
+// each entry joining the alert's status with its runtime activity counters
+// (records_evaluated, records_matched, alerts_dropped) so a caller sees rule
+// health, not just configuration.
 func (h *AlertsHandler) List(c *gin.Context) {
 	mgr := h.resolveManager(c)
 	if mgr == nil {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"alerts": mgr.ListAlerts()})
+	c.JSON(http.StatusOK, gin.H{"alerts": mergeAlerts(mgr.ListAlerts(), mgr.AllMetrics())})
 }
 
 // Get handles GET /api/stores/:store/alerts/:id — returns the worker

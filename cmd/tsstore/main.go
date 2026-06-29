@@ -272,6 +272,8 @@ func runServer(args []string) {
 	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManager)
 	mqttHandler := handlers.NewMQTTHandler(storeService.GetMQTTManager)
 	alertsHandler := handlers.NewAlertsHandler(storeService.GetAlertsManager)
+	connectionsHandler := handlers.NewConnectionsHandler(
+		storeService.GetWSManager, storeService.GetMQTTManager, storeService.GetAlertsManager)
 	rollupsHandler := handlers.NewRollupsHandler(storeService.GetRollupsManager)
 
 	// API routes
@@ -323,6 +325,10 @@ func runServer(args []string) {
 			// WebSocket endpoint (inbound connections)
 			// Auth is via query param for WebSocket connections
 			storeRoutes.GET("/ws/write", wsHandler.Write)
+
+			// Consolidated read-only view: all WS + MQTT connections (and
+			// alerts with ?include_alerts=true) for the store in one call.
+			storeRoutes.GET("/connections", connectionsHandler.List)
 
 			// Outbound connection management
 			wsConns := storeRoutes.Group("/ws/connections")
@@ -1583,13 +1589,15 @@ func statusFromFiles(cfg *config.Config, jsonOutput bool) {
 // --- stream command ---
 
 func printStreamUsage() {
-	fmt.Println(`tsstore stream - Create outbound data streams
+	fmt.Println(`tsstore stream - Manage outbound data streams
 
 Usage:
   tsstore stream ws <store> [options]      Create a WebSocket push connection
   tsstore stream mqtt <store> [options]    Create an MQTT sink connection
+  tsstore stream list <store> [options]    List a store's connections (and --alerts)
 
-Use "tsstore stream ws -h" or "tsstore stream mqtt -h" for details.`)
+Use "tsstore stream ws -h", "tsstore stream mqtt -h", or
+"tsstore stream list -h" for details.`)
 }
 
 func printStreamWSUsage() {
@@ -1653,13 +1661,76 @@ func runStreamCommand(args []string) {
 		runStreamWS(args[1:])
 	case "mqtt":
 		runStreamMQTT(args[1:])
+	case "list":
+		runStreamList(args[1:])
 	case "-h", "--help":
 		printStreamUsage()
 	default:
-		fmt.Printf("Unknown stream type: %s (use 'ws' or 'mqtt')\n", subcommand)
+		fmt.Printf("Unknown stream type: %s (use 'ws', 'mqtt', or 'list')\n", subcommand)
 		printStreamUsage()
 		os.Exit(1)
 	}
+}
+
+// runStreamList lists all connections (WS + MQTT, and alerts with --alerts)
+// for a store via the consolidated GET /api/stores/:store/connections endpoint.
+func runStreamList(args []string) {
+	var storeName, apiKey string
+	includeAlerts := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help":
+			printStreamListUsage()
+			return
+		case "--api-key":
+			if i+1 < len(args) {
+				i++
+				apiKey = args[i]
+			}
+		case "--alerts":
+			includeAlerts = true
+		default:
+			if storeName == "" && !strings.HasPrefix(args[i], "-") {
+				storeName = args[i]
+			}
+		}
+	}
+
+	if storeName == "" {
+		fmt.Println("Error: store name is required")
+		printStreamListUsage()
+		os.Exit(1)
+	}
+
+	apiKey = resolveAPIKey(apiKey)
+	if apiKey == "" {
+		fmt.Println("Error: API key required (use --api-key or set TSSTORE_API_KEY)")
+		os.Exit(1)
+	}
+
+	cfg := loadStreamConfig()
+	path := fmt.Sprintf("/api/stores/%s/connections", storeName)
+	if includeAlerts {
+		path += "?include_alerts=true"
+	}
+	apiGet(cfg, apiKey, path)
+}
+
+func printStreamListUsage() {
+	fmt.Println(`Usage: tsstore stream list <store> [options]
+
+List the connections wired to a store — WebSocket (push/pull) and MQTT sink —
+in one call. Add --alerts to also include the configured alert rules with their
+runtime counters.
+
+Options:
+  --api-key <key>   Store API key (or set TSSTORE_API_KEY)
+  --alerts          Also include alert rules (records evaluated/matched, fired, dropped)
+
+Examples:
+  tsstore stream list my-store
+  tsstore stream list my-store --alerts --api-key $KEY`)
 }
 
 func runStreamWS(args []string) {

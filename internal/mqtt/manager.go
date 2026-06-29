@@ -57,6 +57,10 @@ type ConnectionStatus struct {
 	MessagesSent  int64     `json:"messages_sent,omitempty"`
 	Errors        int64     `json:"errors,omitempty"`
 	LastError     string    `json:"last_error,omitempty"`
+	// CursorMode reflects how this connection resumes after a restart, derived
+	// from cursor_persist_interval: "persist" (>0, writes a cursor file),
+	// "memory" (0, in-memory only), or "no-reconnect" (-1, one-shot).
+	CursorMode string `json:"cursor_mode,omitempty"`
 }
 
 // Connection is the interface for MQTT connections.
