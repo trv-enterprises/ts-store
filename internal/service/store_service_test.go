@@ -334,24 +334,16 @@ func TestCreateV2Store(t *testing.T) {
 	}
 }
 
-func TestCreateV1Store(t *testing.T) {
+func TestCreateV1StoreRejected(t *testing.T) {
 	svc := newTestService(t)
 	defer svc.CloseAll()
 
-	resp, err := svc.Create(&CreateStoreRequest{
+	_, err := svc.Create(&CreateStoreRequest{
 		Name:        "v1-store",
 		StorageType: "v1",
 	})
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-	if resp.Name != "v1-store" {
-		t.Errorf("unexpected name %q", resp.Name)
-	}
-
-	st, _ := svc.Get("v1-store")
-	if st.IsV2() {
-		t.Error("expected V1 store when storage_type=v1")
+	if err == nil {
+		t.Fatal("expected error when requesting storage_type=v1, got nil")
 	}
 }
 

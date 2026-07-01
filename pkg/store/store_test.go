@@ -14,7 +14,7 @@ import (
 func TestCreateAndOpen(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 
@@ -24,16 +24,13 @@ func TestCreateAndOpen(t *testing.T) {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
-	// Verify files exist
+	// Verify the global metadata file and the first partition exist.
 	storePath := filepath.Join(tmpDir, "test-store")
-	if _, err := os.Stat(filepath.Join(storePath, "data.tsdb")); os.IsNotExist(err) {
-		t.Error("Data file not created")
-	}
-	if _, err := os.Stat(filepath.Join(storePath, "index.tsdb")); os.IsNotExist(err) {
-		t.Error("Index file not created")
-	}
 	if _, err := os.Stat(filepath.Join(storePath, "meta.tsdb")); os.IsNotExist(err) {
 		t.Error("Meta file not created")
+	}
+	if _, err := os.Stat(filepath.Join(storePath, "partition-0")); os.IsNotExist(err) {
+		t.Error("First partition not created")
 	}
 
 	// Close store
@@ -50,9 +47,6 @@ func TestCreateAndOpen(t *testing.T) {
 
 	// Verify config matches
 	cfg2 := s2.Config()
-	if cfg2.NumBlocks != cfg.NumBlocks {
-		t.Errorf("NumBlocks mismatch: got %d, want %d", cfg2.NumBlocks, cfg.NumBlocks)
-	}
 	if cfg2.DataBlockSize != cfg.DataBlockSize {
 		t.Errorf("DataBlockSize mismatch: got %d, want %d", cfg2.DataBlockSize, cfg.DataBlockSize)
 	}
@@ -61,7 +55,7 @@ func TestCreateAndOpen(t *testing.T) {
 func TestCreateDuplicate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 
@@ -78,139 +72,10 @@ func TestCreateDuplicate(t *testing.T) {
 	}
 }
 
-func TestInsertAndFind(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "test-store"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	// Insert some data
-	baseTime := time.Now().UnixNano()
-	data := []byte("test data")
-
-	blockNum, err := s.Insert(baseTime, data)
-	if err != nil {
-		t.Fatalf("Failed to insert: %v", err)
-	}
-	if blockNum != 0 {
-		t.Errorf("Expected first block to be 0, got %d", blockNum)
-	}
-
-	// Find by time
-	found, err := s.FindBlockByTimeExact(baseTime)
-	if err != nil {
-		t.Fatalf("Failed to find by time: %v", err)
-	}
-	if found != blockNum {
-		t.Errorf("Found wrong block: got %d, want %d", found, blockNum)
-	}
-
-	// Read data back
-	readData, err := s.ReadBlockData(blockNum)
-	if err != nil {
-		t.Fatalf("Failed to read data: %v", err)
-	}
-	if string(readData) != string(data) {
-		t.Errorf("Data mismatch: got %s, want %s", readData, data)
-	}
-}
-
-func TestCircularWrap(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "test-store"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 10 // Small circle for testing
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	baseTime := time.Now().UnixNano()
-
-	// Insert more than NumBlocks entries
-	for i := 0; i < 15; i++ {
-		ts := baseTime + int64(i*1000000) // 1ms apart
-		_, err := s.Insert(ts, []byte("data"))
-		if err != nil {
-			t.Fatalf("Insert %d failed: %v", i, err)
-		}
-	}
-
-	// Verify oldest entries were reclaimed
-	stats := s.Stats()
-	t.Logf("Stats: Head=%d, Tail=%d", stats.HeadBlock, stats.TailBlock)
-
-	// The oldest 5 entries should have been reclaimed
-	// Try to find the first entry - it should not exist
-	_, err = s.FindBlockByTimeExact(baseTime)
-	if err != ErrTimestampNotFound {
-		t.Errorf("Expected oldest entry to be reclaimed, got err=%v", err)
-	}
-
-	// Newest entry should exist
-	newestTime := baseTime + int64(14*1000000)
-	_, err = s.FindBlockByTimeExact(newestTime)
-	if err != nil {
-		t.Errorf("Expected newest entry to exist: %v", err)
-	}
-}
-
-func TestRangeQuery(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "test-store"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	baseTime := time.Now().UnixNano()
-
-	// Insert 20 entries
-	for i := 0; i < 20; i++ {
-		ts := baseTime + int64(i*1000000000) // 1 second apart
-		_, err := s.Insert(ts, []byte("data"))
-		if err != nil {
-			t.Fatalf("Insert %d failed: %v", i, err)
-		}
-	}
-
-	// Query range: entries 5-15
-	startTime := baseTime + int64(5*1000000000)
-	endTime := baseTime + int64(15*1000000000)
-
-	blocks, err := s.FindBlocksInRange(startTime, endTime)
-	if err != nil {
-		t.Fatalf("Range query failed: %v", err)
-	}
-
-	expectedCount := 11 // entries 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
-	if len(blocks) != expectedCount {
-		t.Errorf("Expected %d blocks in range, got %d", expectedCount, len(blocks))
-	}
-}
-
 func TestDelete(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 
@@ -236,7 +101,7 @@ func TestBlockSizeValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Test invalid block size (not power of 2)
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "test-store"
 	cfg.Path = tmpDir
 	cfg.DataBlockSize = 1000 // Not power of 2
@@ -261,7 +126,7 @@ func TestMultipleStores(t *testing.T) {
 	// Create multiple stores
 	stores := make([]*Store, 3)
 	for i := 0; i < 3; i++ {
-		cfg := DefaultConfigV1()
+		cfg := DefaultConfig()
 		cfg.Name = "store-" + string(rune('a'+i))
 		cfg.Path = tmpDir
 
@@ -274,9 +139,9 @@ func TestMultipleStores(t *testing.T) {
 
 	// Insert into each store
 	for i, s := range stores {
-		ts := time.Now().UnixNano()
+		ts := time.Now().UnixNano() + int64(i)
 		data := []byte("store " + string(rune('a'+i)))
-		if _, err := s.Insert(ts, data); err != nil {
+		if _, err := s.PutObject(ts, data); err != nil {
 			t.Fatalf("Failed to insert into store %d: %v", i, err)
 		}
 	}
@@ -301,10 +166,9 @@ func TestMultipleStores(t *testing.T) {
 func TestReset(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "reset-test"
 	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
 
 	s, err := Create(cfg)
 	if err != nil {
@@ -335,14 +199,9 @@ func TestReset(t *testing.T) {
 
 	// Verify store is empty
 	stats = s.Stats()
-	if stats.HeadBlock != 0 || stats.TailBlock != 0 {
-		t.Errorf("Expected head/tail to be 0 after reset, got head=%d tail=%d",
-			stats.HeadBlock, stats.TailBlock)
-	}
 	if stats.OldestTimestamp != 0 || stats.NewestTimestamp != 0 {
 		t.Errorf("Expected no timestamps after reset")
 	}
-	t.Logf("After reset: HeadBlock=%d, TailBlock=%d", stats.HeadBlock, stats.TailBlock)
 
 	// Verify we can insert new data starting from any timestamp
 	_, err = s.PutObject(500, []byte("new data after reset"))

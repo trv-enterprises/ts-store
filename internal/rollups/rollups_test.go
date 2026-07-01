@@ -58,7 +58,7 @@ func (p *fakeProvider) DeleteStore(name string) error {
 // newSourceStore makes a schema source store with a single numeric "temp" field.
 func newSourceStore(t *testing.T, basePath, name string) *store.Store {
 	t.Helper()
-	cfg := store.DefaultConfigV1()
+	cfg := store.DefaultConfig()
 	cfg.Name = name
 	cfg.Path = basePath
 	cfg.DataType = store.DataTypeSchema
@@ -368,7 +368,7 @@ func TestCreateRollup_RejectsIncompatibleExistingTarget(t *testing.T) {
 	defer src.Close()
 
 	// Pre-create an unrelated store named like the derived target.
-	other := store.DefaultConfigV1()
+	other := store.DefaultConfig()
 	other.Name = "src-1h"
 	other.Path = base
 	other.DataType = store.DataTypeJSON

@@ -229,35 +229,6 @@ func (h *UnifiedHandler) GetByTime(c *gin.Context) {
 	c.JSON(http.StatusOK, h.formatDataResponse(data, handle, st.DataType(), st, spec))
 }
 
-// DeleteByTime handles DELETE /api/stores/:store/data/time/:timestamp
-func (h *UnifiedHandler) DeleteByTime(c *gin.Context) {
-	storeName := middleware.GetStoreName(c)
-
-	timestampStr := c.Param("timestamp")
-	timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid timestamp"})
-		return
-	}
-
-	st, err := h.storeService.GetOrOpen(storeName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	if err := st.DeleteObjectByTime(timestamp); err != nil {
-		if err == store.ErrTimestampNotFound {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "object deleted"})
-}
-
 // ListOldest handles GET /api/stores/:store/data/oldest
 func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)

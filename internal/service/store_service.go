@@ -61,7 +61,7 @@ type CreateStoreRequest struct {
 	DataType       string `json:"data_type,omitempty"`    // binary, text, json, schema (default: json)
 	NumPartitions  uint32 `json:"num_partitions,omitempty"` // V2: number of partitions (default: 6)
 	TotalSize      int64  `json:"total_size,omitempty"`     // V2: total size in bytes
-	StorageType    string `json:"storage_type,omitempty"`   // "v1" or "v2" (default: v2)
+	StorageType    string `json:"storage_type,omitempty"`   // "v2" (default; "v1" is rejected)
 }
 
 // CreateStoreResponse contains the result of store creation.
@@ -106,9 +106,9 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 		cfg.DataType = dataType
 	}
 
-	// V2 partitioned storage options
+	// V1 circular-buffer storage is no longer supported.
 	if req.StorageType == "v1" {
-		cfg.StorageType = store.StorageTypeV1Circular
+		return nil, errors.New("v1 storage is no longer supported")
 	}
 	if req.NumPartitions > 0 {
 		cfg.NumPartitions = req.NumPartitions

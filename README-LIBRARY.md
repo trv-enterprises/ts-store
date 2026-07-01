@@ -101,11 +101,11 @@ handles, err := s.GetOldestObjects(10)  // First 10 (from tail)
 handles, err := s.GetNewestObjects(10)  // Last 10 (from head)
 handles, err := s.GetObjectsInRange(startTime, endTime, limit)
 handles, err := s.GetObjectsSince(2*time.Hour, limit)  // Last 2 hours
-
-// Delete an object
-err := s.DeleteObject(handle)
-err := s.DeleteObjectByTime(timestamp)
 ```
+
+> Individual object deletion is not supported. The store is an append-only
+> circular ring: old data ages out automatically as new data is written. Use
+> `Reset()` to clear a store.
 
 ### ObjectHandle
 

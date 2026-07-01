@@ -15,7 +15,7 @@ import (
 func TestPutGetSmallObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "small-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -68,7 +68,7 @@ func TestPutGetSmallObject(t *testing.T) {
 func TestSpanningObject(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "spanning-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -147,7 +147,7 @@ func TestSpanningObject(t *testing.T) {
 func TestMaxObjectSize(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "max-size-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -188,201 +188,10 @@ func TestMaxObjectSize(t *testing.T) {
 	}
 }
 
-func TestDeleteObject(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "delete-object-test"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-	cfg.DataBlockSize = 512
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	// Store an object
-	data := make([]byte, 400)
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-
-	timestamp := time.Now().UnixNano()
-	handle, err := s.PutObject(timestamp, data)
-	if err != nil {
-		t.Fatalf("PutObject failed: %v", err)
-	}
-
-	// Delete the object
-	if err := s.DeleteObject(handle); err != nil {
-		t.Fatalf("DeleteObject failed: %v", err)
-	}
-
-	// Verify blocks were reclaimed (tail advanced)
-	stats := s.Stats()
-	t.Logf("After delete: HeadBlock=%d, TailBlock=%d", stats.HeadBlock, stats.TailBlock)
-
-	// Try to retrieve - should fail or return empty
-	_, err = s.GetObject(handle)
-	// After deletion the block may be reclaimed but reading an empty block is allowed
-	t.Logf("GetObject after delete returned: %v", err)
-}
-
-func TestDeleteObjectByTime(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "delete-by-time-test"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	data := []byte("test data")
-	timestamp := time.Now().UnixNano()
-
-	_, err = s.PutObject(timestamp, data)
-	if err != nil {
-		t.Fatalf("PutObject failed: %v", err)
-	}
-
-	// Delete by time
-	if err := s.DeleteObjectByTime(timestamp); err != nil {
-		t.Fatalf("DeleteObjectByTime failed: %v", err)
-	}
-
-	// Verify it's gone
-	_, _, err = s.GetObjectByTime(timestamp)
-	if err == nil {
-		t.Error("Expected error when getting deleted object by time")
-	}
-}
-
-func TestDeleteSpanningObject(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "delete-spanning-test"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-	cfg.DataBlockSize = 512
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	// Create spanning object (needs 3 blocks with 512 byte blocks)
-	usablePerBlock := cfg.DataBlockSize - block.BlockHeaderSize
-	dataSize := usablePerBlock*2 + 100
-	data := make([]byte, dataSize)
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-
-	timestamp := time.Now().UnixNano()
-	handle, err := s.PutObject(timestamp, data)
-	if err != nil {
-		t.Fatalf("PutObject failed: %v", err)
-	}
-
-	t.Logf("Spanning object spans %d blocks starting at block %d", handle.SpanCount, handle.BlockNum)
-
-	if handle.SpanCount < 2 {
-		t.Fatalf("Expected spanning object with multiple blocks, got %d", handle.SpanCount)
-	}
-
-	// Get stats before delete
-	statsBefore := s.Stats()
-	t.Logf("Before delete: HeadBlock=%d, TailBlock=%d", statsBefore.HeadBlock, statsBefore.TailBlock)
-
-	// Delete the spanning object
-	if err := s.DeleteObject(handle); err != nil {
-		t.Fatalf("DeleteObject failed: %v", err)
-	}
-
-	// Verify blocks were reclaimed (tail advanced)
-	statsAfter := s.Stats()
-	t.Logf("After delete: HeadBlock=%d, TailBlock=%d", statsAfter.HeadBlock, statsAfter.TailBlock)
-
-	// Verify object is no longer retrievable
-	_, err = s.GetObject(handle)
-	// After deletion, blocks are cleared, so reading should fail or return empty data
-	t.Logf("GetObject after delete returned: %v", err)
-}
-
-func TestDeleteLargeSpanningObject(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "delete-large-spanning-test"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-	cfg.DataBlockSize = 512
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	// Create large spanning object (needs 5+ blocks with 512 byte blocks)
-	usablePerBlock := cfg.DataBlockSize - block.BlockHeaderSize
-	dataSize := usablePerBlock*5 + 100 // Should span 6 blocks
-	data := make([]byte, dataSize)
-	for i := range data {
-		data[i] = byte(i % 256)
-	}
-
-	timestamp := time.Now().UnixNano()
-	handle, err := s.PutObject(timestamp, data)
-	if err != nil {
-		t.Fatalf("PutObject failed: %v", err)
-	}
-
-	t.Logf("Large spanning object: size=%d, spans %d blocks starting at block %d",
-		handle.Size, handle.SpanCount, handle.BlockNum)
-
-	if handle.SpanCount < 5 {
-		t.Fatalf("Expected spanning object with 5+ blocks, got %d", handle.SpanCount)
-	}
-
-	// Verify we can read it back correctly first
-	retrieved, err := s.GetObject(handle)
-	if err != nil {
-		t.Fatalf("GetObject failed before delete: %v", err)
-	}
-	if !bytes.Equal(data, retrieved) {
-		t.Fatalf("Data mismatch before delete")
-	}
-
-	// Get stats before delete
-	statsBefore := s.Stats()
-	t.Logf("Before delete: HeadBlock=%d, TailBlock=%d",
-		statsBefore.HeadBlock, statsBefore.TailBlock)
-
-	// Delete the spanning object
-	if err := s.DeleteObject(handle); err != nil {
-		t.Fatalf("DeleteObject failed: %v", err)
-	}
-
-	// Verify blocks were reclaimed (tail advanced)
-	statsAfter := s.Stats()
-	t.Logf("After delete: HeadBlock=%d, TailBlock=%d",
-		statsAfter.HeadBlock, statsAfter.TailBlock)
-}
-
 func TestMultipleObjects(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "multi-object-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -452,7 +261,7 @@ func TestMultipleObjects(t *testing.T) {
 func TestGetObjectByBlock(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "get-by-block-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -489,7 +298,7 @@ func TestGetObjectByBlock(t *testing.T) {
 func TestGetOldestNewestObjects(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "oldest-newest-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -537,7 +346,7 @@ func TestGetOldestNewestObjects(t *testing.T) {
 func TestGetObjectsInRange(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "range-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100
@@ -570,7 +379,7 @@ func TestGetObjectsInRange(t *testing.T) {
 func TestTimestampOutOfOrder(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "timestamp-order-test"
 	cfg.Path = tmpDir
 	cfg.NumBlocks = 100

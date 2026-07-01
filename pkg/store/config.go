@@ -21,7 +21,6 @@ var (
 	ErrTooFewPartitions       = errors.New("number of partitions must be at least 2")
 	ErrTooManyPartitions      = errors.New("number of partitions cannot exceed 16")
 	ErrPartitionFull          = errors.New("partition is full")
-	ErrDeleteNotSupportedV2   = errors.New("individual object deletion not supported in V2 partitioned stores")
 )
 
 // DataType represents the type of data stored in a store.
@@ -70,7 +69,6 @@ func ParseDataType(s string) (DataType, error) {
 type StorageType uint8
 
 const (
-	StorageTypeV1Circular    StorageType = 1 // V1: Single circular buffer
 	StorageTypeV2Partitioned StorageType = 2 // V2: Partitioned storage
 )
 
@@ -103,18 +101,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// DefaultConfigV1 returns a Config for V1 circular buffer storage.
-// Name and Path must still be set.
-func DefaultConfigV1() Config {
-	return Config{
-		NumBlocks:      1024,                 // 1K primary blocks
-		DataBlockSize:  4096,                 // 4KB data blocks
-		IndexBlockSize: 4096,                 // 4KB index blocks
-		DataType:       DataTypeJSON,         // JSON by default
-		StorageType:    StorageTypeV1Circular, // V1 circular buffer
-	}
-}
-
 // Validate checks that the configuration is valid.
 func (c *Config) Validate() error {
 	if c.Name == "" {
@@ -130,34 +116,25 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// V1-specific validation
-	if c.StorageType == StorageTypeV1Circular || c.StorageType == 0 {
-		if c.NumBlocks == 0 {
-			return ErrInvalidNumBlocks
-		}
+	// V2 is the only storage mode. Treat an unset StorageType (0) as V2.
+	if c.NumPartitions == 0 {
+		c.NumPartitions = defaultNumPartitions
 	}
-
-	// V2-specific validation
-	if c.StorageType == StorageTypeV2Partitioned {
-		if c.NumPartitions == 0 {
-			c.NumPartitions = defaultNumPartitions
-		}
-		if c.NumPartitions < 2 {
-			return ErrTooFewPartitions
-		}
-		if c.NumPartitions > maxPartitions {
-			return ErrTooManyPartitions
-		}
-		// If TotalSize is specified, calculate NumBlocks per partition
-		// Otherwise use NumBlocks to derive per-partition size
-		if c.TotalSize > 0 {
-			blocksPerPartition := c.TotalSize / int64(c.NumPartitions) / int64(c.DataBlockSize)
-			if blocksPerPartition == 0 {
-				return ErrInvalidNumBlocks
-			}
-		} else if c.NumBlocks == 0 {
+	if c.NumPartitions < 2 {
+		return ErrTooFewPartitions
+	}
+	if c.NumPartitions > maxPartitions {
+		return ErrTooManyPartitions
+	}
+	// If TotalSize is specified, calculate NumBlocks per partition
+	// Otherwise use NumBlocks to derive per-partition size
+	if c.TotalSize > 0 {
+		blocksPerPartition := c.TotalSize / int64(c.NumPartitions) / int64(c.DataBlockSize)
+		if blocksPerPartition == 0 {
 			return ErrInvalidNumBlocks
 		}
+	} else if c.NumBlocks == 0 {
+		return ErrInvalidNumBlocks
 	}
 
 	return nil

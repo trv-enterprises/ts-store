@@ -83,7 +83,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
-		fmt.Println("tsstore v0.10.0")
+		fmt.Println("tsstore v0.11.0-dev")
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -311,7 +311,6 @@ func runServer(args []string) {
 			{
 				data.POST("", unifiedHandler.Put)
 				data.GET("/time/:timestamp", unifiedHandler.GetByTime)
-				data.DELETE("/time/:timestamp", unifiedHandler.DeleteByTime)
 				data.GET("/oldest", unifiedHandler.ListOldest)
 				data.GET("/newest", unifiedHandler.ListNewest) // Supports ?since=2h
 				data.GET("/range", unifiedHandler.ListRange)   // Supports ?since=2h or ?start_time=X&end_time=Y

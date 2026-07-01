@@ -39,17 +39,13 @@ func putFull(t *testing.T, s *Store, ts int64, full string) *ObjectHandle {
 	return h
 }
 
-// newSchemaStore creates a schema store (V1 or V2) and sets schema v1.
+// newSchemaStore creates a schema store and sets schema v1. The v2 parameter is
+// retained for table-driven callers; V2 partitioned storage is the only mode.
 func newSchemaStore(t *testing.T, v2 bool) *Store {
 	t.Helper()
-	var cfg Config
-	if v2 {
-		cfg = DefaultConfig()
-		cfg.NumBlocks = 100
-		cfg.NumPartitions = 3
-	} else {
-		cfg = DefaultConfigV1()
-	}
+	cfg := DefaultConfig()
+	cfg.NumBlocks = 100
+	cfg.NumPartitions = 3
 	cfg.Name = "schema-ver-test"
 	cfg.Path = t.TempDir()
 	cfg.DataType = DataTypeSchema
@@ -93,7 +89,7 @@ func TestPutObject_StampsSchemaVersion(t *testing.T) {
 }
 
 func TestPutObject_NonSchemaStoreReservedZero(t *testing.T) {
-	cfg := DefaultConfigV1()
+	cfg := DefaultConfig()
 	cfg.Name = "json-store"
 	cfg.Path = t.TempDir()
 	cfg.DataType = DataTypeJSON

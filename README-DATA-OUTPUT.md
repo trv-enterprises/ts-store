@@ -71,13 +71,9 @@ GET /api/stores/:store/data/range?since=1h&filter=BUILDING+A&filter_ignore_case=
 
 Only objects containing the filter substring are returned.
 
-### Delete Data by Timestamp
-```
-DELETE /api/stores/:store/data/time/:timestamp
-X-API-Key: <api-key>
-```
-
-**Note:** This is a soft delete. The data is excluded from API responses and output streams, but remains on disk until the block is overwritten as the circular buffer wraps.
+> **Note:** There is no endpoint for deleting individual objects. The store is
+> an append-only circular ring — old data ages out automatically as new data is
+> written. Use `POST /api/stores/:store/reset` to clear a store.
 
 ## Outbound Push: WebSocket to Remote Server
 

@@ -26,13 +26,9 @@ func (s *Store) GetSchemaSet() *schema.SchemaSet {
 }
 
 // dataTypeLocked returns the store's data type without acquiring the lock.
-// Caller must hold s.mu (read or write). For V2 partitioned stores, the
-// DataType lives in globalMeta; for V1 it's in meta.
+// Caller must hold s.mu (read or write).
 func (s *Store) dataTypeLocked() DataType {
-	if s.isV2 {
-		return s.globalMeta.DataType
-	}
-	return s.meta.DataType
+	return s.globalMeta.DataType
 }
 
 // GetSchema returns the current schema version for schema stores.

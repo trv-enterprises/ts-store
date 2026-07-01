@@ -6,6 +6,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -484,48 +485,25 @@ func TestV2SpanningObjectPartitionBoundary(t *testing.T) {
 		stats.ActivePartitions, stats.CurrentPartition)
 }
 
-func TestV2BackwardCompatibility(t *testing.T) {
+// TestOpenV1StoreRejected verifies that opening a store whose meta file carries
+// the V1 magic number fails cleanly with ErrV1NotSupported (no crash).
+func TestOpenV1StoreRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a V1 store
-	cfgV1 := DefaultConfigV1()
-	cfgV1.Name = "v1-compat"
-	cfgV1.Path = tmpDir
-	cfgV1.NumBlocks = 100
-
-	s1, err := Create(cfgV1)
-	if err != nil {
-		t.Fatalf("Failed to create V1 store: %v", err)
+	// Hand-craft a minimal store directory with a V1 magic number in meta.tsdb.
+	storePath := filepath.Join(tmpDir, "v1-legacy")
+	if err := os.MkdirAll(storePath, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	metaBuf := make([]byte, 64)
+	binary.LittleEndian.PutUint64(metaBuf[0:8], magicNumber) // V1 magic "TSSTORE1"
+	if err := os.WriteFile(filepath.Join(storePath, "meta.tsdb"), metaBuf, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	// Insert data with V1
-	timestamp := time.Now().UnixNano()
-	data := []byte("v1 data")
-	_, err = s1.Insert(timestamp, data)
-	if err != nil {
-		t.Fatalf("V1 Insert failed: %v", err)
-	}
-	s1.Close()
-
-	// Re-open with generic Open (should detect V1)
-	s2, err := Open(tmpDir, "v1-compat")
-	if err != nil {
-		t.Fatalf("Failed to re-open V1 store: %v", err)
-	}
-	defer s2.Close()
-
-	// Verify it's still V1
-	if s2.IsV2() {
-		t.Error("V1 store should not be detected as V2")
-	}
-
-	// Verify data is accessible
-	readData, err := s2.ReadBlockData(0)
-	if err != nil {
-		t.Fatalf("Failed to read V1 data: %v", err)
-	}
-	if string(readData) != string(data) {
-		t.Errorf("V1 data mismatch: got %q, want %q", readData, data)
+	_, err := Open(tmpDir, "v1-legacy")
+	if err != ErrV1NotSupported {
+		t.Errorf("Open of V1 store: got %v, want ErrV1NotSupported", err)
 	}
 }
 

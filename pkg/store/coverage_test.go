@@ -279,11 +279,12 @@ func TestConfigValidation(t *testing.T) {
 		t.Error("Expected error for non-power-of-2 block size")
 	}
 
-	// Zero NumBlocks for V1
-	cfg = DefaultConfigV1()
+	// Zero NumBlocks with no TotalSize is invalid (V2 cannot size partitions)
+	cfg = DefaultConfig()
 	cfg.Name = "test"
 	cfg.Path = "/tmp"
 	cfg.NumBlocks = 0
+	cfg.TotalSize = 0
 	if err := cfg.Validate(); err != ErrInvalidNumBlocks {
 		t.Errorf("Expected ErrInvalidNumBlocks, got %v", err)
 	}
@@ -305,12 +306,13 @@ func TestConfigValidation(t *testing.T) {
 		t.Errorf("Expected valid config, got %v", err)
 	}
 
-	// Valid V1 config
-	cfg = DefaultConfigV1()
+	// Unset StorageType (0) is treated as V2 and validates.
+	cfg = DefaultConfig()
 	cfg.Name = "test"
 	cfg.Path = "/tmp"
+	cfg.StorageType = 0
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("Expected valid V1 config, got %v", err)
+		t.Errorf("Expected unset StorageType to validate as V2, got %v", err)
 	}
 }
 
@@ -391,41 +393,6 @@ func TestGetOldestTimestamp(t *testing.T) {
 	}
 	if oldest != 1000000 {
 		t.Errorf("GetOldestTimestamp() = %d, want 1000000", oldest)
-	}
-}
-
-func TestGetNewestTimestampV1(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "newest-ts-v1"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-	defer s.Close()
-
-	// Insert objects
-	baseTime := time.Now().UnixNano()
-	for i := 0; i < 5; i++ {
-		ts := baseTime + int64(i*1000000)
-		_, err := s.Insert(ts, []byte("data"))
-		if err != nil {
-			t.Fatalf("Insert failed: %v", err)
-		}
-	}
-
-	newest, err := s.GetNewestTimestamp()
-	if err != nil {
-		t.Fatalf("GetNewestTimestamp failed: %v", err)
-	}
-
-	expectedNewest := baseTime + int64(4*1000000)
-	if newest != expectedNewest {
-		t.Errorf("GetNewestTimestamp() = %d, want %d", newest, expectedNewest)
 	}
 }
 
@@ -640,57 +607,6 @@ func TestDeleteStore(t *testing.T) {
 }
 
 // --- Recovery tests ---
-
-func TestRecoverCleanStore(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cfg := DefaultConfigV1()
-	cfg.Name = "recover-clean"
-	cfg.Path = tmpDir
-	cfg.NumBlocks = 100
-
-	s, err := Create(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create store: %v", err)
-	}
-
-	// Insert some data
-	baseTime := time.Now().UnixNano()
-	for i := 0; i < 5; i++ {
-		ts := baseTime + int64(i*1000000)
-		_, err := s.Insert(ts, []byte("recovery data"))
-		if err != nil {
-			t.Fatalf("Insert failed: %v", err)
-		}
-	}
-	s.Close()
-
-	// Re-open the store - this triggers recovery
-	s2, err := Open(tmpDir, "recover-clean")
-	if err != nil {
-		t.Fatalf("Failed to re-open store: %v", err)
-	}
-	defer s2.Close()
-
-	// Verify data is still accessible
-	newest, err := s2.GetNewestTimestamp()
-	if err != nil {
-		t.Fatalf("GetNewestTimestamp failed: %v", err)
-	}
-
-	expectedNewest := baseTime + int64(4*1000000)
-	if newest != expectedNewest {
-		t.Errorf("Newest timestamp after recovery: got %d, want %d", newest, expectedNewest)
-	}
-
-	oldest, err := s2.GetOldestTimestamp()
-	if err != nil {
-		t.Fatalf("GetOldestTimestamp failed: %v", err)
-	}
-	if oldest != baseTime {
-		t.Errorf("Oldest timestamp after recovery: got %d, want %d", oldest, baseTime)
-	}
-}
 
 func TestRecoverV2CleanStore(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -58,7 +58,6 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.
 	data := storeRoutes.Group("/data")
 	data.POST("", unifiedHandler.Put)
 	data.GET("/time/:timestamp", unifiedHandler.GetByTime)
-	data.DELETE("/time/:timestamp", unifiedHandler.DeleteByTime)
 	data.GET("/oldest", unifiedHandler.ListOldest)
 	data.GET("/newest", unifiedHandler.ListNewest)
 	data.GET("/range", unifiedHandler.ListRange)
@@ -423,12 +422,14 @@ func TestDeleteStore(t *testing.T) {
 	}
 }
 
-func TestDeleteByTimestamp(t *testing.T) {
+// TestDeleteByTimestampRemoved verifies that the delete-by-timestamp endpoint
+// no longer exists (individual object deletion was a V1-only capability) and
+// that the object remains retrievable.
+func TestDeleteByTimestampRemoved(t *testing.T) {
 	router, storeService, _, _ := setupTestRouter(t)
 	defer storeService.CloseAll()
 
-	// Create a V1 store (delete is only supported in V1)
-	body := `{"name": "del-time-test", "storage_type": "v1"}`
+	body := `{"name": "del-time-test"}`
 	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -445,24 +446,24 @@ func TestDeleteByTimestamp(t *testing.T) {
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	// Delete by timestamp
+	// The DELETE route is gone, so the router has no handler for it.
 	req, _ = http.NewRequest("DELETE", "/api/stores/del-time-test/data/time/1000000000", nil)
 	req.Header.Set("X-API-Key", createResp.APIKey)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("Delete by timestamp failed: %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Delete-by-timestamp route should be removed (404), got %d", w.Code)
 	}
 
-	// Verify it's gone
+	// Verify the object is still present.
 	req, _ = http.NewRequest("GET", "/api/stores/del-time-test/data/time/1000000000", nil)
 	req.Header.Set("X-API-Key", createResp.APIKey)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("Expected 404 after delete, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected object to remain retrievable, got %d", w.Code)
 	}
 }
 

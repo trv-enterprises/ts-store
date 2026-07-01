@@ -89,8 +89,8 @@ type StoreMetrics struct {
 }
 
 // initMetrics seeds the counters' since timestamp to now. Called by
-// every Store constructor (createV1, createV2, openV1, openV2) so the
-// /metrics endpoint reports a sensible "since" value from process start.
+// every Store constructor (createV2, openV2) so the /metrics endpoint
+// reports a sensible "since" value from process start.
 func (s *Store) initMetrics() {
 	s.metrics.mu.Lock()
 	s.metrics.since = time.Now().UTC()

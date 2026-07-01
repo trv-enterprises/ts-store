@@ -47,13 +47,7 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 	}
 
 	// Validate timestamp is monotonically increasing
-	var newestTs int64
-	var tsErr error
-	if s.isV2 {
-		newestTs, tsErr = s.getNewestTimestampV2()
-	} else {
-		newestTs, tsErr = s.getNewestTimestampLocked()
-	}
+	newestTs, tsErr := s.getNewestTimestampV2()
 	if tsErr == nil && timestamp <= newestTs {
 		return nil, ErrTimestampOutOfOrder
 	}
@@ -66,43 +60,11 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 		schemaVer = uint32(s.schemaSet.CurrentVersion)
 	}
 
-	// Route to V2 if partitioned store
-	if s.isV2 {
-		h, err := s.putObjectV2(timestamp, data, schemaVer)
-		if err == nil {
-			s.metrics.recordWrite(len(data))
-		}
-		return h, err
+	h, err := s.putObjectV2(timestamp, data, schemaVer)
+	if err == nil {
+		s.metrics.recordWrite(len(data))
 	}
-
-	// V1 circular buffer path
-	objSize := block.ObjectHeaderSize + uint32(len(data))
-	usableSpace := s.config.DataBlockSize - block.BlockHeaderSize
-
-	var handle *ObjectHandle
-	var err error
-
-	// Case 1: Fits in remaining space of current block
-	if s.canFitInCurrentBlock(objSize) {
-		handle, err = s.appendToCurrentBlock(timestamp, data, schemaVer)
-	} else if objSize <= usableSpace {
-		// Case 2: Fits in a single new block
-		handle, err = s.writeToNewBlock(timestamp, data, schemaVer)
-	} else {
-		// Case 3: Spans multiple blocks
-		handle, err = s.writeSpanningObject(timestamp, data, schemaVer)
-	}
-
-	if err != nil {
-		return nil, err
-	}
-
-	if err := s.writeMetaLocked(); err != nil {
-		return nil, err
-	}
-
-	s.metrics.recordWrite(len(data))
-	return handle, nil
+	return h, err
 }
 
 // PutObjectNow stores an object with the current timestamp.
@@ -119,21 +81,7 @@ func (s *Store) GetObject(handle *ObjectHandle) ([]byte, error) {
 		return nil, ErrStoreClosed
 	}
 
-	var (
-		data []byte
-		err  error
-	)
-	switch {
-	case s.isV2:
-		// V2 partitioned store - use partition from handle.
-		data, err = s.getObjectV2(handle)
-	case handle.Offset > 0:
-		// V1 packed: V2-style handle with Offset set.
-		data, err = s.readPackedObjectData(handle.BlockNum, handle.Offset, handle.Size, handle.SpanCount)
-	default:
-		// V1 legacy: single object per block.
-		data, err = s.readBlockDataLocked(handle.BlockNum)
-	}
+	data, err := s.getObjectV2(handle)
 	if err == nil {
 		s.metrics.recordRead(len(data))
 	}
@@ -233,47 +181,7 @@ func (s *Store) GetObjectByTime(timestamp int64) (data []byte, handle *ObjectHan
 		return nil, nil, ErrStoreClosed
 	}
 
-	// V2 partitioned store
-	if s.isV2 {
-		return s.getObjectByTimeV2(timestamp)
-	}
-
-	// V1: Find block by timestamp (binary search finds block with first object <= timestamp)
-	blockNum, err := s.findBlockByTimeLocked(timestamp)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Check if this is a packed block
-	header, err := s.readBlockHeader(blockNum)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if header.IsPacked() {
-		// V2 packed format - scan for exact timestamp
-		return s.scanBlockForTimestamp(blockNum, timestamp)
-	}
-
-	// V1 legacy format - verify exact match
-	entry, err := s.readIndexEntry(blockNum)
-	if err != nil {
-		return nil, nil, err
-	}
-	if entry.Timestamp != timestamp {
-		return nil, nil, ErrTimestampNotFound
-	}
-
-	data, err = s.readBlockDataLocked(blockNum)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return data, &ObjectHandle{
-		Timestamp: timestamp,
-		BlockNum:  blockNum,
-		Size:      uint32(len(data)),
-	}, nil
+	return s.getObjectByTimeV2(timestamp)
 }
 
 // getObjectByTimeV2 retrieves an object by timestamp from V2 store.
@@ -349,8 +257,8 @@ func (s *Store) calculateSpanCountV2(p *Partition, dataLen uint32) uint32 {
 	return 1 + (remaining+usablePerBlock-1)/usablePerBlock
 }
 
-// GetObjectByBlock retrieves the first object in a block by block number.
-// For packed blocks with multiple objects, use GetObjectsByBlock.
+// GetObjectByBlock retrieves the first object in a block (in the current
+// partition) by block number.
 func (s *Store) GetObjectByBlock(blockNum uint32) ([]byte, *ObjectHandle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -359,47 +267,41 @@ func (s *Store) GetObjectByBlock(blockNum uint32) ([]byte, *ObjectHandle, error)
 		return nil, nil, ErrStoreClosed
 	}
 
-	if blockNum >= s.meta.NumBlocks {
+	p := s.currentPartition
+	if p == nil {
+		return nil, nil, ErrEmptyStore
+	}
+
+	if blockNum >= p.numBlocks {
 		return nil, nil, ErrBlockOutOfRange
 	}
 
-	header, err := s.readBlockHeader(blockNum)
+	header, err := p.readBlockHeader(blockNum)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !header.IsPacked() {
+		return nil, nil, ErrObjectNotFound
+	}
+
+	objHeader, err := p.readObjectHeader(blockNum, block.BlockHeaderSize)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if header.IsPacked() {
-		// V2 packed format - return first object
-		objHeader, err := s.readObjectHeader(blockNum, block.BlockHeaderSize)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		data, err := s.readPackedObjectData(blockNum, block.BlockHeaderSize, objHeader.DataLen, 1)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		return data, &ObjectHandle{
-			Timestamp:     objHeader.Timestamp,
-			BlockNum:      blockNum,
-			Offset:        block.BlockHeaderSize,
-			Size:          objHeader.DataLen,
-			SpanCount:     1,
-			SchemaVersion: objHeader.Reserved,
-		}, nil
-	}
-
-	// V1 legacy format
-	data, err := s.readBlockDataLocked(blockNum)
+	data, err := s.readPackedObjectDataFromPartition(p, blockNum, block.BlockHeaderSize, objHeader.DataLen, 1)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	return data, &ObjectHandle{
-		Timestamp: header.Timestamp,
-		BlockNum:  blockNum,
-		Size:      uint32(len(data)),
+		Timestamp:     objHeader.Timestamp,
+		BlockNum:      blockNum,
+		Offset:        block.BlockHeaderSize,
+		Size:          objHeader.DataLen,
+		SpanCount:     1,
+		PartitionID:   p.id,
+		SchemaVersion: objHeader.Reserved,
 	}, nil
 }
 
@@ -418,36 +320,7 @@ func (s *Store) GetOldestObjects(limit int) (handles []*ObjectHandle, err error)
 		return nil, ErrStoreClosed
 	}
 
-	if s.isV2 {
-		return s.getOldestObjectsV2(limit)
-	}
-
-	count := s.activeBlockCount()
-	if count == 0 {
-		return nil, nil
-	}
-
-	handles = make([]*ObjectHandle, 0)
-
-	// Start from tail (oldest) and walk forward through blocks
-	for i := uint32(0); i < count && (limit <= 0 || len(handles) < limit); i++ {
-		blockNum := s.blockNumFromOffset(i)
-
-		// Get all objects in this block
-		blockHandles, err := s.scanBlockObjects(blockNum)
-		if err != nil {
-			continue
-		}
-
-		for _, h := range blockHandles {
-			handles = append(handles, h)
-			if limit > 0 && len(handles) >= limit {
-				break
-			}
-		}
-	}
-
-	return handles, nil
+	return s.getOldestObjectsV2(limit)
 }
 
 // getOldestObjectsV2 returns oldest objects from V2 store.
@@ -498,32 +371,7 @@ func (s *Store) GetNewestObjects(limit int) (handles []*ObjectHandle, err error)
 		return nil, ErrStoreClosed
 	}
 
-	if s.isV2 {
-		return s.getNewestObjectsV2(limit)
-	}
-
-	count := s.activeBlockCount()
-	if count == 0 {
-		return nil, nil
-	}
-
-	// Iterate from head (newest) backwards to collect only needed objects
-	result := make([]*ObjectHandle, 0, limit)
-
-	for i := int(count) - 1; i >= 0 && (limit <= 0 || len(result) < limit); i-- {
-		blockNum := s.blockNumFromOffset(uint32(i))
-		blockHandles, err := s.scanBlockObjects(blockNum)
-		if err != nil {
-			continue
-		}
-
-		// Add handles from this block in reverse order (newest first)
-		for j := len(blockHandles) - 1; j >= 0 && (limit <= 0 || len(result) < limit); j-- {
-			result = append(result, blockHandles[j])
-		}
-	}
-
-	return result, nil
+	return s.getNewestObjectsV2(limit)
 }
 
 // getNewestObjectsV2 returns newest objects from V2 store.
@@ -581,68 +429,7 @@ func (s *Store) GetObjectsInRange(startTime, endTime int64, limit int) (handles 
 		return nil, ErrStoreClosed
 	}
 
-	if s.isV2 {
-		return s.getObjectsInRangeV2(startTime, endTime, limit)
-	}
-
-	count := s.activeBlockCount()
-	if count == 0 {
-		return nil, nil
-	}
-
-	// Handle unbounded start time
-	if startTime == 0 {
-		oldest, err := s.getOldestTimestampLocked()
-		if err != nil {
-			return nil, nil // Empty store
-		}
-		startTime = oldest
-	}
-
-	// Handle unbounded end time
-	if endTime == 0 {
-		endTime = time.Now().UnixNano()
-	}
-
-	if startTime > endTime {
-		return nil, ErrInvalidTimestamp
-	}
-
-	// Find start block position
-	startOffset := s.findOffsetForTimeLocked(startTime, 0, count-1, true)
-
-	// Find end block position - we may need to scan one block past this
-	endOffset := s.findOffsetForTimeLocked(endTime, 0, count-1, false)
-
-	handles = make([]*ObjectHandle, 0)
-
-	// Scan blocks from startOffset to endOffset+1 (may need extra block for packed objects)
-	for offset := startOffset; offset <= endOffset+1 && offset < count; offset++ {
-		blockNum := s.blockNumFromOffset(offset)
-
-		// Get all objects in this block
-		blockHandles, err := s.scanBlockObjects(blockNum)
-		if err != nil {
-			continue
-		}
-
-		for _, h := range blockHandles {
-			// Check if past end of range - stop scanning
-			if h.Timestamp > endTime {
-				return handles, nil
-			}
-
-			// Check if within range
-			if h.Timestamp >= startTime {
-				handles = append(handles, h)
-				if limit > 0 && len(handles) >= limit {
-					return handles, nil
-				}
-			}
-		}
-	}
-
-	return handles, nil
+	return s.getObjectsInRangeV2(startTime, endTime, limit)
 }
 
 // getObjectsInRangeV2 returns objects in time range from V2 store.
@@ -748,108 +535,3 @@ func (s *Store) scanBlockObjectsInPartition(p *Partition, blockNum uint32) ([]*O
 	return handles, nil
 }
 
-// DeleteObject removes an object by clearing its index entry.
-// In a circular buffer, the block space is not immediately reusable -
-// it will be reclaimed when the tail advances to this position.
-// Note: This operation is not supported for V2 partitioned stores.
-func (s *Store) DeleteObject(handle *ObjectHandle) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
-	}
-
-	// V2 stores don't support individual object deletion
-	if s.isV2 {
-		return ErrDeleteNotSupportedV2
-	}
-
-	// Clear the index entry to mark the object as deleted
-	if err := s.clearIndexEntry(handle.BlockNum); err != nil {
-		return err
-	}
-
-	// If this was the tail block, advance the tail
-	s.adjustTailAfterReclaim()
-	return s.writeMetaLocked()
-}
-
-// DeleteObjectByTime removes an object by its timestamp.
-// In a circular buffer, the block space is not immediately reusable -
-// it will be reclaimed when the tail advances to this position.
-// Note: This operation is not supported for V2 partitioned stores.
-func (s *Store) DeleteObjectByTime(timestamp int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return ErrStoreClosed
-	}
-
-	// V2 stores don't support individual object deletion
-	if s.isV2 {
-		return ErrDeleteNotSupportedV2
-	}
-
-	// Find block by timestamp
-	blockNum, err := s.findBlockByTimeLocked(timestamp)
-	if err != nil {
-		return err
-	}
-
-	// Verify exact match
-	entry, err := s.readIndexEntry(blockNum)
-	if err != nil {
-		return err
-	}
-	if entry.Timestamp != timestamp {
-		return ErrTimestampNotFound
-	}
-
-	// Clear the index entry to mark the object as deleted
-	if err := s.clearIndexEntry(blockNum); err != nil {
-		return err
-	}
-
-	// If this was the tail block, advance the tail
-	s.adjustTailAfterReclaim()
-	return s.writeMetaLocked()
-}
-
-// ReadBlockData reads the data from a block.
-func (s *Store) ReadBlockData(blockNum uint32) ([]byte, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.closed {
-		return nil, ErrStoreClosed
-	}
-
-	if blockNum >= s.meta.NumBlocks {
-		return nil, ErrBlockOutOfRange
-	}
-
-	return s.readBlockDataLocked(blockNum)
-}
-
-// readBlockDataLocked reads block data without lock acquisition.
-func (s *Store) readBlockDataLocked(blockNum uint32) ([]byte, error) {
-	header, err := s.readBlockHeader(blockNum)
-	if err != nil {
-		return nil, err
-	}
-
-	if header.DataLen == 0 {
-		return nil, nil
-	}
-
-	data := make([]byte, header.DataLen)
-	offset := s.blockOffset(blockNum) + block.BlockHeaderSize
-
-	if _, err := s.dataFile.ReadAt(data, offset); err != nil {
-		return nil, err
-	}
-
-	return data, nil
-}
