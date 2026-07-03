@@ -29,6 +29,7 @@ type MQTTSink struct {
 	password  string
 	qos       byte
 	clientID  string
+	timeout   time.Duration // connect/publish wait; overridable in tests
 
 	client mqtt.Client // nil until first Send connects
 }
@@ -45,6 +46,7 @@ func NewMQTTSink(brokerURL, topic, username, password string, qos byte, clientID
 		password:  password,
 		qos:       qos,
 		clientID:  clientID,
+		timeout:   mqttSinkConnectTimeout,
 	}
 }
 
@@ -60,8 +62,8 @@ func (s *MQTTSink) ensureConnected() error {
 	opts.AddBroker(s.brokerURL)
 	opts.SetClientID(s.clientID)
 	opts.SetAutoReconnect(true)
-	opts.SetConnectTimeout(mqttSinkConnectTimeout)
-	opts.SetWriteTimeout(mqttSinkConnectTimeout)
+	opts.SetConnectTimeout(s.timeout)
+	opts.SetWriteTimeout(s.timeout)
 	if s.username != "" {
 		opts.SetUsername(s.username)
 	}
@@ -71,7 +73,14 @@ func (s *MQTTSink) ensureConnected() error {
 
 	c := mqtt.NewClient(opts)
 	tok := c.Connect()
-	tok.WaitTimeout(mqttSinkConnectTimeout)
+	// WaitTimeout returns false on timeout, and tok.Error() is typically
+	// still nil at that point — a discarded return here caches a
+	// non-connected client and reports success for an alert that never
+	// left the box.
+	if !tok.WaitTimeout(s.timeout) {
+		c.Disconnect(0)
+		return fmt.Errorf("mqtt connect %s: timed out after %s", s.brokerURL, s.timeout)
+	}
 	if err := tok.Error(); err != nil {
 		return fmt.Errorf("mqtt connect %s: %w", s.brokerURL, err)
 	}
@@ -90,7 +99,9 @@ func (s *MQTTSink) Send(alert notify.Alert) error {
 	}
 
 	tok := s.client.Publish(s.topic, s.qos, false, body)
-	tok.WaitTimeout(mqttSinkConnectTimeout)
+	if !tok.WaitTimeout(s.timeout) {
+		return fmt.Errorf("mqtt publish to %s: timed out after %s", s.topic, s.timeout)
+	}
 	if err := tok.Error(); err != nil {
 		return fmt.Errorf("mqtt publish to %s: %w", s.topic, err)
 	}
