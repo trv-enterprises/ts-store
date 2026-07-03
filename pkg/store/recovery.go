@@ -132,17 +132,108 @@ func (s *Store) recoverPartition(p *Partition) error {
 		p.meta.HeadBlock = orphanedHead
 	}
 
-	// Phase 2: Fix write offset
+	// Phase 2: Roll back a spanning write that crashed mid-span
+	if err := s.repairIncompleteSpan(p); err != nil {
+		return err
+	}
+
+	// Phase 3: Fix write offset
 	if err := s.fixWriteOffsetInPartition(p); err != nil {
 		return err
 	}
 
-	// Phase 3: Update timestamp bounds
+	// Phase 4: Update timestamp bounds
 	if err := s.updatePartitionTimestampBounds(p); err != nil {
 		return err
 	}
 
 	return p.writeMeta()
+}
+
+// repairIncompleteSpan detects a spanning write that crashed partway (the
+// head chain ends inside a span with fewer continuation blocks than the
+// object header promises) and rolls the partition back to before the span's
+// first block. Without this, reads of the truncated object return
+// zero-padded data and the partial blocks shadow the head position.
+// Must run after findOrphanedHeadInPartition (head must be correct) and
+// before fixWriteOffsetInPartition (which recomputes from the new head).
+func (s *Store) repairIncompleteSpan(p *Partition) error {
+	head := p.meta.HeadBlock
+	headHeader, err := p.readBlockHeader(head)
+	if err != nil {
+		return nil
+	}
+	if headHeader.DataLen == 0 && headHeader.Flags == 0 {
+		return nil // empty partition
+	}
+
+	// Walk back to the span's first block (the nearest non-continuation).
+	first := head
+	for first > 0 {
+		h, err := p.readBlockHeader(first)
+		if err != nil {
+			return nil
+		}
+		if !h.IsContinuation() {
+			break
+		}
+		first--
+	}
+
+	firstHeader, err := p.readBlockHeader(first)
+	if err != nil || firstHeader.IsContinuation() {
+		// No span head found below the continuation chain: structurally
+		// corrupt — wipe the chain and leave the partition empty.
+		return s.wipeBlocks(p, 0, head)
+	}
+
+	objHeader, err := p.readObjectHeader(first, block.BlockHeaderSize)
+	if err != nil {
+		return nil
+	}
+	if head == first && !objHeader.Continues() {
+		return nil // ordinary packed block, nothing spanning
+	}
+
+	// Blocks the span needs, mirroring writeSpanningObjectV2's layout:
+	// first block holds usable-minus-object-header bytes, continuation
+	// blocks hold a full usable payload each.
+	usablePerBlock := p.blockSize - block.BlockHeaderSize
+	firstBlockUsable := usablePerBlock - block.ObjectHeaderSize
+	needed := uint32(1)
+	if objHeader.DataLen > firstBlockUsable {
+		remaining := objHeader.DataLen - firstBlockUsable
+		needed += (remaining + usablePerBlock - 1) / usablePerBlock
+	}
+
+	have := head - first + 1
+	if have >= needed {
+		return nil // span is complete
+	}
+
+	// Incomplete: erase the partial span and roll the head back.
+	return s.wipeBlocks(p, first, head)
+}
+
+// wipeBlocks zeroes block headers and index entries for [from, to] and rolls
+// the partition head back to just before `from` (or to the empty-partition
+// state when from == 0).
+func (s *Store) wipeBlocks(p *Partition, from, to uint32) error {
+	for b := from; b <= to; b++ {
+		if err := p.writeBlockHeader(b, &block.BlockHeader{}); err != nil {
+			return err
+		}
+		if err := p.writeIndexEntry(b, &block.IndexEntry{}); err != nil {
+			return err
+		}
+	}
+	if from == 0 {
+		p.meta.HeadBlock = 0
+		p.meta.WriteOffset = 0
+	} else {
+		p.meta.HeadBlock = from - 1
+	}
+	return nil
 }
 
 // findOrphanedHeadInPartition finds orphaned blocks in a partition.
