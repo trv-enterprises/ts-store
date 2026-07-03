@@ -6,6 +6,7 @@ package ws
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -227,16 +228,21 @@ func (p *Puller) processMessage(message []byte) error {
 		return err
 	}
 
+	if len(msg.Data) == 0 {
+		return fmt.Errorf("message has no data field")
+	}
+
 	// Use provided timestamp or generate one
 	timestamp := msg.Timestamp
 	if timestamp == 0 {
 		timestamp = time.Now().UnixNano()
 	}
 
-	// Convert data based on format
+	// Convert data based on format. Full field-name JSON (the default) must
+	// be validated and compacted into the store's schema form; a "compact"
+	// payload is already in stored form and passes through.
 	var dataBytes []byte
-	if p.config.Format == "compact" && p.store.DataType() == store.DataTypeSchema {
-		// Validate and compact the data
+	if p.store.DataType() == store.DataTypeSchema && p.config.Format != "compact" {
 		compacted, err := p.store.ValidateAndCompact(msg.Data)
 		if err != nil {
 			return err
