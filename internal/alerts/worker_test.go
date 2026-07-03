@@ -445,3 +445,39 @@ func TestWorkerStopClosesSink(t *testing.T) {
 		t.Errorf("Stop must close the sink")
 	}
 }
+
+// Regression test for issue #10: a non-positive poll_interval must fail at
+// construction. Before this check, "0s" passed validation, was persisted,
+// and then panicked time.NewTicker in the worker goroutine — crash-looping
+// the daemon on every restart.
+func TestWorkerRejectsNonPositivePollInterval(t *testing.T) {
+	s := newTestStore(t, "nonpositive-poll")
+	rule := store.AlertCommon{Name: "r", Condition: "temperature > 80"}
+
+	for _, poll := range []string{"0s", "-1s"} {
+		_, err := NewWorker(Options{
+			Store:        s,
+			StoreName:    "test",
+			ID:           "w1",
+			Type:         "webhook",
+			Target:       "stub",
+			Rule:         rule,
+			Sink:         &stubSink{},
+			PollInterval: poll,
+			CreatedAt:    time.Now(),
+		})
+		if err == nil {
+			t.Errorf("NewWorker with poll_interval %q: expected error, got nil", poll)
+		}
+	}
+}
+
+// Companion to the above: a non-positive webhook timeout must fail at sink
+// construction rather than producing an HTTP client that never times out.
+func TestWebhookSinkRejectsNonPositiveTimeout(t *testing.T) {
+	for _, timeout := range []string{"0s", "-5s"} {
+		if _, err := NewWebhookSink("http://localhost:1/hook", nil, timeout); err == nil {
+			t.Errorf("NewWebhookSink with timeout %q: expected error, got nil", timeout)
+		}
+	}
+}

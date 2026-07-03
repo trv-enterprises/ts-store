@@ -39,10 +39,21 @@ func ParseDuration(s string) (time.Duration, error) {
 			if err != nil {
 				return 0, fmt.Errorf("invalid duration: %s", s)
 			}
-			return time.Duration(num * float64(u.scale)), nil
+			d := time.Duration(num * float64(u.scale))
+			if d < 0 {
+				return 0, fmt.Errorf("duration must not be negative: %s", s)
+			}
+			return d, nil
 		}
 	}
 
 	// Fall back to standard Go duration parsing (s, m, h, etc.)
-	return time.ParseDuration(s)
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("duration must not be negative: %s", s)
+	}
+	return d, nil
 }
