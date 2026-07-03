@@ -193,8 +193,14 @@ func (s *Store) fixWriteOffsetInPartition(p *Partition) error {
 		return nil
 	}
 
-	if header.IsPacked() && !header.IsContinuation() {
-		p.meta.WriteOffset = block.BlockHeaderSize + header.DataLen
+	if header.IsPacked() {
+		if header.IsContinuation() {
+			// A continuation block holds raw spanned payload, not an
+			// object-header chain — never resume packing into it.
+			p.meta.WriteOffset = p.blockSize
+		} else {
+			p.meta.WriteOffset = block.BlockHeaderSize + header.DataLen
+		}
 	}
 
 	return nil

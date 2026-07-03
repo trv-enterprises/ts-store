@@ -5,6 +5,8 @@
 package store
 
 import (
+	"fmt"
+
 	"github.com/tviviano/ts-store/pkg/block"
 )
 
@@ -15,6 +17,13 @@ import (
 func (s *Store) putObjectV2(timestamp int64, data []byte, schemaVer uint32) (*ObjectHandle, error) {
 	objSize := block.ObjectHeaderSize + uint32(len(data))
 	usableSpace := s.globalMeta.BlockSize - block.BlockHeaderSize
+
+	// An object can span blocks but never partitions. Reject anything that
+	// couldn't fit even in an empty partition, before touching any state.
+	if needed := s.currentPartition.blocksNeededFor(objSize); needed > s.currentPartition.numBlocks {
+		return nil, fmt.Errorf("%w: object needs %d blocks, partition holds %d",
+			ErrObjectTooLarge, needed, s.currentPartition.numBlocks)
+	}
 
 	// Check if we need to roll to a new partition
 	if !s.currentPartition.hasSpaceFor(objSize) {
@@ -315,12 +324,10 @@ func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte, schemaVer ui
 		dataPos += chunkSize
 	}
 
-	// Calculate final write offset
-	lastChunkSize := uint32(len(data)) % usablePerBlock
-	if lastChunkSize == 0 && len(data) > 0 {
-		lastChunkSize = usablePerBlock
-	}
-	p.meta.WriteOffset = block.BlockHeaderSize + lastChunkSize
+	// A continuation block holds raw spanned payload, not an object-header
+	// chain, so nothing may ever be packed after it. Mark the head block
+	// full so the next object starts a fresh block.
+	p.meta.WriteOffset = p.blockSize
 
 	return &ObjectHandle{
 		Timestamp:     timestamp,

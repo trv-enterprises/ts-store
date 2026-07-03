@@ -369,10 +369,13 @@ func (p *Partition) hasSpaceFor(objSize uint32) bool {
 	// Calculate how many blocks we need
 	blocksNeeded := p.blocksNeededFor(objSize)
 
-	// Calculate how many blocks are available
+	// Calculate how many blocks are available. This must mirror
+	// allocateNextBlockV2: once anything has been written to the head block,
+	// the next allocation is HeadBlock+1 (the empty-partition case is
+	// handled above).
 	nextBlock := p.meta.HeadBlock + 1
-	if p.meta.WriteOffset == 0 {
-		nextBlock = p.meta.HeadBlock
+	if nextBlock > p.numBlocks {
+		return false
 	}
 	blocksAvailable := p.numBlocks - nextBlock
 
@@ -380,17 +383,20 @@ func (p *Partition) hasSpaceFor(objSize uint32) bool {
 }
 
 // blocksNeededFor calculates how many blocks an object of given size requires.
+// objSize includes the object header. The arithmetic mirrors
+// writeSpanningObjectV2: the first block holds usable-minus-object-header
+// payload bytes, each continuation block holds a full usable payload.
 func (p *Partition) blocksNeededFor(objSize uint32) uint32 {
 	usablePerBlock := p.blockSize - block.BlockHeaderSize
-	firstBlockUsable := usablePerBlock - block.ObjectHeaderSize
 
-	// Small object fits in one block
-	if objSize <= firstBlockUsable {
+	// Header plus data fit in one block
+	if objSize <= usablePerBlock {
 		return 1
 	}
 
-	// Spanning object
-	remaining := objSize - firstBlockUsable
+	// Spanning object: objSize - usablePerBlock is exactly the payload that
+	// overflows the first block (header accounted for once).
+	remaining := objSize - usablePerBlock
 	return 1 + (remaining+usablePerBlock-1)/usablePerBlock
 }
 
