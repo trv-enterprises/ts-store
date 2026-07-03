@@ -71,7 +71,7 @@ func (s *Store) saveWebhookAlertsLocked(config *WebhookAlertsConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, data, 0644)
+	return writeFileAtomic(configPath, data, 0644)
 }
 
 // AddWebhookAlert adds a new webhook alert to the config.

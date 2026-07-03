@@ -69,7 +69,7 @@ func (s *Store) saveWSAlertsLocked(config *WSAlertsConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, data, 0644)
+	return writeFileAtomic(configPath, data, 0644)
 }
 
 // AddWSAlert adds a new WS alert to the config.

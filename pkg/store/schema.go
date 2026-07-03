@@ -142,7 +142,7 @@ func (s *Store) saveSchemaLocked() error {
 		return err
 	}
 
-	return os.WriteFile(schemaPath, data, 0644)
+	return writeFileAtomic(schemaPath, data, 0644)
 }
 
 // loadSchema loads the schema from disk.

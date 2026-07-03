@@ -69,7 +69,7 @@ func (s *Store) saveRollupConfigsLocked(config *RollupConfigs) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, data, 0644)
+	return writeFileAtomic(configPath, data, 0644)
 }
 
 // AddRollupConfig appends a rollup config and persists.
@@ -140,7 +140,7 @@ func (s *Store) WriteRollupMeta(meta RollupMeta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metaPath, data, 0644)
+	return writeFileAtomic(metaPath, data, 0644)
 }
 
 // ReadRollupMeta returns the rollup sidecar for this store, or nil if the store
