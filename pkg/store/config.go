@@ -7,6 +7,7 @@ package store
 
 import (
 	"errors"
+	"regexp"
 
 	"github.com/tviviano/ts-store/pkg/block"
 )
@@ -21,7 +22,22 @@ var (
 	ErrTooFewPartitions       = errors.New("number of partitions must be at least 2")
 	ErrTooManyPartitions      = errors.New("number of partitions cannot exceed 16")
 	ErrPartitionFull          = errors.New("partition is full")
+	ErrInvalidStoreName       = errors.New("invalid store name: must start with a letter or digit and contain only letters, digits, '.', '_', '-' (max 64 chars)")
 )
+
+// storeNameRE matches safe store names: they become directory names under the
+// data path, so no separators, no leading dot, nothing that could traverse.
+var storeNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// ValidateStoreName rejects names that are unsafe to join onto the data path.
+// Store names are used as directory names; anything with path separators,
+// a leading dot, or over 64 chars is refused.
+func ValidateStoreName(name string) error {
+	if !storeNameRE.MatchString(name) {
+		return ErrInvalidStoreName
+	}
+	return nil
+}
 
 // DataType represents the type of data stored in a store.
 type DataType uint8
@@ -105,6 +121,9 @@ func DefaultConfig() Config {
 func (c *Config) Validate() error {
 	if c.Name == "" {
 		return ErrNameRequired
+	}
+	if err := ValidateStoreName(c.Name); err != nil {
+		return err
 	}
 	if c.Path == "" {
 		return ErrPathRequired

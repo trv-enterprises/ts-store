@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/apikey"
+	"github.com/tviviano/ts-store/pkg/store"
 )
 
 const (
@@ -28,6 +29,14 @@ func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
 		storeName := c.Param("store")
 		if storeName == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "store name required"})
+			c.Abort()
+			return
+		}
+
+		// Reject traversal-capable names before they reach any code that
+		// joins them onto the data path (key lookup reads <name>/keys.json).
+		if err := store.ValidateStoreName(storeName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid store name"})
 			c.Abort()
 			return
 		}

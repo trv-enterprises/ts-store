@@ -146,6 +146,12 @@ func createV2(cfg Config) (*Store, error) {
 // Open opens an existing store.
 // Automatically detects V1 vs V2 format based on the magic number.
 func Open(path string, name string) (*Store, error) {
+	// Names are joined onto the data path; refuse anything that could
+	// escape it (e.g. "../..") before touching the filesystem.
+	if err := ValidateStoreName(name); err != nil {
+		return nil, err
+	}
+
 	storePath := filepath.Join(path, name)
 
 	// Check if store exists
@@ -377,6 +383,11 @@ func (s *Store) resetV2() error {
 
 // DeleteStore removes a store by path and name without opening it.
 func DeleteStore(path string, name string) error {
+	// RemoveAll on a joined path — never allow a name that could point
+	// outside the data directory.
+	if err := ValidateStoreName(name); err != nil {
+		return err
+	}
 	storePath := filepath.Join(path, name)
 	return os.RemoveAll(storePath)
 }
