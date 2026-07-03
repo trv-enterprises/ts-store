@@ -5,6 +5,7 @@
 package alerts
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/tviviano/ts-store/internal/duration"
@@ -27,6 +28,9 @@ func NewWebhookSink(url string, headers map[string]string, timeoutStr string) (*
 		d, err := duration.ParseDuration(timeoutStr)
 		if err != nil {
 			return nil, err
+		}
+		if d <= 0 {
+			return nil, fmt.Errorf("invalid webhook timeout %q: must be positive", timeoutStr)
 		}
 		timeout = d
 	}

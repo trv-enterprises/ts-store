@@ -118,6 +118,11 @@ func NewWorker(opts Options) (*Worker, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid poll_interval %q: %w", opts.PollInterval, err)
 		}
+		// A non-positive interval would panic time.NewTicker in the worker
+		// goroutine — after the config is already persisted.
+		if d <= 0 {
+			return nil, fmt.Errorf("invalid poll_interval %q: must be positive", opts.PollInterval)
+		}
 		poll = d
 	}
 
