@@ -53,18 +53,27 @@ type KeyFile struct {
 	Keys         []KeyEntry `json:"keys"`
 }
 
+// cachedKeyFile is a parsed key file plus the file identity it was loaded
+// from, so reads can detect on-disk changes made by another process (the
+// key CLI writes keys.json directly).
+type cachedKeyFile struct {
+	keyFile *KeyFile
+	modTime time.Time
+	size    int64
+}
+
 // Manager handles API key operations for stores.
 type Manager struct {
 	mu       sync.RWMutex
 	basePath string
-	cache    map[string]*KeyFile // storeName -> KeyFile
+	cache    map[string]cachedKeyFile // storeName -> parsed keys.json + file identity
 }
 
 // NewManager creates a new API key manager.
 func NewManager(basePath string) *Manager {
 	return &Manager{
 		basePath: basePath,
-		cache:    make(map[string]*KeyFile),
+		cache:    make(map[string]cachedKeyFile),
 	}
 }
 
@@ -108,8 +117,8 @@ func (m *Manager) Generate(storeName, note string) (string, *KeyEntry, error) {
 		return "", nil, err
 	}
 
-	// Update cache
-	m.cache[storeName] = keyFile
+	// Drop the cache entry; the next read reloads with fresh file identity
+	delete(m.cache, storeName)
 
 	return fullKey, entry, nil
 }
@@ -119,8 +128,10 @@ func (m *Manager) Generate(storeName, note string) (string, *KeyEntry, error) {
 // validation is delegated to the source store's key file (one hop only) so
 // linked stores share their source's keys without copying hashes.
 func (m *Manager) Validate(storeName, apiKey string) (*KeyEntry, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// Full lock: getKeyFileLocked mutates the cache (it also did under the
+	// previous RLock, which was a data race).
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	// Get key file (from cache or disk)
 	keyFile, err := m.getKeyFileLocked(storeName)
@@ -167,7 +178,8 @@ func (m *Manager) CreateLinkedKeyFile(storeName, sourceStore string) error {
 	if err := m.saveKeyFileLocked(storeName, keyFile); err != nil {
 		return err
 	}
-	m.cache[storeName] = keyFile
+	// Drop the cache entry; the next read reloads with fresh file identity
+	delete(m.cache, storeName)
 	return nil
 }
 
@@ -234,16 +246,17 @@ func (m *Manager) Revoke(storeName, keyID string) error {
 		return err
 	}
 
-	// Update cache
-	m.cache[storeName] = keyFile
+	// Drop the cache entry; the next read reloads with fresh file identity
+	delete(m.cache, storeName)
 
 	return nil
 }
 
 // List returns all key entries for a store (hashes only, not full keys).
 func (m *Manager) List(storeName string) ([]KeyEntry, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	// Full lock: getKeyFileLocked mutates the cache.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	keyFile, err := m.getKeyFileLocked(storeName)
 	if err != nil {
@@ -284,8 +297,8 @@ func (m *Manager) Regenerate(storeName, note string) (string, *KeyEntry, error) 
 		return "", nil, err
 	}
 
-	// Update cache
-	m.cache[storeName] = keyFile
+	// Drop the cache entry; the next read reloads with fresh file identity
+	delete(m.cache, storeName)
 
 	return fullKey, entry, nil
 }
@@ -345,22 +358,31 @@ func (m *Manager) saveKeyFileLocked(storeName string, keyFile *KeyFile) error {
 	return os.WriteFile(keyPath, data, 0600) // Restricted permissions
 }
 
-// getKeyFileLocked gets the key file from cache or loads from disk. Lock must be held.
+// getKeyFileLocked gets the key file from cache, reloading from disk when the
+// file changed on disk. Key management (tsstore key revoke/regenerate) runs as
+// a separate process writing keys.json directly, so a running server must
+// notice changes — a revoked key has to stop working without a restart.
+// Write lock must be held (the cache is mutated).
 func (m *Manager) getKeyFileLocked(storeName string) (*KeyFile, error) {
-	// Check cache first
-	if keyFile, ok := m.cache[storeName]; ok {
-		return keyFile, nil
-	}
+	keyPath := m.keyFilePath(storeName)
 
-	// Load from disk
-	keyFile, err := m.loadKeyFileLocked(storeName)
+	st, err := os.Stat(keyPath)
 	if err != nil {
+		delete(m.cache, storeName)
 		return nil, err
 	}
 
-	// Cache it
-	m.cache[storeName] = keyFile
+	if c, ok := m.cache[storeName]; ok && c.modTime.Equal(st.ModTime()) && c.size == st.Size() {
+		return c.keyFile, nil
+	}
 
+	keyFile, err := m.loadKeyFileLocked(storeName)
+	if err != nil {
+		delete(m.cache, storeName)
+		return nil, err
+	}
+
+	m.cache[storeName] = cachedKeyFile{keyFile: keyFile, modTime: st.ModTime(), size: st.Size()}
 	return keyFile, nil
 }
 
