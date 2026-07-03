@@ -4,7 +4,10 @@
 
 package store
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 // writeFileAtomic writes data to path via a temp file + fsync + rename so a
 // crash mid-write can never leave a truncated file behind. Sidecar JSON files
@@ -20,14 +23,14 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		err = errors.Join(err, f.Close())
 		os.Remove(tmp)
 		return err
 	}
 	// Sync before rename: otherwise the rename can be durable while the
 	// contents are not, leaving an empty file after power loss.
 	if err := f.Sync(); err != nil {
-		f.Close()
+		err = errors.Join(err, f.Close())
 		os.Remove(tmp)
 		return err
 	}
