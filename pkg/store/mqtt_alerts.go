@@ -72,7 +72,7 @@ func (s *Store) saveMQTTAlertsLocked(config *MQTTAlertsConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, data, 0644)
+	return writeFileAtomic(configPath, data, 0644)
 }
 
 // AddMQTTAlert adds a new MQTT alert to the config.

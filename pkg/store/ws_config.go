@@ -80,7 +80,7 @@ func (s *Store) saveWSConnectionsLocked(config *WSConnectionsConfig) error {
 		return err
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	return writeFileAtomic(configPath, data, 0644)
 }
 
 // AddWSConnection adds a new WebSocket connection to the config.
