@@ -164,20 +164,20 @@ func (s *Store) findBlockInPartition(p *Partition, timestamp int64) (uint32, err
 }
 
 // getNewestTimestampV2 returns the newest timestamp for V2 stores.
+// The current partition can legitimately be empty (a fresh partition created
+// by rollover recovery), so walk the partition order backwards to the newest
+// partition that actually holds data. Returning ErrEmptyStore while sealed
+// partitions hold data would silently skip the write-path monotonicity check
+// and let out-of-order timestamps break the global ordering invariant.
 func (s *Store) getNewestTimestampV2() (int64, error) {
-	if s.globalMeta.ActiveCount == 0 {
-		return 0, ErrEmptyStore
+	for i := int(s.globalMeta.ActiveCount) - 1; i >= 0; i-- {
+		partID := uint32(s.globalMeta.PartitionOrder[i])
+		p := s.partitions[partID]
+		if p != nil && p.meta.MaxTimestamp > 0 {
+			return p.meta.MaxTimestamp, nil
+		}
 	}
-
-	// Get the newest partition (last in order)
-	newestIdx := s.globalMeta.ActiveCount - 1
-	partID := uint32(s.globalMeta.PartitionOrder[newestIdx])
-	p := s.partitions[partID]
-	if p == nil || p.meta.MaxTimestamp == 0 {
-		return 0, ErrEmptyStore
-	}
-
-	return p.meta.MaxTimestamp, nil
+	return 0, ErrEmptyStore
 }
 
 // getOldestTimestampV2 returns the oldest timestamp for V2 stores.
