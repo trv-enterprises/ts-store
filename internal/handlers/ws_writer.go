@@ -27,6 +27,12 @@ type WSWriteResponse struct {
 	Message   string `json:"message,omitempty"`
 }
 
+// wsWriteTimeout bounds each outbound write. Also load-bearing: the HTTP
+// server's WriteTimeout arms an absolute deadline on the underlying conn at
+// request start, which the hijacked WS connection inherits — without a fresh
+// per-write deadline every ack fails once that elapses (~30s into a session).
+const wsWriteTimeout = 10 * time.Second
+
 // wsWriter handles receiving data from a WebSocket client and storing it.
 type wsWriter struct {
 	conn    *websocket.Conn
@@ -147,6 +153,7 @@ func (w *wsWriter) sendAck(handle *store.ObjectHandle) error {
 		BlockNum:  handle.BlockNum,
 		Size:      handle.Size,
 	}
+	w.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	return w.conn.WriteJSON(resp)
 }
 
@@ -156,5 +163,6 @@ func (w *wsWriter) sendError(message string) error {
 		Type:    "error",
 		Message: message,
 	}
+	w.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	return w.conn.WriteJSON(resp)
 }
