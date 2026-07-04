@@ -256,3 +256,83 @@ func TestEvaluate_OR(t *testing.T) {
 		})
 	}
 }
+
+// Regression tests for issue #26: the parser silently mis-parsed trailing
+// garbage and mixed AND/OR, and numeric strings compared lexicographically.
+
+func TestParseRejectsTrailingGarbage(t *testing.T) {
+	for _, cond := range []string{
+		"temperature > 80 extra",
+		`status == "err" extra`,
+		"temperature > 80 humidity < 30", // forgotten AND
+	} {
+		if _, err := Parse("r", cond); err == nil {
+			t.Errorf("Parse(%q) accepted trailing garbage", cond)
+		}
+	}
+}
+
+func TestParseRejectsMixedAndOr(t *testing.T) {
+	for _, cond := range []string{
+		"a > 1 OR b < 2 AND c == 3",
+		"a > 1 AND b < 2 OR c == 3",
+	} {
+		if _, err := Parse("r", cond); err == nil {
+			t.Errorf("Parse(%q) accepted mixed AND/OR", cond)
+		}
+	}
+}
+
+func TestParseLogicalWordsInsideQuotes(t *testing.T) {
+	// "and"/"or" inside a quoted value must not influence operator
+	// selection or trip the mixed-operator check.
+	r, err := Parse("r", `msg contains "up and down" OR temp > 5`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if r.LogicalOp != "OR" || len(r.Conditions) != 2 {
+		t.Fatalf("expected OR with 2 conditions, got %q with %d", r.LogicalOp, len(r.Conditions))
+	}
+	if !r.Evaluate(map[string]interface{}{"msg": "going up and down", "temp": 1.0}) {
+		t.Error("contains-condition with quoted 'and' did not match")
+	}
+}
+
+func TestNumericStringsCompareNumerically(t *testing.T) {
+	cases := []struct {
+		cond  string
+		data  map[string]interface{}
+		want  bool
+		descr string
+	}{
+		{"temp > 100", map[string]interface{}{"temp": "90"}, false, `"90" > 100 lexicographic false-fire`},
+		{"temp > 80", map[string]interface{}{"temp": "600.5"}, true, `"600.5" > 80 lexicographic false-miss`},
+		{"temp == 80", map[string]interface{}{"temp": "80"}, true, `"80" == 80 numeric equality`},
+		{"temp < 200", map[string]interface{}{"temp": "90"}, true, `"90" < 200`},
+	}
+	for _, c := range cases {
+		r, err := Parse("r", c.cond)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", c.cond, err)
+		}
+		if got := r.Evaluate(c.data); got != c.want {
+			t.Errorf("%s: Evaluate(%q, %v) = %v, want %v", c.descr, c.cond, c.data, got, c.want)
+		}
+	}
+}
+
+func TestParseStillAcceptsValidConditions(t *testing.T) {
+	for _, cond := range []string{
+		"temperature > 80",
+		"temperature > 80 AND humidity < 30",
+		`status == "error" OR status == "critical"`,
+		`message contains "disk full"`,
+		"active == true",
+		"cpu.percent >= 99.5",
+		"level == warn", // bare single-token string value
+	} {
+		if _, err := Parse("r", cond); err != nil {
+			t.Errorf("Parse(%q) rejected a valid condition: %v", cond, err)
+		}
+	}
+}

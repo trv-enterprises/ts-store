@@ -62,17 +62,24 @@ func Parse(name, condition string) (*Rule, error) {
 
 	rule := &Rule{Name: name}
 
-	// Check for logical operators (case-insensitive)
-	upperCond := strings.ToUpper(condition)
+	// Check for logical operators (case-insensitive), ignoring occurrences
+	// inside quoted strings. Mixed AND/OR is unsupported: splitting on one
+	// operator would silently leave the other embedded in a value.
+	hasAnd := containsOutsideQuotes(condition, " AND ")
+	hasOr := containsOutsideQuotes(condition, " OR ")
+	if hasAnd && hasOr {
+		return nil, fmt.Errorf("mixed AND/OR is not supported; use a single logical operator")
+	}
 
 	var parts []string
-	if strings.Contains(upperCond, " AND ") {
+	switch {
+	case hasAnd:
 		rule.LogicalOp = "AND"
 		parts = splitKeepingQuotes(condition, " AND ", " and ")
-	} else if strings.Contains(upperCond, " OR ") {
+	case hasOr:
 		rule.LogicalOp = "OR"
 		parts = splitKeepingQuotes(condition, " OR ", " or ")
-	} else {
+	default:
 		parts = []string{condition}
 	}
 
@@ -85,6 +92,25 @@ func Parse(name, condition string) (*Rule, error) {
 	}
 
 	return rule, nil
+}
+
+// containsOutsideQuotes reports whether delim occurs in s (case-insensitive)
+// at a position not inside a quoted string.
+func containsOutsideQuotes(s, delim string) bool {
+	upper := strings.ToUpper(s)
+	upperDelim := strings.ToUpper(delim)
+	start := 0
+	for {
+		idx := strings.Index(upper[start:], upperDelim)
+		if idx == -1 {
+			return false
+		}
+		abs := start + idx
+		if strings.Count(s[:abs], `"`)%2 == 0 {
+			return true
+		}
+		start = abs + 1
+	}
 }
 
 // splitKeepingQuotes splits on delimiters but respects quoted strings.
@@ -153,6 +179,14 @@ func parseValue(s string) (interface{}, error) {
 	// Try to parse as number
 	if f, err := strconv.ParseFloat(s, 64); err == nil {
 		return f, nil
+	}
+
+	// Unquoted values must be a single token. Whitespace here is almost
+	// always trailing garbage swallowed by the value pattern
+	// ("temperature > 80 extra") — accepting it would silently turn a
+	// numeric threshold into a string comparison that never fires right.
+	if strings.ContainsAny(s, " \t") {
+		return nil, fmt.Errorf("unquoted value %q contains whitespace; quote string values", s)
 	}
 
 	// Treat as unquoted string
@@ -278,6 +312,13 @@ func toFloat64(v interface{}) (float64, bool) {
 		return float64(n), true
 	case uint8:
 		return float64(n), true
+	case string:
+		// Sensors frequently serialize numbers as strings ({"temp": "90"});
+		// without this, `temp > 80` falls into lexicographic comparison
+		// where "90" < "100".
+		if f, err := strconv.ParseFloat(strings.TrimSpace(n), 64); err == nil {
+			return f, true
+		}
 	}
 	return 0, false
 }
