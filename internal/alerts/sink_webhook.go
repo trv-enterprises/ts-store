@@ -45,8 +45,19 @@ func NewWebhookSink(url string, headers map[string]string, timeoutStr string) (*
 }
 
 func (s *WebhookSink) Send(alert notify.Alert) error {
-	s.wh.Send(alert)
+	// A full queue is a drop — report it so the worker counts it as such
+	// instead of as a successful fire.
+	if !s.wh.Send(alert) {
+		return fmt.Errorf("webhook queue full, alert dropped")
+	}
 	return nil
+}
+
+// SetOnError registers a callback for async delivery failures (non-2xx,
+// connection errors). Deliveries happen after Send returns, so without
+// this the worker never learns an alert failed.
+func (s *WebhookSink) SetOnError(fn func(notify.Alert, error)) {
+	s.wh.SetOnError(fn)
 }
 
 func (s *WebhookSink) Close() error {

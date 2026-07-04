@@ -46,6 +46,29 @@ type Webhook struct {
 	wg    sync.WaitGroup
 
 	stopCh chan struct{}
+
+	// onError, when set, is invoked for every failed delivery (non-2xx,
+	// connection error). Sends are async, so without this callback the
+	// caller of Send never learns the alert didn't arrive.
+	onErrMu sync.RWMutex
+	onError func(Alert, error)
+}
+
+// SetOnError registers a callback invoked for every failed delivery.
+// Safe to call after Start.
+func (w *Webhook) SetOnError(fn func(Alert, error)) {
+	w.onErrMu.Lock()
+	w.onError = fn
+	w.onErrMu.Unlock()
+}
+
+func (w *Webhook) notifyError(alert Alert, err error) {
+	w.onErrMu.RLock()
+	fn := w.onError
+	w.onErrMu.RUnlock()
+	if fn != nil {
+		fn(alert, err)
+	}
 }
 
 // NewWebhook creates a new webhook notifier.
@@ -137,6 +160,7 @@ func (w *Webhook) runLoop() {
 			ctx, cancel := context.WithTimeout(context.Background(), w.config.Timeout)
 			if err := w.SendSync(ctx, alert); err != nil {
 				log.Printf("webhook send failed for %s: %v", alert.RuleName, err)
+				w.notifyError(alert, err)
 			}
 			cancel()
 		}
@@ -155,6 +179,7 @@ func (w *Webhook) drainQueue(ctx context.Context) {
 			}
 			if err := w.SendSync(ctx, alert); err != nil {
 				log.Printf("webhook drain failed for %s: %v", alert.RuleName, err)
+				w.notifyError(alert, err)
 			}
 		default:
 			return

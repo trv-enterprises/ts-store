@@ -38,6 +38,10 @@ type Status struct {
 	State         string    `json:"state"` // running | stopped | error
 	LastError     string    `json:"last_error,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
+
+	// DeliveryFailures counts async sink failures (e.g. webhook non-2xx)
+	// reported after the alert was already queued for delivery.
+	DeliveryFailures int64 `json:"delivery_failures,omitempty"`
 }
 
 // Worker polls a store for new records, evaluates a single rule against
@@ -65,10 +69,11 @@ type Worker struct {
 	restartPolicy string
 	maxReplay     time.Duration
 
-	lastTs        int64
-	cursorPath    string
-	alertsFired   int64
-	alertsDropped int64 // sink.Send returned an error
+	lastTs           int64
+	cursorPath       string
+	alertsFired      int64
+	alertsDropped    int64 // sink.Send returned an error
+	deliveryFailures int64 // sink reported an async delivery failure after Send
 
 	state     string
 	lastError string
@@ -308,6 +313,14 @@ func (w *Worker) dispatch(alert notify.Alert) {
 	atomic.AddInt64(&w.alertsFired, 1)
 }
 
+// noteDeliveryFailure records an async delivery failure reported by the
+// sink after Send already returned (webhook deliveries are queued). Wired
+// by the manager so failures surface in status instead of only the log.
+func (w *Worker) noteDeliveryFailure(alert notify.Alert, err error) {
+	atomic.AddInt64(&w.deliveryFailures, 1)
+	w.setError(fmt.Sprintf("delivery: %v", err))
+}
+
 // Metrics is the activity snapshot for a Worker, exposed via the per-store
 // /metrics endpoint. RecordsEvaluated and RecordsMatched come from the
 // evaluator (cheap atomic loads).
@@ -336,6 +349,7 @@ func (w *Worker) Metrics() Metrics {
 func (w *Worker) ResetMetrics() {
 	atomic.StoreInt64(&w.alertsFired, 0)
 	atomic.StoreInt64(&w.alertsDropped, 0)
+	atomic.StoreInt64(&w.deliveryFailures, 0)
 	w.evaluator.ResetCounters()
 }
 
@@ -398,15 +412,15 @@ func (w *Worker) Status() Status {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	return Status{
-		ID:            w.id,
-		Type:          w.alertType,
-		Target:        w.target,
-		RuleName:      w.ruleName,
-		AlertsFired:   atomic.LoadInt64(&w.alertsFired),
-		LastTimestamp: w.lastTs,
-		State:         w.state,
-		LastError:     w.lastError,
-		CreatedAt:     w.createdAt,
+		ID:               w.id,
+		Type:             w.alertType,
+		Target:           w.target,
+		RuleName:         w.ruleName,
+		AlertsFired:      atomic.LoadInt64(&w.alertsFired),
+		LastTimestamp:    w.lastTs,
+		State:            w.state,
+		LastError:        w.lastError,
+		CreatedAt:        w.createdAt,
+		DeliveryFailures: atomic.LoadInt64(&w.deliveryFailures),
 	}
 }
-
