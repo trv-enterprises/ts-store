@@ -257,12 +257,13 @@ func toFloat64(v interface{}) (float64, bool) {
 
 // fieldState tracks the running state of a single field's aggregation.
 type fieldState struct {
-	fn    AggFunc
-	sum   float64
-	max   float64
-	min   float64
-	count int
-	last  interface{}
+	fn       AggFunc
+	sum      float64
+	max      float64
+	min      float64
+	count    int // all samples seen (drives count/window_count)
+	numCount int // samples that were numeric (drives sum/avg/min/max)
+	last     interface{}
 }
 
 func newFieldState(fn AggFunc) *fieldState {
@@ -282,6 +283,7 @@ func (fs *fieldState) add(value interface{}) {
 		return
 	}
 
+	fs.numCount++
 	fs.sum += f
 	if f > fs.max {
 		fs.max = f
@@ -292,32 +294,25 @@ func (fs *fieldState) add(value interface{}) {
 }
 
 func (fs *fieldState) result(partial bool) interface{} {
-	if fs.count == 0 {
-		return nil
-	}
-	switch fs.fn {
-	case AggSum:
-		if partial {
-			return nil // partial sum is misleading
-		}
-		return fs.sum
-	case AggAvg:
-		return fs.sum / float64(fs.count)
-	case AggMax:
-		return fs.max
-	case AggMin:
-		return fs.min
-	case AggCount:
-		return fs.count
-	case AggLast:
-		return fs.last
-	}
-	return fs.last
+	return fs.resultFor(fs.fn, partial)
 }
 
 // resultFor returns the result for a specific aggregation function.
 func (fs *fieldState) resultFor(fn AggFunc, partial bool) interface{} {
 	if fs.count == 0 {
+		return nil
+	}
+	switch fn {
+	case AggCount:
+		return fs.count
+	case AggLast:
+		return fs.last
+	}
+
+	// The remaining functions are numeric and need at least one numeric
+	// sample: otherwise avg would divide by a count of non-numeric values,
+	// and min/max would emit their ±MaxFloat64 seeds.
+	if fs.numCount == 0 {
 		return nil
 	}
 	switch fn {
@@ -327,15 +322,11 @@ func (fs *fieldState) resultFor(fn AggFunc, partial bool) interface{} {
 		}
 		return fs.sum
 	case AggAvg:
-		return fs.sum / float64(fs.count)
+		return fs.sum / float64(fs.numCount)
 	case AggMax:
 		return fs.max
 	case AggMin:
 		return fs.min
-	case AggCount:
-		return fs.count
-	case AggLast:
-		return fs.last
 	}
 	return fs.last
 }

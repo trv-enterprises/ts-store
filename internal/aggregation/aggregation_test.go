@@ -561,3 +561,48 @@ func TestAggregateBatch_PerFieldMultiFunction(t *testing.T) {
 		t.Errorf("name: got %s, want c", v)
 	}
 }
+
+// Regression tests for issue #17: avg divided by the count of ALL samples
+// (including non-numeric ones like "n/a"), and min/max emitted their
+// ±MaxFloat64 seeds when a field had only non-numeric values.
+
+func TestAvgIgnoresNonNumericSamples(t *testing.T) {
+	cfg := makeConfig(t, time.Minute, nil, AggAvg, map[string]bool{"val": true})
+	acc := NewAccumulator(cfg)
+
+	ns := int64(time.Minute)
+	acc.Add(0*ns+1, map[string]interface{}{"val": 10.0})
+	acc.Add(0*ns+2, map[string]interface{}{"val": "n/a"})
+	acc.Add(0*ns+3, map[string]interface{}{"val": 20.0})
+	r := acc.Add(1*ns+1, map[string]interface{}{"val": 1.0}) // closes window
+
+	if r == nil {
+		t.Fatal("expected result on window close")
+	}
+	if r.Count != 3 {
+		t.Errorf("window count should include all samples: got %d, want 3", r.Count)
+	}
+	avg := r.Data["val"].(float64)
+	if math.Abs(avg-15.0) > 0.001 {
+		t.Errorf("avg over numeric samples: got %f, want 15.0 (old code: 10.0 = 30/3)", avg)
+	}
+}
+
+func TestNumericAggsNilForAllNonNumericField(t *testing.T) {
+	for _, fn := range []AggFunc{AggAvg, AggMax, AggMin, AggSum} {
+		cfg := makeConfig(t, time.Minute, nil, fn, map[string]bool{"val": true})
+		acc := NewAccumulator(cfg)
+
+		ns := int64(time.Minute)
+		acc.Add(0*ns+1, map[string]interface{}{"val": "n/a"})
+		acc.Add(0*ns+2, map[string]interface{}{"val": "err"})
+		r := acc.Add(1*ns+1, map[string]interface{}{"val": "x"})
+
+		if r == nil {
+			t.Fatalf("%s: expected result on window close", fn)
+		}
+		if v, present := r.Data["val"]; present && v != nil {
+			t.Errorf("%s over all-non-numeric field emitted %v; want absent/nil (old code: ±MaxFloat64 or 0)", fn, v)
+		}
+	}
+}
