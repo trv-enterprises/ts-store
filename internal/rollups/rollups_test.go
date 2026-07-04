@@ -7,6 +7,7 @@ package rollups
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -383,5 +384,111 @@ func TestCreateRollup_RejectsIncompatibleExistingTarget(t *testing.T) {
 	_, err = mgr.CreateRollup(CreateRollupRequest{Window: "1h", AggFields: "temp:avg", Retention: "30d"})
 	if err == nil {
 		t.Fatal("expected error pointing rollup at incompatible existing store")
+	}
+}
+
+// Regression tests for issue #14: README-API promises identical re-creates
+// are idempotent and parameter changes without force_recreate are rejected.
+// Before the fix every POST appended a new config and started a second
+// worker racing on the same target windows.
+
+func TestCreateRollupIdempotent(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "idem")
+	defer src.Close()
+
+	mgr := NewManager(src, "idem", provider)
+	defer mgr.Stop()
+
+	req := CreateRollupRequest{Window: "1m", AggFields: "temp:avg", Retention: "1d"}
+	st1, err := mgr.CreateRollup(req)
+	if err != nil {
+		t.Fatalf("first CreateRollup: %v", err)
+	}
+	st2, err := mgr.CreateRollup(req)
+	if err != nil {
+		t.Fatalf("identical CreateRollup should be idempotent, got error: %v", err)
+	}
+	if st2.ID != st1.ID {
+		t.Errorf("identical re-create returned a new rollup: %s vs %s", st2.ID, st1.ID)
+	}
+
+	cfgs, err := src.LoadRollupConfigs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfgs.Rollups) != 1 {
+		t.Errorf("expected 1 persisted config, got %d", len(cfgs.Rollups))
+	}
+	mgr.mu.RLock()
+	n := len(mgr.workers)
+	mgr.mu.RUnlock()
+	if n != 1 {
+		t.Errorf("expected 1 running worker, got %d", n)
+	}
+}
+
+func TestCreateRollupSpecChangeRejected(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "reject")
+	defer src.Close()
+
+	mgr := NewManager(src, "reject", provider)
+	defer mgr.Stop()
+
+	if _, err := mgr.CreateRollup(CreateRollupRequest{Window: "1m", AggFields: "temp:avg", Retention: "1d"}); err != nil {
+		t.Fatalf("first CreateRollup: %v", err)
+	}
+
+	// Same derived target (window unchanged), different agg spec
+	_, err := mgr.CreateRollup(CreateRollupRequest{Window: "1m", AggFields: "temp:avg+max", Retention: "1d"})
+	if err == nil {
+		t.Fatal("parameter-changing POST without force_recreate was accepted")
+	}
+	if !strings.Contains(err.Error(), "force_recreate") {
+		t.Errorf("rejection should mention force_recreate, got: %v", err)
+	}
+
+	cfgs, _ := src.LoadRollupConfigs()
+	if len(cfgs.Rollups) != 1 {
+		t.Errorf("expected 1 persisted config after rejection, got %d", len(cfgs.Rollups))
+	}
+}
+
+func TestCreateRollupForceRecreateReplaces(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "force")
+	defer src.Close()
+
+	mgr := NewManager(src, "force", provider)
+	defer mgr.Stop()
+
+	st1, err := mgr.CreateRollup(CreateRollupRequest{Window: "1m", AggFields: "temp:avg", Retention: "1d"})
+	if err != nil {
+		t.Fatalf("first CreateRollup: %v", err)
+	}
+
+	st2, err := mgr.CreateRollup(CreateRollupRequest{Window: "1m", AggFields: "temp:avg+max", Retention: "1d", ForceRecreate: true})
+	if err != nil {
+		t.Fatalf("force_recreate CreateRollup: %v", err)
+	}
+	if st2.ID == st1.ID {
+		t.Errorf("force_recreate should retire the old rollup and mint a new one")
+	}
+
+	cfgs, _ := src.LoadRollupConfigs()
+	if len(cfgs.Rollups) != 1 {
+		t.Errorf("expected exactly 1 persisted config after force_recreate, got %d", len(cfgs.Rollups))
+	}
+	mgr.mu.RLock()
+	_, oldAlive := mgr.workers[st1.ID]
+	_, newAlive := mgr.workers[st2.ID]
+	n := len(mgr.workers)
+	mgr.mu.RUnlock()
+	if oldAlive || !newAlive || n != 1 {
+		t.Errorf("worker map wrong after force_recreate: old=%v new=%v total=%d", oldAlive, newAlive, n)
 	}
 }

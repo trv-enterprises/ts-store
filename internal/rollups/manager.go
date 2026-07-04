@@ -138,6 +138,51 @@ func (m *Manager) CreateRollup(req CreateRollupRequest) (Status, error) {
 		return Status{}, ErrManagerClosed
 	}
 
+	// Enforce the documented create semantics against rollups already
+	// writing to this target: an identical spec is idempotent (returns the
+	// existing rollup), a changed spec is rejected unless force_recreate,
+	// which retires the old rollup before the fresh create below. Without
+	// this, every POST appended a config and started a second worker racing
+	// on the same target windows.
+	cfgs, err := m.source.LoadRollupConfigs()
+	if err != nil {
+		return Status{}, err
+	}
+	for _, rc := range cfgs.Rollups {
+		if rc.TargetStore != targetName {
+			continue
+		}
+		if req.ForceRecreate {
+			if w := m.workers[rc.ID]; w != nil {
+				w.Stop()
+				delete(m.workers, rc.ID)
+			}
+			if err := m.source.RemoveRollupConfig(rc.ID); err != nil {
+				return Status{}, fmt.Errorf("retire rollup %s for force_recreate: %w", rc.ID, err)
+			}
+			continue
+		}
+		if !sameRollupSpec(rc, req, cw) {
+			return Status{}, fmt.Errorf("rollup %s already writes to %q with a different spec; pass force_recreate to apply new parameters", rc.ID, targetName)
+		}
+		if w := m.workers[rc.ID]; w != nil {
+			return w.Status(), nil
+		}
+		// Config matches but its worker isn't running (e.g. failed at
+		// load) — rebuild it under the existing ID instead of duplicating.
+		target, terr := m.ensureTarget(targetName, cw, req)
+		if terr != nil {
+			return Status{}, terr
+		}
+		w, werr := m.buildWorkerWithTarget(rc, target)
+		if werr != nil {
+			return Status{}, werr
+		}
+		m.workers[rc.ID] = w
+		w.Start()
+		return w.Status(), nil
+	}
+
 	target, err := m.ensureTarget(targetName, cw, req)
 	if err != nil {
 		return Status{}, err
@@ -168,6 +213,20 @@ func (m *Manager) CreateRollup(req CreateRollupRequest) (Status, error) {
 	m.workers[rc.ID] = w
 	w.Start()
 	return w.Status(), nil
+}
+
+// sameRollupSpec reports whether an existing config matches the request's
+// spec exactly (window compared in canonical form). Any difference is a
+// parameter change, which the API contract requires force_recreate for.
+func sameRollupSpec(rc store.RollupConfig, req CreateRollupRequest, cw string) bool {
+	return rc.WindowDuration == cw &&
+		rc.AggFields == req.AggFields &&
+		rc.AggDefault == req.AggDefault &&
+		rc.PollInterval == req.PollInterval &&
+		rc.RestartPolicy == req.RestartPolicy &&
+		rc.Retention == req.Retention &&
+		rc.EdgeTolerance == req.EdgeTolerance &&
+		rc.Name == req.Name
 }
 
 // ensureTarget resolves the target store, auto-creating it (sized + schema'd)
