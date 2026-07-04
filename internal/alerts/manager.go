@@ -314,10 +314,10 @@ func (m *Manager) GetAlert(alertID string) (Status, error) {
 // Exactly one of WebhookConfig, WSConfig, or MQTTConfig is non-nil,
 // matching Status.Type.
 type AlertDetail struct {
-	Status        Status               `json:",inline"`
-	WebhookConfig *store.WebhookAlert  `json:"webhook,omitempty"`
-	WSConfig      *store.WSAlert       `json:"ws,omitempty"`
-	MQTTConfig    *store.MQTTAlert     `json:"mqtt,omitempty"`
+	Status        Status              `json:",inline"`
+	WebhookConfig *store.WebhookAlert `json:"webhook,omitempty"`
+	WSConfig      *store.WSAlert      `json:"ws,omitempty"`
+	MQTTConfig    *store.MQTTAlert    `json:"mqtt,omitempty"`
 }
 
 // MarshalJSON flattens Status into the top-level object so the response
@@ -499,7 +499,7 @@ func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWorker(Options{
+	w, err := NewWorker(Options{
 		Store:        m.store,
 		StoreName:    m.storeName,
 		ID:           a.ID,
@@ -511,6 +511,14 @@ func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
 		CursorPath:   cursorPathFor(m.store, "webhook", a.ID),
 		CreatedAt:    a.CreatedAt,
 	})
+	if err != nil {
+		sink.Close() // sink owns a running goroutine; don't leak it
+		return nil, err
+	}
+	// Webhook deliveries are async — surface their failures in the
+	// worker's status/metrics rather than only the process log.
+	sink.SetOnError(w.noteDeliveryFailure)
+	return w, nil
 }
 
 func (m *Manager) buildWSWorker(a store.WSAlert) (*Worker, error) {
