@@ -18,6 +18,14 @@ import (
 	"github.com/tviviano/ts-store/pkg/store"
 )
 
+// pusherWriteTimeout bounds each outbound write. Writes happen while
+// holding p.mu, which Status() and Stop() also take — without a deadline,
+// one stalled remote (TCP zero-window) blocks the write forever and hangs
+// the connections API and DeleteConnection for the whole store. The MQTT
+// pusher already bounds its writes the same way. Var (not const) so tests
+// can exercise the timeout path quickly.
+var pusherWriteTimeout = 10 * time.Second
+
 // Pusher handles outbound push connections (ts-store -> remote).
 type Pusher struct {
 	mu        sync.RWMutex
@@ -359,6 +367,7 @@ func (p *Pusher) sendNewData() error {
 		}
 
 		p.mu.Lock()
+		p.conn.SetWriteDeadline(time.Now().Add(pusherWriteTimeout))
 		err = p.conn.WriteJSON(msg)
 		if err != nil {
 			p.mu.Unlock()
@@ -430,6 +439,7 @@ func (p *Pusher) sendAggResult(result *aggregation.AggResult) error {
 		Data:      result.Data,
 	}
 
+	p.conn.SetWriteDeadline(time.Now().Add(pusherWriteTimeout))
 	if err := p.conn.WriteJSON(msg); err != nil {
 		return err
 	}
