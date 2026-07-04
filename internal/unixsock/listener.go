@@ -167,7 +167,11 @@ func (l *Listener) handleConnection(conn net.Conn) {
 	writer.WriteString("OK\n")
 	writer.Flush()
 
-	// Process data lines
+	// Process data lines. The read deadline exists only for
+	// interruptibility (checking l.done); a timeout mid-line must not
+	// discard the bytes already consumed from the buffer, so partial
+	// reads accumulate in pending until the newline arrives.
+	var pending strings.Builder
 	for {
 		select {
 		case <-l.done:
@@ -178,15 +182,17 @@ func (l *Listener) handleConnection(conn net.Conn) {
 		// Set read deadline for interruptibility
 		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 
-		line, err := reader.ReadString('\n')
+		chunk, err := reader.ReadString('\n')
+		pending.WriteString(chunk)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
+				continue // line not complete yet; keep accumulating
 			}
 			return
 		}
 
-		line = strings.TrimSpace(line)
+		line := strings.TrimSpace(pending.String())
+		pending.Reset()
 		if line == "" {
 			continue
 		}
