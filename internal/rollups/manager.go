@@ -256,8 +256,8 @@ func (m *Manager) ensureTarget(targetName, cw string, req CreateRollupRequest) (
 		return existing, nil
 	}
 
-	// Auto-create a new, sized target.
-	sz, err := deriveSizing(req.Retention, req.Window, req.AggFields, req.AggDefault, req.EdgeTolerance)
+	// Auto-create a new, sized target, using the exact derived schema size.
+	sz, err := deriveSizing(req.Retention, req.Window, len(derivedSchema.Fields), req.EdgeTolerance)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +289,7 @@ func (m *Manager) recreateTarget(targetName, cw string, req CreateRollupRequest,
 	if err := m.provider.DeleteStore(targetName); err != nil {
 		return nil, fmt.Errorf("recreate: delete %q: %w", targetName, err)
 	}
-	sz, err := deriveSizing(req.Retention, req.Window, req.AggFields, req.AggDefault, req.EdgeTolerance)
+	sz, err := deriveSizing(req.Retention, req.Window, len(derivedSchema.Fields), req.EdgeTolerance)
 	if err != nil {
 		return nil, err
 	}
