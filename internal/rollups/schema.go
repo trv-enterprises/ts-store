@@ -11,12 +11,55 @@ import (
 
 	"github.com/tviviano/ts-store/internal/aggregation"
 	"github.com/tviviano/ts-store/pkg/schema"
+	"github.com/tviviano/ts-store/pkg/store"
 )
 
 // windowCountField is the per-record sample-count field written on every rollup
 // record. Load-bearing: consumers need it to compute correct count-weighted
 // averages when re-aggregating to coarser tiers. Never drop it.
 const windowCountField = "window_count"
+
+// mergeTargetSchema returns the target's current schema extended (matched by
+// NAME) with any derived fields it lacks, appended with fresh indices. Schema
+// evolution validates by INDEX, so a re-derived schema can't be applied
+// directly — after source drift it re-numbers fields (e.g. a new aggregate
+// would claim window_count's index) and would be rejected as append-only
+// violation. Returns nil when the target already covers every derived field
+// (avoids pointless schema version bumps).
+func mergeTargetSchema(target *store.Store, derived *schema.Schema) *schema.Schema {
+	ss := target.GetSchemaSet()
+	if ss == nil {
+		return derived
+	}
+	current, err := ss.GetCurrentSchema()
+	if err != nil || current == nil {
+		return derived
+	}
+
+	have := make(map[string]bool, len(current.Fields))
+	maxIdx := 0
+	merged := &schema.Schema{Fields: append([]schema.Field(nil), current.Fields...)}
+	for _, f := range current.Fields {
+		have[f.Name] = true
+		if f.Index > maxIdx {
+			maxIdx = f.Index
+		}
+	}
+
+	added := false
+	for _, f := range derived.Fields {
+		if have[f.Name] {
+			continue
+		}
+		maxIdx++
+		merged.Fields = append(merged.Fields, schema.Field{Index: maxIdx, Name: f.Name, Type: f.Type})
+		added = true
+	}
+	if !added {
+		return nil
+	}
+	return merged
+}
 
 // outputField describes one field of the derived target (rollup) schema.
 type outputField struct {
