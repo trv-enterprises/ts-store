@@ -148,18 +148,17 @@ func secureCompare(a, b string) bool {
 	return result == 0
 }
 
-// CORS creates CORS middleware.
+// CORS creates CORS middleware. The API is deliberately open to any origin:
+// auth is header-based (X-API-Key / X-Admin-Key), never cookies, so a plain
+// wildcard carries no ambient credentials. Reflecting the request Origin
+// together with Access-Control-Allow-Credentials (the previous behavior) is
+// the canonical CORS misconfiguration and would matter the moment any
+// cookie- or session-based auth appeared.
 func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		origin := c.GetHeader("Origin")
-		if origin == "" {
-			origin = "*"
-		}
-
-		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, X-API-Key, X-Admin-Key, Authorization")
-		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 
 		if c.Request.Method == "OPTIONS" {
