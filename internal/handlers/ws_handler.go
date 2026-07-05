@@ -16,8 +16,11 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	// Any origin may connect, consistent with the wildcard CORS policy in
+	// middleware.CORS: auth is per-request (api_key on the handshake),
+	// never ambient, so origin checks add no protection here.
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for WebSocket
+		return true
 	},
 }
 
