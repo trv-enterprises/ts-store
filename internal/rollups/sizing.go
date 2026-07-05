@@ -78,8 +78,10 @@ type sizing struct {
 // deriveSizing computes target store capacity from retention + window, choosing
 // a partition count so worst-case over-retention (1/P) stays within
 // edgeTolerance, then rounding capacity UP so the store holds at least the
-// requested retention.
-func deriveSizing(retentionStr, windowStr, aggFields, aggDefault string, edgeTolerance float64) (sizing, error) {
+// requested retention. outputFields is the exact field count of the derived
+// target schema (window_count included) — the fixed footprint is the product's
+// core promise, so sizing must not guess when the caller already knows.
+func deriveSizing(retentionStr, windowStr string, outputFields int, edgeTolerance float64) (sizing, error) {
 	if retentionStr == "" {
 		retentionStr = defaultRetention
 	}
@@ -101,12 +103,11 @@ func deriveSizing(retentionStr, windowStr, aggFields, aggDefault string, edgeTol
 	// records = ceil(retention / window)
 	recordsToRetain := int64((retention + window - 1) / window)
 
-	// Estimate per-record size: object header + one entry per agg output field
-	// (+ window_count). estimateOutputFields is a generous upper bound.
-	nFields := estimateOutputFields(aggFields, aggDefault) + 1 // +1 for window_count
-	bytesPerRecord := int64(block.ObjectHeaderSize) + int64(nFields*bytesPerAggField)
-
-	usableBytes := recordsToRetain * bytesPerRecord
+	// Per-record size: object header + one entry per schema field.
+	if outputFields < 1 {
+		outputFields = 1
+	}
+	bytesPerRecord := int64(block.ObjectHeaderSize) + int64(outputFields*bytesPerAggField)
 
 	// Records that fit in one data block.
 	usablePerBlock := int64(block.UsableDataSize(dataBlockSize)) - int64(block.ObjectHeaderSize)
@@ -149,7 +150,6 @@ func deriveSizing(retentionStr, windowStr, aggFields, aggDefault string, edgeTol
 	actualRecords := blocksPerPartition * recordsPerBlock * p
 	actualRetention := time.Duration(actualRecords) * window
 
-	_ = usableBytes // documented intent; capacity is block-rounded above
 	return sizing{
 		numPartitions:   uint32(p),
 		totalSize:       totalSize,

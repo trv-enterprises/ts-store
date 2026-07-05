@@ -126,7 +126,7 @@ func TestDerivedTargetName(t *testing.T) {
 
 func TestDeriveSizing(t *testing.T) {
 	// 1y hourly, 10% edge tolerance.
-	sz, err := deriveSizing("1y", "1h", "temp:avg", "", 0.10)
+	sz, err := deriveSizing("1y", "1h", 2, 0.10)
 	if err != nil {
 		t.Fatalf("deriveSizing: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestRollupOnce_TrailingClosedWindows(t *testing.T) {
 
 	// Build the target + worker directly (no background loop) so we control
 	// exactly when rollupOnce runs.
-	sz, err := deriveSizing("1d", "1m", "temp:avg", "", 0)
+	sz, err := deriveSizing("1d", "1m", 2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,5 +490,42 @@ func TestCreateRollupForceRecreateReplaces(t *testing.T) {
 	mgr.mu.RUnlock()
 	if oldAlive || !newAlive || n != 1 {
 		t.Errorf("worker map wrong after force_recreate: old=%v new=%v total=%d", oldAlive, newAlive, n)
+	}
+}
+
+// Regression test for issue #25: target sizing used a blind estimate
+// (8 fields per default function) instead of the derived schema it had just
+// computed, oversizing the fixed-footprint target several-fold. For a
+// 1-field source with default "min,max,avg" the schema is 4 fields
+// (3 aggregates + window_count); the old estimate assumed 25.
+func TestTargetSizedFromDerivedSchema(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "sized")
+	defer src.Close()
+
+	mgr := NewManager(src, "sized", provider)
+	defer mgr.Stop()
+
+	if _, err := mgr.CreateRollup(CreateRollupRequest{
+		Window: "1m", AggDefault: "min,max,avg", Retention: "1d",
+	}); err != nil {
+		t.Fatalf("CreateRollup: %v", err)
+	}
+
+	target, err := provider.GetOrOpenStore("sized-1m")
+	if err != nil {
+		t.Fatalf("open target: %v", err)
+	}
+	cfg := target.Config()
+	footprint := int64(cfg.BlocksPerPartition()) * int64(cfg.NumPartitions) * int64(cfg.DataBlockSize)
+
+	// 1440 records/day at ~4 fields x 16 bytes each fits comfortably under
+	// 300KB; the old 25-field estimate produced ~655KB.
+	if footprint > 300_000 {
+		t.Errorf("target footprint %d bytes — sized from an estimate, not the derived schema", footprint)
+	}
+	if footprint <= 0 {
+		t.Errorf("nonsensical footprint %d", footprint)
 	}
 }

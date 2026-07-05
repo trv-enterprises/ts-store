@@ -116,33 +116,6 @@ func deriveTargetSchema(aggFields, aggDefault string, srcNumeric map[string]bool
 	return sch, nil
 }
 
-// estimateOutputFields returns a count of derived output fields for sizing.
-// Without the source schema it can't know which fields the default applies to,
-// so it counts explicit specs (expanding multi-func) and adds a small cushion
-// when a default is set. Used only for capacity estimation (rounds up anyway).
-func estimateOutputFields(aggFields, aggDefault string) int {
-	explicit, err := aggregation.ParseFieldAggs(aggFields)
-	if err != nil {
-		return 8 // conservative fallback
-	}
-	n := 0
-	for _, fa := range explicit {
-		if len(fa.Functions) > 0 {
-			n += len(fa.Functions)
-		} else {
-			n++
-		}
-	}
-	defaults, _ := parseFuncs(aggDefault)
-	if len(defaults) > 0 {
-		// Cushion for default-covered source fields (unknown count here).
-		n += 8 * len(defaults)
-	}
-	if n < 1 {
-		n = 8
-	}
-	return n
-}
 
 func aggResultType(fn aggregation.AggFunc, srcNumeric bool) schema.FieldType {
 	switch fn {
