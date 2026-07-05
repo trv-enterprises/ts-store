@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tviviano/ts-store/internal/duration"
 	"github.com/tviviano/ts-store/pkg/schema"
 )
 
@@ -153,6 +154,30 @@ func (c *Config) IsNumeric(field string, value interface{}) bool {
 		return true
 	}
 	return false
+}
+
+// ValidateSpec checks a stream aggregation spec (window + per-field funcs +
+// default func) with exactly the parsing a pusher's initAggregation will do,
+// so connection create paths can reject a bad spec with a clean error
+// instead of persisting it and silently streaming raw records.
+func ValidateSpec(windowStr, fieldsStr, defaultFn string) error {
+	if windowStr == "" {
+		return fmt.Errorf("agg_window is required when agg_fields or agg_default is set")
+	}
+	window, err := duration.ParseDuration(windowStr)
+	if err != nil {
+		return fmt.Errorf("agg_window: %w", err)
+	}
+	fields, err := ParseFieldAggs(fieldsStr)
+	if err != nil {
+		return fmt.Errorf("agg_fields: %w", err)
+	}
+	// numericMap only shapes which fields get aggregated at runtime; it
+	// doesn't affect spec validity.
+	if _, err := NewConfig(window, fields, AggFunc(defaultFn), nil); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ParseFieldAggs parses field aggregation strings into []FieldAgg.
