@@ -7,12 +7,14 @@ package mqtt
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tviviano/ts-store/internal/aggregation"
 	"github.com/tviviano/ts-store/pkg/store"
 )
 
@@ -166,6 +168,15 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 
 	if m.closed {
 		return nil, ErrManagerClosed
+	}
+
+	// Reject bad aggregation specs up front: the pusher's init would only
+	// log "continuing without aggregation", leaving a 201-created
+	// connection silently streaming raw records forever.
+	if req.AggWindow != "" || req.AggFields != "" || req.AggDefault != "" {
+		if err := aggregation.ValidateSpec(req.AggWindow, req.AggFields, req.AggDefault); err != nil {
+			return nil, fmt.Errorf("invalid aggregation config: %w", err)
+		}
 	}
 
 	// Generate ID
