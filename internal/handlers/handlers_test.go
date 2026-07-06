@@ -775,3 +775,60 @@ func TestWSWriterRejectsOversizedFrame(t *testing.T) {
 		t.Fatal("server kept the connection after an oversized frame")
 	}
 }
+
+// Tests for issue #34: POST /alerts/test dry-runs a condition without
+// creating an alert.
+func TestAlertConditionDryRun(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewAlertsHandler(nil) // Test uses no manager: rules are pure
+	r.POST("/test", h.Test)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	// Matching record
+	w := post(`{"condition": "temperature > 80", "data": {"temperature": 95}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("match case: %d: %s", w.Code, w.Body.String())
+	}
+	var resp TestAlertResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if !resp.Matched {
+		t.Error("expected matched=true for temperature 95 > 80")
+	}
+	if len(resp.Conditions) != 1 || resp.Conditions[0].Field != "temperature" {
+		t.Errorf("parsed conditions: %+v", resp.Conditions)
+	}
+
+	// Non-matching record — the misspelled-field case the endpoint exists for
+	w = post(`{"condition": "temperature > 80", "data": {"temprature": 95}}`)
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if w.Code != http.StatusOK || resp.Matched {
+		t.Errorf("misspelled field must be matched=false, got %d %s", w.Code, w.Body.String())
+	}
+
+	// Compound condition
+	w = post(`{"condition": "temperature > 80 AND humidity < 30", "data": {"temperature": 95, "humidity": 20}}`)
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if !resp.Matched || resp.LogicalOp != "AND" || len(resp.Conditions) != 2 {
+		t.Errorf("compound: %+v", resp)
+	}
+
+	// Invalid condition -> 400 with the parse error
+	w = post(`{"condition": "temperature > 80 extra", "data": {}}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid condition: status %d, want 400", w.Code)
+	}
+
+	// Missing condition -> 400
+	w = post(`{"data": {"temperature": 95}}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing condition: status %d, want 400", w.Code)
+	}
+}

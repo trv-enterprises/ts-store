@@ -354,6 +354,7 @@ func runServer(args []string) {
 			{
 				alertsGroup.GET("", alertsHandler.List)
 				alertsGroup.POST("", alertsHandler.Create)
+				alertsGroup.POST("/test", alertsHandler.Test)
 				alertsGroup.GET("/:id", alertsHandler.Get)
 				alertsGroup.DELETE("/:id", alertsHandler.Delete)
 			}
