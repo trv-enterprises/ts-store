@@ -117,6 +117,7 @@ All endpoints require the store's `X-API-Key` (same as streaming endpoints).
 | Method | Path | Body | Description |
 |---|---|---|---|
 | POST   | `/api/stores/{store}/alerts` | `CreateAlertRequest` | Create an alert. The `type` field discriminates webhook / ws / mqtt. |
+| POST   | `/api/stores/{store}/alerts/test` | `{condition, data}` | Dry-run a condition against a sample record — returns how it parsed and whether it matched. No alert is created. |
 | GET    | `/api/stores/{store}/alerts` | — | List all alerts (all three types, tagged with `type`). |
 | GET    | `/api/stores/{store}/alerts/{id}` | — | Get one alert's runtime status + persisted config (secrets redacted). |
 | DELETE | `/api/stores/{store}/alerts/{id}` | — | Stop the worker and remove the persisted config. |
@@ -224,6 +225,9 @@ tsstore alerts mqtt add <store> --broker <url> --topic <t> \
   --name high-temp --condition "temperature > 80" \
   [--qos 0|1|2] [--username u --password p] \
   [--restart now|resume] [--max-replay 1h]
+
+# Dry-run a condition against a sample record (no alert created)
+tsstore alerts test <store> --condition "temperature > 80" --data '{"temperature": 95}'
 
 # List / delete
 tsstore alerts list <store>

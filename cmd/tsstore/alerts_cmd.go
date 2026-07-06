@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -21,6 +22,7 @@ Subcommands:
   ws      add <store> --url <ws-url>  [options]  Create a WS alert
   mqtt    add <store> --broker <url> --topic <t> [options]  Create an MQTT alert
   list    <store>                                List all alerts for a store
+  test    <store> --condition <expr> --data <json>  Dry-run a condition against a sample record
   rm      <store> <alert-id>                     Delete an alert
 
 Required rule options (every create needs these):
@@ -64,6 +66,8 @@ func runAlertsCommand(args []string) {
 		runAlertsList(args[1:])
 	case "rm", "delete", "remove":
 		runAlertsRm(args[1:])
+	case "test":
+		runAlertsTest(args[1:])
 	case "-h", "--help":
 		printAlertsUsage()
 	default:
@@ -441,4 +445,55 @@ func runAlertsRm(args []string) {
 	}
 	cfg := loadStreamConfig()
 	apiDelete(cfg, key, fmt.Sprintf("/api/stores/%s/alerts/%s", storeName, alertID))
+}
+
+// runAlertsTest dry-runs a condition against a sample record via
+// POST /alerts/test — no alert is created.
+func runAlertsTest(args []string) {
+	var storeName, apiKey, condition, dataJSON string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--condition":
+			i, _ = consumeFlag(args, i, &condition)
+		case "--data":
+			i, _ = consumeFlag(args, i, &dataJSON)
+		case "--api-key":
+			i, _ = consumeFlag(args, i, &apiKey)
+		case "-h", "--help":
+			fmt.Println(`Usage: tsstore alerts test <store> --condition <expr> --data <json> [--api-key <k>]
+
+Dry-runs a rule condition against a sample record without creating an
+alert. Shows how the condition parsed and whether it would have fired.
+
+Example:
+  tsstore alerts test sensors --condition "temperature > 80" --data '{"temperature": 95}'`)
+			return
+		default:
+			if storeName == "" && !strings.HasPrefix(args[i], "-") {
+				storeName = args[i]
+			} else {
+				fmt.Printf("Unknown option: %s\n", args[i])
+				os.Exit(1)
+			}
+		}
+	}
+	if storeName == "" || condition == "" {
+		fmt.Println("Error: store name and --condition are required")
+		os.Exit(1)
+	}
+	var data map[string]interface{}
+	if dataJSON != "" {
+		if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
+			fmt.Printf("Error: --data is not valid JSON: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	key := resolveAPIKey(apiKey)
+	if key == "" {
+		fmt.Println("Error: API key required")
+		os.Exit(1)
+	}
+	cfg := loadStreamConfig()
+	body := map[string]interface{}{"condition": condition, "data": data}
+	apiPost(cfg, key, fmt.Sprintf("/api/stores/%s/alerts/test", storeName), body)
 }

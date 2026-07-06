@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/alerts"
 	"github.com/tviviano/ts-store/internal/middleware"
+	"github.com/tviviano/ts-store/internal/rules"
 )
 
 // AlertsHandler exposes webhook/WS/MQTT alert CRUD under /api/stores/:store/alerts.
@@ -101,4 +102,61 @@ func (h *AlertsHandler) Delete(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "alert deleted"})
+}
+
+// TestAlertRequest is the wire shape for POST /api/stores/:store/alerts/test.
+type TestAlertRequest struct {
+	Condition string                 `json:"condition"`
+	Data      map[string]interface{} `json:"data"`
+}
+
+// TestedCondition echoes one parsed comparison back to the caller.
+type TestedCondition struct {
+	Field    string      `json:"field"`
+	Operator string      `json:"operator"`
+	Value    interface{} `json:"value"`
+}
+
+// TestAlertResponse reports how the condition parsed and whether it matched
+// the sample record.
+type TestAlertResponse struct {
+	Matched    bool              `json:"matched"`
+	LogicalOp  string            `json:"logical_op,omitempty"`
+	Conditions []TestedCondition `json:"conditions"`
+}
+
+// Test handles POST /api/stores/:store/alerts/test: dry-runs a condition
+// against a sample record without creating an alert. A condition on a
+// misspelled field otherwise validates, persists, and silently never fires —
+// this is the only way to see what a rule actually does before going live.
+func (h *AlertsHandler) Test(c *gin.Context) {
+	var req TestAlertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Condition == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "condition is required"})
+		return
+	}
+
+	rule, err := rules.Parse("test", req.Condition)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp := TestAlertResponse{
+		Matched:    rule.Evaluate(req.Data),
+		LogicalOp:  rule.LogicalOp,
+		Conditions: make([]TestedCondition, 0, len(rule.Conditions)),
+	}
+	for _, cond := range rule.Conditions {
+		resp.Conditions = append(resp.Conditions, TestedCondition{
+			Field:    cond.Field,
+			Operator: string(cond.Operator),
+			Value:    cond.Value,
+		})
+	}
+	c.JSON(http.StatusOK, resp)
 }
