@@ -33,6 +33,11 @@ type WSWriteResponse struct {
 // per-write deadline every ack fails once that elapses (~30s into a session).
 const wsWriteTimeout = 10 * time.Second
 
+// wsMaxMessageBytes bounds a single inbound WS frame; without it one frame
+// can buffer gigabytes (issue #30). Var (not const) so tests can exercise
+// the limit quickly.
+var wsMaxMessageBytes int64 = 4 << 20
+
 // wsWriter handles receiving data from a WebSocket client and storing it.
 type wsWriter struct {
 	conn    *websocket.Conn
@@ -47,6 +52,7 @@ func newWSWriter(conn *websocket.Conn, st *store.Store, format string) *wsWriter
 		format = "full"
 	}
 
+	conn.SetReadLimit(wsMaxMessageBytes)
 	return &wsWriter{
 		conn:    conn,
 		store:   st,

@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/tviviano/ts-store/internal/apikey"
 	"github.com/tviviano/ts-store/internal/config"
 	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/service"
+	"github.com/tviviano/ts-store/pkg/store"
 )
 
 func setupTestRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.Manager, string) {
@@ -686,5 +688,90 @@ func TestUnfilteredNewestNoScanSignal(t *testing.T) {
 	}
 	if resp.Scan != nil {
 		t.Errorf("expected no scan signal on unfiltered query, got %+v", resp.Scan)
+	}
+}
+
+// Regression test for issue #30: ?limit= was uncapped and the response slice
+// is pre-allocated at that capacity — limit=2000000000 pre-allocated ~96GB.
+// The value must clamp, not error and not allocate.
+func TestQueryLimitClamped(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	body := `{"name": "limit-clamp"}`
+	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	var createResp service.CreateStoreResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		insertBody := fmt.Sprintf(`{"timestamp": %d, "data": {"i": %d}}`, int64(i)*1000000000, i)
+		req, _ = http.NewRequest("POST", "/api/stores/limit-clamp/data", bytes.NewBufferString(insertBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", createResp.APIKey)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+			t.Fatalf("insert %d: %d: %s", i, w.Code, w.Body.String())
+		}
+	}
+
+	req, _ = http.NewRequest("GET", "/api/stores/limit-clamp/data/newest?limit=2000000000", nil)
+	req.Header.Set("X-API-Key", createResp.APIKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("clamped limit: status %d: %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Objects []json.RawMessage `json:"objects"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if len(out.Objects) != 3 {
+		t.Errorf("expected all 3 records, got %d", len(out.Objects))
+	}
+}
+
+// Regression test for issue #30 (WS side): a single frame could buffer
+// unbounded bytes; gorilla must now terminate the connection at the limit.
+func TestWSWriterRejectsOversizedFrame(t *testing.T) {
+	serverConn, clientConn := wsConnPair(t)
+
+	old := wsMaxMessageBytes
+	wsMaxMessageBytes = 1 << 10 // 1KB for the test
+	defer func() { wsMaxMessageBytes = old }()
+
+	cfg := store.DefaultConfig()
+	cfg.Name = "ws-frame-limit"
+	cfg.Path = t.TempDir()
+	cfg.NumBlocks = 8
+	s, err := store.Create(cfg)
+	if err != nil {
+		t.Fatalf("Create store: %v", err)
+	}
+	defer s.Close()
+
+	w := newWSWriter(serverConn, s, "full")
+	done := make(chan struct{})
+	go func() { defer close(done); w.run() }()
+
+	// Oversized frame: the server must drop the connection, not buffer it.
+	big := append([]byte(`{"data": {"blob": "`), bytes.Repeat([]byte("x"), 4<<10)...)
+	big = append(big, []byte(`"}}`)...)
+	if err := clientConn.WriteMessage(websocket.TextMessage, big); err != nil {
+		t.Fatalf("client write: %v", err)
+	}
+
+	select {
+	case <-done: // run() exited: connection terminated at the read limit
+	case <-time.After(3 * time.Second):
+		t.Fatal("server kept the connection after an oversized frame")
 	}
 }

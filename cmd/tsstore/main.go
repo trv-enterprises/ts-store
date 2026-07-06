@@ -255,6 +255,7 @@ func runServer(args []string) {
 	router.Use(gin.Recovery())
 	router.Use(middleware.CORS())
 	router.Use(middleware.RequestLogger())
+	router.Use(middleware.BodyLimit(middleware.MaxRequestBodyBytes))
 
 	// Health check (no auth required)
 	router.GET("/health", func(c *gin.Context) {
