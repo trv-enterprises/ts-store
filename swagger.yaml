@@ -702,6 +702,11 @@ paths:
 
         A store with no connections of a given kind returns an empty array for
         that key rather than an error.
+
+        The response includes a `meta` envelope identifying where the data came
+        from (`store`, `host`, `server_version`) and when (`as_of`), so
+        consumers rendering it can detect a misdirected connection or a stale
+        feed instead of trusting the request URL.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -723,6 +728,26 @@ paths:
               schema:
                 type: object
                 properties:
+                  meta:
+                    type: object
+                    description: Identifies where the data came from and when.
+                    properties:
+                      store:
+                        type: string
+                        description: Store the response describes (echoes the path parameter).
+                        example: system-stats-1m
+                      host:
+                        type: string
+                        description: Hostname of the serving instance. Empty if the host could not be resolved.
+                        example: trv-pi-001
+                      as_of:
+                        type: string
+                        format: date-time
+                        description: Server time the response was generated (RFC3339, UTC).
+                      server_version:
+                        type: string
+                        description: tsstore release version of the serving instance.
+                        example: v0.12.0
                   ws:
                     type: array
                     items:

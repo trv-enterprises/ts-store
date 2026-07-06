@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/alerts"
@@ -87,6 +88,47 @@ func TestConnectionsListIncludeAlerts(t *testing.T) {
 	if string(alertsRaw) != "[]" {
 		t.Errorf("expected alerts=[], got %s", alertsRaw)
 	}
+}
+
+// TestConnectionsListMetaEnvelope confirms every response carries the meta
+// envelope: the store the data belongs to, the serving host, the server
+// version, and a parseable RFC3339 as_of timestamp (issue #92 — lets
+// consumers detect a misdirected connection or stale feed).
+func TestConnectionsListMetaEnvelope(t *testing.T) {
+	h := NewConnectionsHandler(
+		func(string) *ws.Manager { return nil },
+		func(string) *mqtt.Manager { return nil },
+		func(string) *alerts.Manager { return nil },
+	)
+
+	c, w := newConnectionsTestContext(t, "")
+	h.List(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Meta struct {
+			Store         string `json:"store"`
+			Host          string `json:"host"`
+			AsOf          string `json:"as_of"`
+			ServerVersion string `json:"server_version"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Meta.Store != "s1" {
+		t.Errorf("meta.store: expected s1, got %q", resp.Meta.Store)
+	}
+	if _, err := time.Parse(time.RFC3339, resp.Meta.AsOf); err != nil {
+		t.Errorf("meta.as_of %q is not RFC3339: %v", resp.Meta.AsOf, err)
+	}
+	if resp.Meta.ServerVersion == "" {
+		t.Error("meta.server_version must be non-empty")
+	}
+	// Host comes from os.Hostname(); empty is a tolerated degradation, so we
+	// only assert the key decodes (covered by the struct above).
 }
 
 // TestMergeAlertsJoinsByID confirms status and metrics are zipped on the alert
