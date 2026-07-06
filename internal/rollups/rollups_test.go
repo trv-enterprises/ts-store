@@ -529,3 +529,103 @@ func TestTargetSizedFromDerivedSchema(t *testing.T) {
 		t.Errorf("nonsensical footprint %d", footprint)
 	}
 }
+
+// Regression test for issue #17: a source store gaining a field after the
+// worker derived its config permanently stalled the rollup — the aggregated
+// row carried the new field, the target's ValidateAndCompact rejected it,
+// and the cursor never advanced past the poison window.
+func TestRollupSurvivesSourceSchemaGrowth(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "drift") // schema: {temp}
+	defer src.Close()
+
+	minute := int64(time.Minute)
+	now := time.Now().UnixNano()
+	start := ((now - 100*minute) / minute) * minute
+
+	// Window A: temp only
+	putTemp(t, src, start+1, 10)
+
+	sz, err := deriveSizing("1d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("drift-1m", "", sz), "drift")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsch, err := deriveTargetSchema("", "avg", map[string]bool{"temp": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := target.SetSchema(tsch); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWorker(Options{
+		ID: "d1", SourceName: "drift", TargetName: "drift-1m",
+		Source: src, Target: target,
+		WindowDuration: "1m", AggDefault: "avg", RestartPolicy: "now",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.rollupOnce(); err != nil {
+		t.Fatalf("first rollupOnce: %v", err)
+	}
+
+	// The source gains a field (append-only schema evolution)...
+	if _, err := src.SetSchema(&schema.Schema{Fields: []schema.Field{
+		{Index: 1, Name: "temp", Type: schema.FieldTypeFloat64},
+		{Index: 2, Name: "hum", Type: schema.FieldTypeFloat64},
+	}}); err != nil {
+		t.Fatalf("grow source schema: %v", err)
+	}
+	// ...and window B carries the new field.
+	compact, err := src.ValidateAndCompact([]byte(`{"temp": 20, "hum": 55}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.PutObject(start+minute+1, compact); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first pass swept past window B while it was still empty; rewind
+	// the cursor to just before it, as a resume-policy worker would after
+	// a restart, so this pass re-reads the window that now has data.
+	w.mu.Lock()
+	w.lastWindowEnd = start + minute
+	w.mu.Unlock()
+
+	if err := w.rollupOnce(); err != nil {
+		t.Fatalf("rollupOnce after source schema growth: %v (rollup would stall forever)", err)
+	}
+
+	handles, err := target.GetOldestObjects(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 2 {
+		t.Fatalf("expected 2 rollup rows after schema growth, got %d", len(handles))
+	}
+
+	data, err := target.GetObject(handles[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := target.ExpandData(data, 0)
+	if err != nil {
+		t.Fatalf("expand row B: %v", err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(full, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["temp"] != 20.0 || m["hum"] != 55.0 {
+		t.Errorf("row B = %v, want temp=20 and hum=55", m)
+	}
+	if m[windowCountField] != 1.0 {
+		t.Errorf("row B window_count = %v, want 1", m[windowCountField])
+	}
+}

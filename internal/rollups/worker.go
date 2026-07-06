@@ -58,6 +58,8 @@ type Worker struct {
 	windowNanos   int64
 	windowStr     string // canonical window, e.g. "1h"
 	aggConfig     *aggregation.Config
+	aggFields     string // raw spec, kept so the config can be re-derived on schema drift
+	aggDefault    string
 	pollInterval  time.Duration
 	restartPolicy string
 	cursorPath    string
@@ -141,6 +143,8 @@ func NewWorker(opts Options) (*Worker, error) {
 		windowNanos:   window.Nanoseconds(),
 		windowStr:     cw,
 		aggConfig:     aggConfig,
+		aggFields:     opts.AggFields,
+		aggDefault:    opts.AggDefault,
 		pollInterval:  poll,
 		restartPolicy: restart,
 		cursorPath:    opts.CursorPath,
@@ -297,7 +301,18 @@ func (w *Worker) rollupOnce() error {
 		}
 		compact, err := w.target.ValidateAndCompact(payload)
 		if err != nil {
-			return fmt.Errorf("compact rollup record: %w", err)
+			// The usual cause: the source schema gained a field after this
+			// worker derived its config, so the row now carries a field the
+			// target doesn't know. Refresh (append-only) and retry once —
+			// otherwise this window errors forever and the rollup is dead
+			// until a manual force_recreate.
+			if rerr := w.refreshSchemaAndConfig(); rerr != nil {
+				return fmt.Errorf("compact rollup record: %w (schema refresh failed: %v)", err, rerr)
+			}
+			compact, err = w.target.ValidateAndCompact(payload)
+			if err != nil {
+				return fmt.Errorf("compact rollup record after schema refresh: %w", err)
+			}
 		}
 		if _, err := w.target.PutObject(windowEnd, compact); err != nil {
 			return fmt.Errorf("write rollup record @%d: %w", windowEnd, err)
@@ -308,6 +323,33 @@ func (w *Worker) rollupOnce() error {
 		processed++
 	}
 
+	return nil
+}
+
+// refreshSchemaAndConfig re-derives the target schema from the source's
+// CURRENT schema, extends the target (by name, append-only) with any new
+// fields, and rebuilds the aggregation config with a fresh numeric map.
+func (w *Worker) refreshSchemaAndConfig() error {
+	derived, err := deriveTargetSchema(w.aggFields, w.aggDefault, sourceNumeric(w.source))
+	if err != nil {
+		return fmt.Errorf("re-derive target schema: %w", err)
+	}
+	if merged := mergeTargetSchema(w.target, derived); merged != nil {
+		if _, err := w.target.SetSchema(merged); err != nil {
+			return fmt.Errorf("extend target schema: %w", err)
+		}
+	}
+
+	fields, err := aggregation.ParseFieldAggs(w.aggFields)
+	if err != nil {
+		return err
+	}
+	cfg, err := aggregation.NewConfig(time.Duration(w.windowNanos), fields,
+		aggregation.AggFunc(w.aggDefault), aggregation.BuildNumericMap(w.source.GetSchemaSet()))
+	if err != nil {
+		return err
+	}
+	w.aggConfig = cfg
 	return nil
 }
 

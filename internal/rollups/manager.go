@@ -248,10 +248,14 @@ func (m *Manager) ensureTarget(targetName, cw string, req CreateRollupRequest) (
 		if meta == nil || meta.RollupOf != m.sourceName {
 			return nil, fmt.Errorf("store %q already exists and isn't a compatible rollup of %q; set target_store to a different name or pass force_recreate", targetName, m.sourceName)
 		}
-		// Existing compatible rollup target: ensure schema is set/extended
-		// (append-only). Idempotent re-create lands here.
-		if _, err := existing.SetSchema(derivedSchema); err != nil {
-			return nil, fmt.Errorf("target %q schema incompatible (append-only): %w", targetName, err)
+		// Existing compatible rollup target: extend its schema (by name,
+		// append-only) with any newly derived fields. A raw SetSchema of the
+		// re-derived schema would re-number indices and be rejected after
+		// source drift; a no-op merge also avoids schema version bumps.
+		if merged := mergeTargetSchema(existing, derivedSchema); merged != nil {
+			if _, err := existing.SetSchema(merged); err != nil {
+				return nil, fmt.Errorf("target %q schema incompatible (append-only): %w", targetName, err)
+			}
 		}
 		return existing, nil
 	}
