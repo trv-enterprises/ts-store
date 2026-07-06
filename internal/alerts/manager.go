@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -380,6 +381,22 @@ var sensitiveHeaderNames = map[string]struct{}{
 	"x-access-token":      {},
 }
 
+// redactURL strips userinfo and query values from a sink URL for display.
+// Webhook URLs can carry bearer secrets in userinfo or query params; the
+// scheme/host/path is what identifies the target. On-disk values are
+// unchanged — this only shapes what read APIs and status echo back.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[unparseable-url]"
+	}
+	u.User = nil
+	if u.RawQuery != "" {
+		u.RawQuery = "[redacted]"
+	}
+	return u.String()
+}
+
 func redactHeaders(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return in
@@ -419,6 +436,7 @@ func (m *Manager) GetAlertDetail(alertID string) (AlertDetail, error) {
 		}
 		redacted := *cfg
 		redacted.Headers = redactHeaders(cfg.Headers)
+		redacted.URL = redactURL(cfg.URL)
 		detail.WebhookConfig = &redacted
 	case "ws":
 		cfg, err := m.store.GetWSAlert(alertID)
@@ -427,6 +445,7 @@ func (m *Manager) GetAlertDetail(alertID string) (AlertDetail, error) {
 		}
 		redacted := *cfg
 		redacted.Headers = redactHeaders(cfg.Headers)
+		redacted.URL = redactURL(cfg.URL)
 		detail.WSConfig = &redacted
 	case "mqtt":
 		cfg, err := m.store.GetMQTTAlert(alertID)
@@ -437,6 +456,7 @@ func (m *Manager) GetAlertDetail(alertID string) (AlertDetail, error) {
 		if redacted.Password != "" {
 			redacted.Password = "[redacted]"
 		}
+		redacted.BrokerURL = redactURL(cfg.BrokerURL)
 		detail.MQTTConfig = &redacted
 	}
 
@@ -504,7 +524,7 @@ func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
 		StoreName:    m.storeName,
 		ID:           a.ID,
 		Type:         "webhook",
-		Target:       a.URL,
+		Target:       redactURL(a.URL),
 		Rule:         a.AlertCommon,
 		Sink:         sink,
 		PollInterval: a.PollInterval,
@@ -528,7 +548,7 @@ func (m *Manager) buildWSWorker(a store.WSAlert) (*Worker, error) {
 		StoreName:    m.storeName,
 		ID:           a.ID,
 		Type:         "ws",
-		Target:       a.URL,
+		Target:       redactURL(a.URL),
 		Rule:         a.AlertCommon,
 		Sink:         sink,
 		PollInterval: a.PollInterval,
@@ -545,7 +565,7 @@ func (m *Manager) buildMQTTWorker(a store.MQTTAlert) (*Worker, error) {
 		StoreName:    m.storeName,
 		ID:           a.ID,
 		Type:         "mqtt",
-		Target:       fmt.Sprintf("%s -> %s", a.BrokerURL, a.Topic),
+		Target:       fmt.Sprintf("%s -> %s", redactURL(a.BrokerURL), a.Topic),
 		Rule:         a.AlertCommon,
 		Sink:         sink,
 		PollInterval: a.PollInterval,
