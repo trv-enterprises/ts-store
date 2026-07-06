@@ -63,6 +63,12 @@ jobs:
           # If the release exists (e.g. created earlier by `make release`),
           # the action appends these assets; otherwise it creates one with
           # the tag name as the title.
+          #
+          # Semver tags with a hyphen (v0.12.0-rc.1, v1.0.0-beta.2) are
+          # prereleases: mark them so they don't show as "Latest" on the
+          # releases page. Deploys are unaffected either way (they pin
+          # exact tags), this is for people browsing the repo.
+          prerelease: ${{ contains(steps.tag.outputs.name, '-') }}
           files: |
             dist/tsstore-${{ steps.tag.outputs.name }}-linux-amd64
             dist/tsstore-${{ steps.tag.outputs.name }}-linux-arm64

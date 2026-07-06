@@ -144,6 +144,7 @@ release: ## Full release: bump version, build, commit, tag, push (use with VERSI
 	@echo ""
 	@echo "Create GitHub release with binaries (optional):"
 	@echo "  gh release create $(VERSION) $(DIST_DIR)/$(BINARY_NAME)-$(VERSION)-*"
+	@echo "  (add --prerelease for rc/beta tags, e.g. v0.12.0-rc.1)"
 
 ## Deployment targets (require .env file with PI_HOST, PI_BINARY_PATH, PI_SERVICE)
 
