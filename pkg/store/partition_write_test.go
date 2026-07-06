@@ -275,3 +275,65 @@ func TestV2RangeScanStartBlockCorrectness(t *testing.T) {
 		}
 	}
 }
+
+// Regression test for issue #31: every put performed two metadata fsyncs
+// (partition + global) while the payload itself was never synced — pure
+// SD-card wear with no durability gain. Meta fsyncs are now amortized;
+// this covers the counter rotation and that clean lifecycle metadata
+// stays exact across the amortization boundary.
+func TestV2MetaSyncAmortized(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "fsync-amortized"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 300
+	cfg.NumPartitions = 3
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// White-box: puts between sync boundaries must not fsync each time.
+	for ts := int64(1); ts <= 3; ts++ {
+		if _, err := s.PutObject(ts, []byte("r")); err != nil {
+			t.Fatalf("PutObject: %v", err)
+		}
+	}
+	if got := s.currentPartition.putsSinceMetaSync; got != 3 {
+		t.Errorf("putsSinceMetaSync = %d, want 3 (meta must not fsync per put)", got)
+	}
+
+	// Cross the amortization boundary and the counter must rotate.
+	for ts := int64(4); ts <= int64(metaSyncEvery)+5; ts++ {
+		if _, err := s.PutObject(ts, []byte("r")); err != nil {
+			t.Fatalf("PutObject: %v", err)
+		}
+	}
+	if got := s.currentPartition.putsSinceMetaSync; got >= metaSyncEvery {
+		t.Errorf("putsSinceMetaSync = %d, counter never rotated", got)
+	}
+
+	// Clean close + reopen: metadata must be exact.
+	total := int64(metaSyncEvery) + 5
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s, err = Open(tmpDir, cfg.Name)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	handles, err := s.GetObjectsInRange(1, total, 0)
+	if err != nil {
+		t.Fatalf("GetObjectsInRange: %v", err)
+	}
+	if int64(len(handles)) != total {
+		t.Errorf("after reopen: %d records, want %d", len(handles), total)
+	}
+	if _, err := s.PutObject(total+1, []byte("more")); err != nil {
+		t.Errorf("PutObject after reopen: %v", err)
+	}
+}
