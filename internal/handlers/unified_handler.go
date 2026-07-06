@@ -99,6 +99,24 @@ func rollupInfoFor(st *store.Store) *RollupInfo {
 //   - application/octet-stream: raw binary body
 //   - text/plain: raw text body
 //   - application/json: JSON body with optional timestamp wrapper
+// maxQueryLimit caps the limit query param. The response slice is
+// pre-allocated at this capacity, so an unbounded value is an OOM lever on
+// small devices (issue #30).
+const maxQueryLimit = 10000
+
+// parseLimit reads the limit query param, falling back to def and clamping
+// to maxQueryLimit.
+func parseLimit(c *gin.Context, def int) int {
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(def)))
+	if err != nil || limit <= 0 {
+		return def
+	}
+	if limit > maxQueryLimit {
+		return maxQueryLimit
+	}
+	return limit
+}
+
 func (h *UnifiedHandler) Put(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -233,11 +251,7 @@ func (h *UnifiedHandler) GetByTime(c *gin.Context) {
 func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
-	limitStr := c.DefaultQuery("limit", "10")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 10
-	}
+	limit := parseLimit(c, 10)
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
@@ -345,11 +359,7 @@ func resolveFilterWindow(c *gin.Context, hasAgg bool) (time.Duration, bool, erro
 func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
-	limitStr := c.DefaultQuery("limit", "10")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 10
-	}
+	limit := parseLimit(c, 10)
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
@@ -478,11 +488,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
-	limitStr := c.DefaultQuery("limit", "100")
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 {
-		limit = 100
-	}
+	limit := parseLimit(c, 100)
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
