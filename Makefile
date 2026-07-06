@@ -148,6 +148,14 @@ release: ## Full release: bump version, build, commit, tag, push (use with VERSI
 
 ## Deployment targets (require .env file with PI_HOST, PI_BINARY_PATH, PI_SERVICE)
 
+# deploy-pi installs the new binary BEFORE touching the service:
+# install(1) unlinks the target first, so replacing a running binary is safe
+# (the process keeps its old inode, no ETXTBSY), and the restart only happens
+# once the new binary is fully in place. The previous stop -> cp -> start
+# chain needed sudo it didn't have and left the service stopped when the
+# copy failed. PI_EXTRA_SERVICES (optional) lists collector units to bounce
+# after the restart — they hold connections into tsstore and don't recover
+# on their own outside the Ansible-managed flow.
 deploy-pi: build-arm64 ## Deploy ARM64 binary to Pi
 ifndef PI_HOST
 	$(error PI_HOST not set - create .env file or export PI_HOST)
@@ -155,10 +163,16 @@ endif
 ifndef PI_BINARY_PATH
 	$(error PI_BINARY_PATH not set - create .env file or export PI_BINARY_PATH)
 endif
+ifndef PI_SERVICE
+	$(error PI_SERVICE not set - create .env file or export PI_SERVICE)
+endif
 	@echo "Deploying to $(PI_HOST)..."
 	scp $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 $(PI_HOST):/tmp/$(BINARY_NAME)
-	ssh $(PI_HOST) "sudo systemctl stop $(PI_SERVICE) && cp /tmp/$(BINARY_NAME) $(PI_BINARY_PATH) && chmod +x $(PI_BINARY_PATH) && sudo systemctl start $(PI_SERVICE)"
-	@echo "Deployed and restarted $(PI_SERVICE)"
+	ssh $(PI_HOST) "sudo install -m 755 /tmp/$(BINARY_NAME) $(PI_BINARY_PATH) && sudo systemctl restart $(PI_SERVICE)"
+ifdef PI_EXTRA_SERVICES
+	ssh $(PI_HOST) "sudo systemctl restart $(PI_EXTRA_SERVICES)"
+endif
+	@echo "Deployed and restarted: $(PI_SERVICE) $(PI_EXTRA_SERVICES)"
 
 ## Utility targets
 
