@@ -143,7 +143,33 @@ func (m *Manager) saveConfig(config *MQTTConnectionsConfig) error {
 		return err
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	// 0600: this file carries plaintext broker credentials. Written via
+	// temp + fsync + rename so a crash can't leave it torn (matching the
+	// pkg/store sidecar files).
+	tmp := configPath + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		err = errors.Join(err, f.Close())
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		err = errors.Join(err, f.Close())
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, configPath); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // CreateConnectionRequest holds parameters for creating a new MQTT connection.

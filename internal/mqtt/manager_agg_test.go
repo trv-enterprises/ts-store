@@ -5,6 +5,8 @@
 package mqtt
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,5 +65,27 @@ func TestMQTTCreateConnectionRejectsBadAggConfig(t *testing.T) {
 	}
 	if st.ID == "" {
 		t.Fatal("no status returned for valid create")
+	}
+}
+
+// Regression test for issue #33: mqtt_connections.json carries plaintext
+// broker credentials and was written world-readable (0644).
+func TestConnectionsFileNotWorldReadable(t *testing.T) {
+	s := newJSONStore(t, "mqtt-perms")
+	m := NewManager(s, "mqtt-perms")
+	defer m.Stop()
+
+	if _, err := m.CreateConnection(CreateConnectionRequest{
+		BrokerURL: "tcp://127.0.0.1:9", Topic: "t", Username: "u", Password: "hunter2",
+	}); err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(s.StorePath(), mqttConnectionsFileName))
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("mqtt_connections.json mode = %o, want 0600", perm)
 	}
 }
