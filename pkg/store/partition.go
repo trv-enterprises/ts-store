@@ -24,6 +24,10 @@ type Partition struct {
 	blockSize  uint32
 	numBlocks  uint32
 	closed     bool
+
+	// putsSinceMetaSync counts hot-path meta writes since the last fsync
+	// (see writeMetaAsync). Guarded by the store mutex like meta itself.
+	putsSinceMetaSync int
 }
 
 // partitionDirName returns the directory name for a partition.
@@ -238,6 +242,28 @@ func (p *Partition) writeMeta() error {
 		return err
 	}
 	return p.metaFile.Sync()
+}
+
+// metaSyncEvery is how many hot-path meta writes may elapse between fsyncs.
+const metaSyncEvery = 64
+
+// writeMetaAsync persists the partition metadata without forcing it to disk
+// on every call, fsyncing every metaSyncEvery writes. Used on the per-put
+// hot path: recovery re-derives HeadBlock/WriteOffset/timestamp bounds from
+// block contents on open, so stale-on-crash meta costs a recovery pass, not
+// correctness — while an fsync per put capped throughput at fsync latency
+// and wore SD cards. Clean shutdown still syncs (Close/Seal call writeMeta).
+func (p *Partition) writeMetaAsync() error {
+	buf := p.meta.Encode()
+	if _, err := p.metaFile.WriteAt(buf, 0); err != nil {
+		return err
+	}
+	p.putsSinceMetaSync++
+	if p.putsSinceMetaSync >= metaSyncEvery {
+		p.putsSinceMetaSync = 0
+		return p.metaFile.Sync()
+	}
+	return nil
 }
 
 // blockOffset calculates the file offset for a given block number.

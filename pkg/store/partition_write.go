@@ -59,11 +59,13 @@ func (s *Store) putObjectV2(timestamp int64, data []byte, schemaVer uint32) (*Ob
 		p.meta.MaxTimestamp = timestamp
 	}
 
-	// Persist metadata
-	if err := p.writeMeta(); err != nil {
-		return nil, err
-	}
-	if err := s.writeGlobalMeta(); err != nil {
+	// Persist partition metadata; the fsync is amortized (see
+	// writeMetaAsync). Global metadata is deliberately NOT written here:
+	// ordinary appends never change it — only rollover/reset do, and
+	// those paths write it themselves. The previous two-fsyncs-per-put
+	// bought no durability (the payload itself was not synced) and capped
+	// write throughput at fsync latency.
+	if err := p.writeMetaAsync(); err != nil {
 		return nil, err
 	}
 
