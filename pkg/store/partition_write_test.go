@@ -208,3 +208,70 @@ func TestV2OversizeObjectRejected(t *testing.T) {
 		t.Fatalf("PutObject after full-partition object failed: %v", err)
 	}
 }
+
+// Regression test for issue #32: range scans binary-search their start block
+// instead of scanning from block 0. Verifies result correctness across block
+// seams and continuation blocks — an off-by-one in the floor search would
+// silently drop records at the window edge.
+func TestV2RangeScanStartBlockCorrectness(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.Name = "v2-range-floor"
+	cfg.Path = tmpDir
+	cfg.NumBlocks = 200
+	cfg.DataBlockSize = 256 // small blocks: many seams
+	cfg.NumPartitions = 3
+
+	s, err := Create(cfg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer s.Close()
+
+	// 100 small records at ts 1..100, with a spanning object in the middle
+	// so the index contains continuation entries (timestamp 0).
+	for ts := int64(1); ts <= 100; ts++ {
+		var data []byte
+		if ts == 50 {
+			data = make([]byte, 500) // spans multiple 256-byte blocks
+		} else {
+			data = []byte("record-payload-xxxxxxxxxxxxxxxxxxxxxxxx")
+		}
+		if _, err := s.PutObject(ts, data); err != nil {
+			t.Fatalf("PutObject %d: %v", ts, err)
+		}
+	}
+
+	cases := []struct {
+		from, to  int64
+		wantFirst int64
+		wantCount int
+	}{
+		{1, 100, 1, 100},   // full range
+		{40, 60, 40, 21},   // straddles the spanning object
+		{50, 50, 50, 1},    // exactly the spanning object
+		{99, 100, 99, 2},   // tail
+		{1, 1, 1, 1},       // head
+		{73, 91, 73, 19},   // arbitrary window
+	}
+	for _, c := range cases {
+		handles, err := s.GetObjectsInRange(c.from, c.to, 0)
+		if err != nil {
+			t.Fatalf("GetObjectsInRange(%d,%d): %v", c.from, c.to, err)
+		}
+		if len(handles) != c.wantCount {
+			t.Errorf("range [%d,%d]: got %d records, want %d", c.from, c.to, len(handles), c.wantCount)
+			continue
+		}
+		if handles[0].Timestamp != c.wantFirst {
+			t.Errorf("range [%d,%d]: first ts %d, want %d", c.from, c.to, handles[0].Timestamp, c.wantFirst)
+		}
+		for i := 1; i < len(handles); i++ {
+			if handles[i].Timestamp != handles[i-1].Timestamp+1 {
+				t.Errorf("range [%d,%d]: gap at %d -> %d", c.from, c.to, handles[i-1].Timestamp, handles[i].Timestamp)
+				break
+			}
+		}
+	}
+}

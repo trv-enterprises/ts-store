@@ -455,14 +455,25 @@ func (s *Store) getObjectsInRangeV2(startTime, endTime int64, limit int) ([]*Obj
 	// Get partitions that may contain data in range
 	partitions := s.getPartitionsInRange(startTime, endTime)
 
-	for _, p := range partitions {
+	for i, p := range partitions {
 		if limit > 0 && len(handles) >= limit {
 			break
 		}
 
-		// Scan blocks in this partition
+		// Scan blocks in this partition. Only the first overlapping
+		// partition can straddle startTime, so binary-search its start
+		// block instead of header-parsing every block from 0 — this is
+		// the hot path for "recent window" queries and per-alert polling.
+		// findBlockInPartition returns the floor block (greatest index
+		// timestamp <= startTime), so no in-range record can precede it.
 		count := p.activeBlockCount()
-		for blockNum := uint32(0); blockNum < count && (limit <= 0 || len(handles) < limit); blockNum++ {
+		startBlock := uint32(0)
+		if i == 0 && count > 0 {
+			if b, err := s.findBlockInPartition(p, startTime); err == nil {
+				startBlock = b
+			}
+		}
+		for blockNum := startBlock; blockNum < count && (limit <= 0 || len(handles) < limit); blockNum++ {
 			blockHandles, err := s.scanBlockObjectsInPartition(p, blockNum)
 			if err != nil {
 				continue
