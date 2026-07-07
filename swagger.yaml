@@ -1734,6 +1734,14 @@ components:
           format: int64
         last_error:
           type: string
+          description: >-
+            Most recent failure. Kept as history after recovery — state
+            "error" means failing now; state "running" with last_error set
+            means it recovered from the failure at last_error_at.
+        last_error_at:
+          type: string
+          format: date-time
+          description: When last_error was recorded (UTC). Omitted if never errored.
         created_at:
           type: string
           format: date-time
@@ -1915,6 +1923,14 @@ components:
           enum: [running, stopped, error]
         last_error:
           type: string
+          description: >-
+            Most recent failure. Kept as history after recovery — state
+            "error" means failing now; state "running" with last_error set
+            means it recovered from the failure at last_error_at.
+        last_error_at:
+          type: string
+          format: date-time
+          description: When last_error was recorded (UTC). Omitted if never errored.
         created_at:
           type: string
           format: date-time

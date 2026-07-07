@@ -629,3 +629,93 @@ func TestRollupSurvivesSourceSchemaGrowth(t *testing.T) {
 		t.Errorf("row B window_count = %v, want 1", m[windowCountField])
 	}
 }
+
+// TestWorkerErrorStateRecovers confirms an errored rollup worker returns
+// to "running" after the next clean pass, keeping the last error text
+// and timestamp as history (issue #35). Before the fix, state stayed
+// "error" forever after a single transient failure.
+func TestWorkerErrorStateRecovers(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "errsrc")
+	defer src.Close()
+
+	sz, err := deriveSizing("1d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("errsrc-1m", "", sz), "errsrc")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	w, err := NewWorker(Options{
+		ID: "e1", SourceName: "errsrc", TargetName: "errsrc-1m",
+		Source: src, Target: target,
+		WindowDuration: "1m", AggFields: "temp:avg",
+		RestartPolicy: "now", PollInterval: "50ms",
+	})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	w.Start()
+	defer w.Stop()
+	if st := w.Status().State; st != "running" {
+		t.Fatalf("state after Start: %q, want running", st)
+	}
+
+	w.setError("boom")
+	st := w.Status()
+	if st.State != "error" || st.LastError != "boom" || st.LastErrorAt.IsZero() {
+		t.Fatalf("after setError: %+v", st)
+	}
+
+	// The 50ms loop's next clean pass (empty source = clean no-op)
+	// should restore "running".
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && w.Status().State != "running" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	st = w.Status()
+	if st.State != "running" {
+		t.Fatalf("state never recovered from error: %+v", st)
+	}
+	if st.LastError != "boom" || st.LastErrorAt.IsZero() {
+		t.Errorf("recovery must keep error history, got: %+v", st)
+	}
+}
+
+// TestWorkerSetErrorAfterStopStaysStopped confirms a failure landing
+// mid/after Stop records the error but cannot resurrect the worker.
+func TestWorkerSetErrorAfterStopStaysStopped(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "errstop")
+	defer src.Close()
+
+	sz, err := deriveSizing("1d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("errstop-1m", "", sz), "errstop")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	w, err := NewWorker(Options{
+		ID: "e2", SourceName: "errstop", TargetName: "errstop-1m",
+		Source: src, Target: target,
+		WindowDuration: "1m", AggFields: "temp:avg", RestartPolicy: "now",
+	})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	w.Start()
+	w.Stop()
+	w.setError("late failure")
+	if st := w.Status(); st.State != "stopped" {
+		t.Errorf("state: got %q, want stopped (got %+v)", st.State, st)
+	}
+}

@@ -29,15 +29,22 @@ const (
 // Status is the runtime status of an alert worker. Exposed via the manager
 // for HTTP status responses and CLI status output.
 type Status struct {
-	ID            string    `json:"id"`
-	Type          string    `json:"type"` // "webhook" | "ws" | "mqtt"
-	Target        string    `json:"target"`
-	RuleName      string    `json:"rule_name"`
-	AlertsFired   int64     `json:"alerts_fired"`
-	LastTimestamp int64     `json:"last_timestamp,omitempty"`
-	State         string    `json:"state"` // running | stopped | error
-	LastError     string    `json:"last_error,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            string `json:"id"`
+	Type          string `json:"type"` // "webhook" | "ws" | "mqtt"
+	Target        string `json:"target"`
+	RuleName      string `json:"rule_name"`
+	AlertsFired   int64  `json:"alerts_fired"`
+	LastTimestamp int64  `json:"last_timestamp,omitempty"`
+
+	// State is "running", "stopped", or "error". "error" means the most
+	// recent activity failed; the next clean poll pass restores
+	// "running". LastError/LastErrorAt are kept across that recovery as
+	// history — state answers "broken now?", last_error_at answers
+	// "when did it last hiccup?".
+	State       string    `json:"state"`
+	LastError   string    `json:"last_error,omitempty"`
+	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+	CreatedAt   time.Time `json:"created_at"`
 
 	// DeliveryFailures counts async sink failures (e.g. webhook non-2xx)
 	// reported after the alert was already queued for delivery.
@@ -75,8 +82,9 @@ type Worker struct {
 	alertsDropped    int64 // sink.Send returned an error
 	deliveryFailures int64 // sink reported an async delivery failure after Send
 
-	state     string
-	lastError string
+	state       string
+	lastError   string
+	lastErrorAt time.Time
 
 	createdAt time.Time
 
@@ -242,6 +250,8 @@ func (w *Worker) runLoop() {
 		case <-ticker.C:
 			if err := w.pollOnce(); err != nil {
 				w.setError(err.Error())
+			} else {
+				w.noteSuccess()
 			}
 		}
 	}
@@ -353,9 +363,27 @@ func (w *Worker) ResetMetrics() {
 	w.evaluator.ResetCounters()
 }
 
+// setError records the failure and flips a running worker into the
+// "error" state. Only a running worker escalates — async delivery
+// callbacks can land mid-Stop and must not resurrect a stopped worker.
 func (w *Worker) setError(msg string) {
 	w.mu.Lock()
 	w.lastError = msg
+	w.lastErrorAt = time.Now().UTC()
+	if w.state == "running" {
+		w.state = "error"
+	}
+	w.mu.Unlock()
+}
+
+// noteSuccess restores an errored worker to "running" after a clean poll
+// pass. lastError/lastErrorAt are deliberately kept as history so a past
+// hiccup stays visible (and datable) after recovery.
+func (w *Worker) noteSuccess() {
+	w.mu.Lock()
+	if w.state == "error" {
+		w.state = "running"
+	}
 	w.mu.Unlock()
 }
 
@@ -420,6 +448,7 @@ func (w *Worker) Status() Status {
 		LastTimestamp:    w.lastTs,
 		State:            w.state,
 		LastError:        w.lastError,
+		LastErrorAt:      w.lastErrorAt,
 		CreatedAt:        w.createdAt,
 		DeliveryFailures: atomic.LoadInt64(&w.deliveryFailures),
 	}

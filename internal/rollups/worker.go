@@ -30,16 +30,23 @@ const (
 
 // Status is the runtime status of a rollup worker.
 type Status struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name,omitempty"`
-	SourceStore   string    `json:"source_store"`
-	TargetStore   string    `json:"target_store"`
-	Window        string    `json:"window"`
-	State         string    `json:"state"` // running | stopped | error
-	LastWindowEnd int64     `json:"last_window_end,omitempty"`
-	WindowsWritten int64    `json:"windows_written"`
-	LastError     string    `json:"last_error,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	SourceStore   string `json:"source_store"`
+	TargetStore   string `json:"target_store"`
+	Window        string `json:"window"`
+	LastWindowEnd int64  `json:"last_window_end,omitempty"`
+	WindowsWritten int64 `json:"windows_written"`
+
+	// State is "running", "stopped", or "error". "error" means the most
+	// recent rollup pass failed; the next clean pass restores "running".
+	// LastError/LastErrorAt are kept across that recovery as history —
+	// state answers "broken now?", last_error_at answers "when did it
+	// last hiccup?".
+	State       string    `json:"state"`
+	LastError   string    `json:"last_error,omitempty"`
+	LastErrorAt time.Time `json:"last_error_at,omitzero"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // Worker rolls one source store's data into one target store, one closed
@@ -68,6 +75,7 @@ type Worker struct {
 	windowsWritten int64
 	state          string
 	lastError      string
+	lastErrorAt    time.Time
 	createdAt      time.Time
 
 	stopCh chan struct{}
@@ -198,6 +206,8 @@ func (w *Worker) runLoop() {
 	// Run once promptly, then on the ticker.
 	if err := w.rollupOnce(); err != nil {
 		w.setError(err.Error())
+	} else {
+		w.noteSuccess()
 	}
 
 	ticker := time.NewTicker(w.pollInterval)
@@ -209,6 +219,8 @@ func (w *Worker) runLoop() {
 		case <-ticker.C:
 			if err := w.rollupOnce(); err != nil {
 				w.setError(err.Error())
+			} else {
+				w.noteSuccess()
 			}
 		}
 	}
@@ -368,10 +380,27 @@ func (w *Worker) targetNewest() int64 {
 	return w.target.Stats().NewestTimestamp
 }
 
+// setError records the failure and flips a running worker into the
+// "error" state. Only a running worker escalates, so a failure landing
+// mid-Stop can't resurrect a stopped worker.
 func (w *Worker) setError(msg string) {
 	w.mu.Lock()
 	w.lastError = msg
-	w.state = "error"
+	w.lastErrorAt = time.Now().UTC()
+	if w.state == "running" {
+		w.state = "error"
+	}
+	w.mu.Unlock()
+}
+
+// noteSuccess restores an errored worker to "running" after a clean
+// rollup pass. lastError/lastErrorAt are deliberately kept as history so
+// a past hiccup stays visible (and datable) after recovery.
+func (w *Worker) noteSuccess() {
+	w.mu.Lock()
+	if w.state == "error" {
+		w.state = "running"
+	}
 	w.mu.Unlock()
 }
 
@@ -421,6 +450,7 @@ func (w *Worker) Status() Status {
 		LastWindowEnd:  w.lastWindowEnd,
 		WindowsWritten: atomic.LoadInt64(&w.windowsWritten),
 		LastError:      w.lastError,
+		LastErrorAt:    w.lastErrorAt,
 		CreatedAt:      w.createdAt,
 	}
 }

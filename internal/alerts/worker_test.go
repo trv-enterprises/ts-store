@@ -481,3 +481,62 @@ func TestWebhookSinkRejectsNonPositiveTimeout(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkerErrorStateSetsAndRecovers confirms the documented "error"
+// state is actually reachable and self-healing (issue #35): a failure
+// flips a running worker to "error", the next clean poll pass restores
+// "running", and the last error text/timestamp survive as history.
+func TestWorkerErrorStateSetsAndRecovers(t *testing.T) {
+	s := newTestStore(t, "errstate")
+	sink := &stubSink{}
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "r", Condition: "t > 0"}, "")
+
+	w.Start()
+	defer w.Stop()
+	if st := w.Status().State; st != "running" {
+		t.Fatalf("state after Start: %q, want running", st)
+	}
+
+	w.setError("boom")
+	st := w.Status()
+	if st.State != "error" {
+		t.Fatalf("state after setError: %q, want error", st.State)
+	}
+	if st.LastError != "boom" || st.LastErrorAt.IsZero() {
+		t.Fatalf("error history not recorded: %+v", st)
+	}
+
+	// The 50ms poll loop's next clean pass should restore "running".
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && w.Status().State != "running" {
+		time.Sleep(20 * time.Millisecond)
+	}
+	st = w.Status()
+	if st.State != "running" {
+		t.Fatalf("state never recovered from error: %+v", st)
+	}
+	if st.LastError != "boom" || st.LastErrorAt.IsZero() {
+		t.Errorf("recovery must keep error history, got: %+v", st)
+	}
+}
+
+// TestWorkerSetErrorDoesNotResurrectStopped confirms a late async
+// failure (e.g. a webhook delivery callback landing after Stop) records
+// the error but cannot flip a stopped worker back to "error".
+func TestWorkerSetErrorDoesNotResurrectStopped(t *testing.T) {
+	s := newTestStore(t, "errstopped")
+	sink := &stubSink{}
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "r", Condition: "t > 0"}, "")
+
+	w.Start()
+	w.Stop()
+
+	w.setError("late delivery failure")
+	st := w.Status()
+	if st.State != "stopped" {
+		t.Errorf("state: got %q, want stopped", st.State)
+	}
+	if st.LastError != "late delivery failure" {
+		t.Errorf("lastError should still record: %+v", st)
+	}
+}
