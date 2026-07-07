@@ -162,18 +162,32 @@ func NewWorker(opts Options) (*Worker, error) {
 	}, nil
 }
 
-// Start launches the background loop. The resume point is the max of: the
-// persisted cursor, and the target store's newest record (backstop against a
-// lost/stale cursor). If neither exists, the first tick starts from the
-// source's oldest record aligned to a window boundary.
+// Start launches the background loop. The starting cursor depends on
+// restart_policy:
+//   - "resume" — the max of the persisted cursor and the target store's
+//     newest record (backstop against a lost/stale cursor). If neither
+//     exists, the first tick backfills from the source's oldest record
+//     aligned to a window boundary.
+//   - "now" — the current aligned window boundary: no backfill, no
+//     cursor. The first window written is the one open right now, once
+//     it closes.
 func (w *Worker) Start() {
 	w.mu.Lock()
-	resume := int64(0)
-	if w.restartPolicy == "resume" {
+	var resume int64
+	switch w.restartPolicy {
+	case "now":
+		// Documented "start from now" semantics: skip every already-
+		// closed window regardless of cursor or existing data.
+		// Previously the targetNewest backstop (and, on an empty
+		// target, rollupOnce's source-oldest fallback) applied
+		// unconditionally, making "now" behave like resume/rebuild
+		// whenever any data existed (issue #38).
+		resume = (time.Now().UnixNano() / w.windowNanos) * w.windowNanos
+	default: // "resume"
 		resume = readCursor(w.cursorPath)
-	}
-	if targetNewest := w.targetNewest(); targetNewest > resume {
-		resume = targetNewest
+		if targetNewest := w.targetNewest(); targetNewest > resume {
+			resume = targetNewest
+		}
 	}
 	w.lastWindowEnd = resume
 	w.state = "running"
