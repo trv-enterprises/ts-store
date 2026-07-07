@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -45,8 +46,9 @@ func NewManager(st *store.Store, storeName string) *Manager {
 }
 
 // LoadAndStart reads persisted webhook/WS/MQTT alert configs and starts a
-// Worker for each. Errors on individual alerts are logged via the worker
-// itself and do not block the rest.
+// Worker for each. Errors on individual alerts (or on loading a config
+// list) are logged and do not block the rest — the config stays on disk,
+// but no worker runs until the underlying problem is fixed.
 func (m *Manager) LoadAndStart() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -55,33 +57,45 @@ func (m *Manager) LoadAndStart() error {
 		return ErrManagerClosed
 	}
 
-	wh, err := m.store.LoadWebhookAlerts()
-	if err == nil {
+	if wh, err := m.store.LoadWebhookAlerts(); err != nil {
+		log.Printf("alerts %s: load webhook alerts: %v", m.storeName, err)
+	} else {
 		for _, a := range wh.Alerts {
-			if w, err := m.buildWebhookWorker(a); err == nil {
-				m.workers[a.ID] = w
-				w.Start()
+			w, err := m.buildWebhookWorker(a)
+			if err != nil {
+				log.Printf("alerts %s: failed to start persisted webhook alert %s (%q): %v", m.storeName, a.ID, a.Name, err)
+				continue
 			}
+			m.workers[a.ID] = w
+			w.Start()
 		}
 	}
 
-	wsa, err := m.store.LoadWSAlerts()
-	if err == nil {
+	if wsa, err := m.store.LoadWSAlerts(); err != nil {
+		log.Printf("alerts %s: load ws alerts: %v", m.storeName, err)
+	} else {
 		for _, a := range wsa.Alerts {
-			if w, err := m.buildWSWorker(a); err == nil {
-				m.workers[a.ID] = w
-				w.Start()
+			w, err := m.buildWSWorker(a)
+			if err != nil {
+				log.Printf("alerts %s: failed to start persisted ws alert %s (%q): %v", m.storeName, a.ID, a.Name, err)
+				continue
 			}
+			m.workers[a.ID] = w
+			w.Start()
 		}
 	}
 
-	mq, err := m.store.LoadMQTTAlerts()
-	if err == nil {
+	if mq, err := m.store.LoadMQTTAlerts(); err != nil {
+		log.Printf("alerts %s: load mqtt alerts: %v", m.storeName, err)
+	} else {
 		for _, a := range mq.Alerts {
-			if w, err := m.buildMQTTWorker(a); err == nil {
-				m.workers[a.ID] = w
-				w.Start()
+			w, err := m.buildMQTTWorker(a)
+			if err != nil {
+				log.Printf("alerts %s: failed to start persisted mqtt alert %s (%q): %v", m.storeName, a.ID, a.Name, err)
+				continue
 			}
+			m.workers[a.ID] = w
+			w.Start()
 		}
 	}
 

@@ -5,6 +5,8 @@
 package alerts
 
 import (
+	"bytes"
+	"log"
 	"strings"
 	"testing"
 
@@ -64,6 +66,50 @@ func TestCreateAlertMQTT(t *testing.T) {
 	}
 	if st.Type != "mqtt" {
 		t.Errorf("Status.Type: got %q, want mqtt", st.Type)
+	}
+}
+
+// TestLoadAndStartLogsAndSkipsBrokenAlerts persists one valid and one
+// unbuildable webhook alert directly (bypassing CreateAlert validation —
+// simulating a config that stopped building after an upgrade), then
+// confirms LoadAndStart starts the good one, skips the broken one, and
+// logs the skip instead of silently dropping it (issue #36).
+func TestLoadAndStartLogsAndSkipsBrokenAlerts(t *testing.T) {
+	s := newTestStore(t, "loadstart")
+	good := store.WebhookAlert{
+		ID: "good1", URL: "https://example.com/hook",
+		AlertCommon: store.AlertCommon{Name: "ok", Condition: "t > 0"},
+	}
+	broken := store.WebhookAlert{
+		ID: "bad1", URL: "https://example.com/hook", PollInterval: "-5s",
+		AlertCommon: store.AlertCommon{Name: "nope", Condition: "t > 0"},
+	}
+	if err := s.AddWebhookAlert(good); err != nil {
+		t.Fatalf("AddWebhookAlert(good): %v", err)
+	}
+	if err := s.AddWebhookAlert(broken); err != nil {
+		t.Fatalf("AddWebhookAlert(broken): %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(prev)
+
+	mgr := NewManager(s, "loadstart")
+	t.Cleanup(func() { mgr.Stop() })
+	if err := mgr.LoadAndStart(); err != nil {
+		t.Fatalf("LoadAndStart: %v", err)
+	}
+
+	if _, err := mgr.GetAlert("good1"); err != nil {
+		t.Errorf("good alert should have a running worker: %v", err)
+	}
+	if _, err := mgr.GetAlert("bad1"); err == nil {
+		t.Error("broken alert must not have a worker")
+	}
+	if got := logBuf.String(); !strings.Contains(got, "failed to start persisted webhook alert bad1") {
+		t.Errorf("expected a log line naming bad1, got: %q", got)
 	}
 }
 
