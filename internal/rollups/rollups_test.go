@@ -719,3 +719,67 @@ func TestWorkerSetErrorAfterStopStaysStopped(t *testing.T) {
 		t.Errorf("state: got %q, want stopped (got %+v)", st.State, st)
 	}
 }
+
+// TestStartNowPolicySkipsBacklog is the issue #38 scenario: a "now"
+// worker started over a source with a deep backlog (and an empty
+// target) must NOT backfill — the documented "start from now" semantics
+// mean the first window written is the one open at Start. Before the
+// fix, the targetNewest backstop and the source-oldest fallback applied
+// unconditionally, so "now" behaved like resume whenever any data
+// existed.
+func TestStartNowPolicySkipsBacklog(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "nowsrc")
+	defer src.Close()
+
+	minute := int64(time.Minute)
+	now := time.Now().UnixNano()
+	start := ((now - 100*minute) / minute) * minute
+	// A backlog of closed windows that resume WOULD roll up.
+	putTemp(t, src, start+1, 10)
+	putTemp(t, src, start+minute+1, 20)
+	putTemp(t, src, start+2*minute+1, 30)
+
+	sz, err := deriveSizing("1d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("nowsrc-1m", "", sz), "nowsrc")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	tsch, _ := deriveTargetSchema("temp:avg", "", map[string]bool{"temp": true})
+	if _, err := target.SetSchema(tsch); err != nil {
+		t.Fatalf("set target schema: %v", err)
+	}
+
+	w, err := NewWorker(Options{
+		ID: "n1", SourceName: "nowsrc", TargetName: "nowsrc-1m",
+		Source: src, Target: target,
+		WindowDuration: "1m", AggFields: "temp:avg", RestartPolicy: "now",
+	})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	// Start runs one rollup pass promptly; give it a moment, then stop.
+	w.Start()
+	time.Sleep(200 * time.Millisecond)
+	w.Stop()
+
+	handles, err := target.GetOldestObjects(0)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if len(handles) != 0 {
+		t.Errorf("now-policy worker backfilled %d windows; want 0", len(handles))
+	}
+
+	wantCursor := (now / minute) * minute
+	got := w.Status().LastWindowEnd
+	// Start ran a hair after `now`, so allow the boundary to have advanced.
+	if got < wantCursor || got > wantCursor+minute {
+		t.Errorf("cursor = %d, want current aligned boundary in [%d, %d]", got, wantCursor, wantCursor+minute)
+	}
+}
