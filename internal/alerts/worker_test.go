@@ -540,3 +540,66 @@ func TestWorkerSetErrorDoesNotResurrectStopped(t *testing.T) {
 		t.Errorf("lastError should still record: %+v", st)
 	}
 }
+
+// TestWorkerCooldownSurvivesRestart is the issue #37 scenario: a rule
+// with a long cooldown fires, the daemon "restarts" (new Worker, same
+// last-fired path), and a still-matching record must NOT re-alert —
+// the persisted cooldown mark is re-seeded on Start. Also checks the
+// mark is exposed as Status.LastFiredAt on both sides of the restart.
+func TestWorkerCooldownSurvivesRestart(t *testing.T) {
+	s := newTestStore(t, "cooldownrestart")
+	lastFiredPath := filepath.Join(t.TempDir(), "webhook_alert_x.lastfired")
+	rule := store.AlertCommon{Name: "hot", Condition: "temperature > 80", Cooldown: "1h"}
+
+	build := func(sink Sink) *Worker {
+		t.Helper()
+		w, err := NewWorker(Options{
+			Store:         s,
+			StoreName:     "test",
+			ID:            "w1",
+			Type:          "webhook",
+			Target:        "stub",
+			Rule:          rule,
+			Sink:          sink,
+			PollInterval:  "50ms",
+			LastFiredPath: lastFiredPath,
+			CreatedAt:     time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("NewWorker: %v", err)
+		}
+		return w
+	}
+
+	// First life: fire once.
+	sink1 := &stubSink{}
+	w1 := build(sink1)
+	w1.Start()
+	time.Sleep(100 * time.Millisecond)
+	writeRecord(t, s, map[string]interface{}{"temperature": 90.0})
+	waitForAlerts(t, sink1, 1, 2*time.Second)
+	if got := w1.Status().LastFiredAt; got.IsZero() {
+		t.Error("Status.LastFiredAt should be set after a fire")
+	}
+	w1.Stop()
+
+	if ts := readCursor(lastFiredPath); ts == 0 {
+		t.Fatal("last-fired mark was not persisted on fire")
+	}
+
+	// Second life: same path, fresh worker. The 1h cooldown must still
+	// be closed, so a matching record is suppressed.
+	sink2 := &stubSink{}
+	w2 := build(sink2)
+	w2.Start()
+	defer w2.Stop()
+	if got := w2.Status().LastFiredAt; got.IsZero() {
+		t.Error("Status.LastFiredAt should be seeded from disk after restart")
+	}
+	time.Sleep(100 * time.Millisecond)
+	writeRecord(t, s, map[string]interface{}{"temperature": 91.0})
+	time.Sleep(300 * time.Millisecond)
+	if got := sink2.Received(); len(got) != 0 {
+		t.Errorf("cooldown must survive restart; got %d alerts: %+v", len(got), got)
+	}
+}

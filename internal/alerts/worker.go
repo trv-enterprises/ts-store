@@ -36,6 +36,11 @@ type Status struct {
 	AlertsFired   int64  `json:"alerts_fired"`
 	LastTimestamp int64  `json:"last_timestamp,omitempty"`
 
+	// LastFiredAt is when the rule last fired (survives restarts — it is
+	// persisted next to the cursor and re-seeded on Start). Omitted if
+	// the rule has never fired.
+	LastFiredAt time.Time `json:"last_fired_at,omitzero"`
+
 	// State is "running", "stopped", or "error". "error" means the most
 	// recent activity failed; the next clean poll pass restores
 	// "running". LastError/LastErrorAt are kept across that recovery as
@@ -78,6 +83,7 @@ type Worker struct {
 
 	lastTs           int64
 	cursorPath       string
+	lastFiredPath    string
 	alertsFired      int64
 	alertsDropped    int64 // sink.Send returned an error
 	deliveryFailures int64 // sink reported an async delivery failure after Send
@@ -104,7 +110,11 @@ type Options struct {
 	Sink         Sink
 	PollInterval string // parsed via duration.ParseDuration; empty -> default
 	CursorPath   string // for restart-resume in a future change; ignored on first start
-	CreatedAt    time.Time
+	// LastFiredPath persists the evaluator's cooldown mark across
+	// restarts (written on every fire regardless of restart policy —
+	// fires are rare). Empty disables persistence.
+	LastFiredPath string
+	CreatedAt     time.Time
 }
 
 // NewWorker builds a Worker. The rule is parsed here so creation fails
@@ -167,6 +177,7 @@ func NewWorker(opts Options) (*Worker, error) {
 		sink:          opts.Sink,
 		pollInterval:  poll,
 		cursorPath:    opts.CursorPath,
+		lastFiredPath: opts.LastFiredPath,
 		restartPolicy: opts.Rule.RestartPolicy,
 		maxReplay:     maxReplay,
 		state:         "stopped",
@@ -209,6 +220,13 @@ func (w *Worker) Start() {
 	}
 	w.state = "running"
 	w.mu.Unlock()
+
+	// Re-seed the cooldown mark from disk so a still-closed cooldown
+	// window survives the restart (issue #37). Without this, a
+	// still-firing condition re-alerts immediately after every restart.
+	if ts := readCursor(w.lastFiredPath); ts > 0 {
+		w.evaluator.SeedLastFired(time.Unix(0, ts))
+	}
 
 	w.evaluator.Start()
 	w.wg.Add(1)
@@ -315,6 +333,10 @@ func (w *Worker) pollOnce() error {
 // dispatch is the evaluator's onAlert callback. It hands the alert to the
 // sink and increments the fired counter. A sink error counts as a drop.
 func (w *Worker) dispatch(alert notify.Alert) {
+	// The evaluator stamps lastFired before invoking this callback;
+	// persist it so cooldown survives restarts. A drop still counts for
+	// cooldown (matching the evaluator), so persist before Send.
+	w.writeLastFired(w.evaluator.LastFired())
 	if err := w.sink.Send(alert); err != nil {
 		atomic.AddInt64(&w.alertsDropped, 1)
 		w.setError(fmt.Sprintf("sink send: %v", err))
@@ -413,6 +435,26 @@ func (w *Worker) writeCursor(ts int64) {
 	}
 }
 
+// writeLastFired persists the cooldown mark as a UnixNano integer,
+// same format and atomic-rename dance as the cursor. Unlike the cursor
+// it is written for every restart policy — cooldown correctness matters
+// even for "now" workers, and fires are rare enough that the extra
+// write is negligible.
+func (w *Worker) writeLastFired(t time.Time) {
+	if w.lastFiredPath == "" || t.IsZero() {
+		return
+	}
+	tmp := w.lastFiredPath + ".tmp"
+	body := strconv.FormatInt(t.UnixNano(), 10) + "\n"
+	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
+		log.Printf("alerts %s/%s: last-fired write: %v", w.alertType, w.id, err)
+		return
+	}
+	if err := os.Rename(tmp, w.lastFiredPath); err != nil {
+		log.Printf("alerts %s/%s: last-fired rename: %v", w.alertType, w.id, err)
+	}
+}
+
 // readCursor reads a UnixNano timestamp from path. Returns 0 if the
 // file is missing or unparseable; the caller treats 0 as "no resume
 // point, fall back to start-from-now."
@@ -446,6 +488,7 @@ func (w *Worker) Status() Status {
 		RuleName:         w.ruleName,
 		AlertsFired:      atomic.LoadInt64(&w.alertsFired),
 		LastTimestamp:    w.lastTs,
+		LastFiredAt:      w.evaluator.LastFired(),
 		State:            w.state,
 		LastError:        w.lastError,
 		LastErrorAt:      w.lastErrorAt,

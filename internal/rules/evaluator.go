@@ -119,12 +119,34 @@ func (e *Evaluator) evaluateRecord(rec dataRecord) {
 		ExternalRef: e.externalRef,
 	}
 
+	// Stamp lastFired BEFORE the callback: the worker's onAlert persists
+	// LastFired() to disk, so the mark must be visible when it runs.
+	e.mu.Lock()
+	e.lastFired = now
+	e.mu.Unlock()
+
 	if e.onAlert != nil {
 		e.onAlert(alert)
 	}
+}
 
+// LastFired returns when the rule last fired, or the zero time if it
+// has not fired since the evaluator was created (or seeded).
+func (e *Evaluator) LastFired() time.Time {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.lastFired
+}
+
+// SeedLastFired primes cooldown tracking from persisted state so a
+// process restart doesn't reopen a cooldown window that was still
+// closed. The mark only moves forward — a stale seed can't erase a
+// fire that already happened this run.
+func (e *Evaluator) SeedLastFired(t time.Time) {
 	e.mu.Lock()
-	e.lastFired = now
+	if t.After(e.lastFired) {
+		e.lastFired = t
+	}
 	e.mu.Unlock()
 }
 
