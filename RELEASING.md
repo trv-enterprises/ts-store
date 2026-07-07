@@ -10,7 +10,7 @@ make release VERSION=vX.Y.Z
 
 This Makefile target:
 
-1. Updates the version in `cmd/tsstore/main.go`.
+1. Updates the version in `internal/version/version.go`.
 2. Builds the server + collector binaries for `linux/amd64` and `linux/arm64`.
 3. Stages and commits the version bump.
 4. Creates an annotated tag `vX.Y.Z`.
