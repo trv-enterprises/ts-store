@@ -30,6 +30,7 @@ import (
 	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/service"
 	"github.com/tviviano/ts-store/internal/unixsock"
+	"github.com/tviviano/ts-store/internal/version"
 	"github.com/tviviano/ts-store/pkg/store"
 )
 
@@ -83,7 +84,7 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 	case "version", "-v", "--version":
-		fmt.Println("tsstore v0.12.0")
+		fmt.Println("tsstore " + version.Version)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()

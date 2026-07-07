@@ -74,13 +74,13 @@ test-verbose: ## Run all tests with verbose output
 
 ## Release targets
 
-version-bump: ## Update version in main.go (use with VERSION=vX.Y.Z)
+version-bump: ## Update version in internal/version/version.go (use with VERSION=vX.Y.Z)
 	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
 		echo "Error: VERSION must be set (e.g., make version-bump VERSION=v0.3.0)"; \
 		exit 1; \
 	fi
-	@echo "Updating cmd/tsstore/main.go to $(VERSION)..."
-	@sed -i '' 's/fmt\.Println("tsstore v[^"]*")/fmt.Println("tsstore $(VERSION)")/' cmd/tsstore/main.go
+	@echo "Updating internal/version/version.go to $(VERSION)..."
+	@sed -i '' 's/Version = "v[^"]*"/Version = "$(VERSION)"/' internal/version/version.go
 	@echo "✓ Version updated to $(VERSION)"
 
 release-binaries: build ## Create release binaries (server + collectors) in dist/
@@ -122,7 +122,7 @@ release: ## Full release: bump version, build, commit, tag, push (use with VERSI
 	@$(MAKE) release-binaries VERSION=$(VERSION)
 	@echo ""
 	@echo "Committing version bump..."
-	git add cmd/tsstore/main.go
+	git add internal/version/version.go
 	git commit -m "Bump version to $(VERSION)"
 	@echo ""
 	@echo "Creating tag $(VERSION)..."

@@ -6,11 +6,14 @@ package handlers
 
 import (
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/alerts"
 	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/mqtt"
+	"github.com/tviviano/ts-store/internal/version"
 	"github.com/tviviano/ts-store/internal/ws"
 )
 
@@ -23,6 +26,7 @@ type ConnectionsHandler struct {
 	getWS     func(storeName string) *ws.Manager
 	getMQTT   func(storeName string) *mqtt.Manager
 	getAlerts func(storeName string) *alerts.Manager
+	hostname  string
 }
 
 // NewConnectionsHandler wires the three per-store managers.
@@ -31,7 +35,11 @@ func NewConnectionsHandler(
 	getMQTT func(string) *mqtt.Manager,
 	getAlerts func(string) *alerts.Manager,
 ) *ConnectionsHandler {
-	return &ConnectionsHandler{getWS: getWS, getMQTT: getMQTT, getAlerts: getAlerts}
+	// Hostname is part of the response envelope (see List). It can't change
+	// while the process runs, so resolve it once; an empty string on error is
+	// an acceptable degradation.
+	hostname, _ := os.Hostname()
+	return &ConnectionsHandler{getWS: getWS, getMQTT: getMQTT, getAlerts: getAlerts, hostname: hostname}
 }
 
 // AlertListEntry is an alert's persisted status joined with its runtime
@@ -73,6 +81,11 @@ func mergeAlerts(statuses []alerts.Status, metrics []alerts.Metrics) []AlertList
 // (with merged runtime counters) only when ?include_alerts=true. A store with
 // no connections of a given kind yields an empty array for that key rather than
 // an error — having nothing wired is a valid state.
+//
+// The response carries a "meta" envelope identifying where the data came from
+// (store, host, server_version) and when (as_of), so consumers rendering it
+// can detect a misdirected connection or a stale feed instead of trusting the
+// request URL.
 func (h *ConnectionsHandler) List(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -87,6 +100,12 @@ func (h *ConnectionsHandler) List(c *gin.Context) {
 	}
 
 	resp := gin.H{
+		"meta": gin.H{
+			"store":          storeName,
+			"host":           h.hostname,
+			"as_of":          time.Now().UTC().Format(time.RFC3339),
+			"server_version": version.Version,
+		},
 		"ws":   wsConns,
 		"mqtt": mqttConns,
 	}
