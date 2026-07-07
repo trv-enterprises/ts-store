@@ -1918,6 +1918,13 @@ components:
         last_timestamp:
           type: integer
           format: int64
+        last_fired_at:
+          type: string
+          format: date-time
+          description: >-
+            When the rule last fired (UTC). Persisted next to the cursor
+            and re-seeded on start, so it survives restarts. Omitted if
+            the rule has never fired.
         state:
           type: string
           enum: [running, stopped, error]

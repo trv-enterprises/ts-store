@@ -541,9 +541,10 @@ func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
 		Target:       redactURL(a.URL),
 		Rule:         a.AlertCommon,
 		Sink:         sink,
-		PollInterval: a.PollInterval,
-		CursorPath:   cursorPathFor(m.store, "webhook", a.ID),
-		CreatedAt:    a.CreatedAt,
+		PollInterval:  a.PollInterval,
+		CursorPath:    cursorPathFor(m.store, "webhook", a.ID),
+		LastFiredPath: lastFiredPathFor(m.store, "webhook", a.ID),
+		CreatedAt:     a.CreatedAt,
 	})
 	if err != nil {
 		sink.Close() // sink owns a running goroutine; don't leak it
@@ -565,9 +566,10 @@ func (m *Manager) buildWSWorker(a store.WSAlert) (*Worker, error) {
 		Target:       redactURL(a.URL),
 		Rule:         a.AlertCommon,
 		Sink:         sink,
-		PollInterval: a.PollInterval,
-		CursorPath:   cursorPathFor(m.store, "ws", a.ID),
-		CreatedAt:    a.CreatedAt,
+		PollInterval:  a.PollInterval,
+		CursorPath:    cursorPathFor(m.store, "ws", a.ID),
+		LastFiredPath: lastFiredPathFor(m.store, "ws", a.ID),
+		CreatedAt:     a.CreatedAt,
 	})
 }
 
@@ -582,9 +584,10 @@ func (m *Manager) buildMQTTWorker(a store.MQTTAlert) (*Worker, error) {
 		Target:       fmt.Sprintf("%s -> %s", redactURL(a.BrokerURL), a.Topic),
 		Rule:         a.AlertCommon,
 		Sink:         sink,
-		PollInterval: a.PollInterval,
-		CursorPath:   cursorPathFor(m.store, "mqtt", a.ID),
-		CreatedAt:    a.CreatedAt,
+		PollInterval:  a.PollInterval,
+		CursorPath:    cursorPathFor(m.store, "mqtt", a.ID),
+		LastFiredPath: lastFiredPathFor(m.store, "mqtt", a.ID),
+		CreatedAt:     a.CreatedAt,
 	})
 }
 
@@ -593,8 +596,16 @@ func cursorPathFor(st *store.Store, alertType, alertID string) string {
 	return filepath.Join(st.StorePath(), alertType+"_alert_"+alertID+".cursor")
 }
 
-// removeCursor deletes the cursor file. Errors are silently ignored — a
-// missing file is fine, and we don't want to fail Delete on cleanup quirks.
+// lastFiredPathFor returns the per-alert cooldown-mark file, next to the
+// cursor.
+func lastFiredPathFor(st *store.Store, alertType, alertID string) string {
+	return filepath.Join(st.StorePath(), alertType+"_alert_"+alertID+".lastfired")
+}
+
+// removeCursor deletes the cursor and last-fired files. Errors are
+// silently ignored — a missing file is fine, and we don't want to fail
+// Delete on cleanup quirks.
 func removeCursor(st *store.Store, alertType, alertID string) {
 	_ = os.Remove(cursorPathFor(st, alertType, alertID))
+	_ = os.Remove(lastFiredPathFor(st, alertType, alertID))
 }
