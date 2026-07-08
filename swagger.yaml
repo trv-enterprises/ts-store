@@ -1761,6 +1761,40 @@ components:
           type: integer
           format: int64
           description: Cumulative count of windows jumped over by gap handling.
+        lag:
+          type: string
+          example: 1m30s
+          description: now - last_window_end, rounded to seconds. Omitted before the first window.
+        last_run_at:
+          type: string
+          format: date-time
+          description: When the worker last completed a rollup pass (UTC).
+        next_run_at:
+          type: string
+          format: date-time
+          description: Approximate next pass (last_run_at + poll_interval).
+        agg_fields:
+          type: string
+        agg_default:
+          type: string
+        poll_interval:
+          type: string
+          description: Effective poll interval (default applied).
+        grace:
+          type: string
+          description: Effective late-data grace (default applied).
+        restart_policy:
+          type: string
+        retention:
+          type: string
+        target_oldest:
+          type: integer
+          format: int64
+          description: Timestamp (ns) of the oldest rollup row in the target.
+        target_newest:
+          type: integer
+          format: int64
+          description: Timestamp (ns) of the newest rollup row in the target.
         last_error:
           type: string
           description: >-
