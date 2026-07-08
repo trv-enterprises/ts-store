@@ -6,6 +6,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/tviviano/ts-store/pkg/block"
@@ -99,8 +100,22 @@ func (s *Store) getObjectV2(handle *ObjectHandle) ([]byte, error) {
 }
 
 // readPackedObjectDataFromPartition reads object data from a partition.
+//
+// Checksummed blocks (issue #58) are verified before any object header
+// parsed from them is trusted — a corrupted header with a bogus DataLen
+// must not drive allocations or reads. Legacy blocks (written before
+// checksumming) take the original direct-read path.
 func (s *Store) readPackedObjectDataFromPartition(p *Partition, blockNum uint32, offset uint32, size uint32, spanCount uint32) ([]byte, error) {
-	// Read object header to get flags
+	blockHeader, err := p.readBlockHeader(blockNum)
+	if err != nil {
+		return nil, err
+	}
+
+	if blockHeader.HasChecksum() {
+		return s.readPackedObjectVerified(p, blockNum, blockHeader, offset)
+	}
+
+	// Legacy (pre-checksum) block: read directly, as before.
 	objHeader, err := p.readObjectHeader(blockNum, offset)
 	if err != nil {
 		return nil, err
@@ -159,6 +174,72 @@ func (s *Store) readPackedObjectDataFromPartition(p *Partition, blockNum uint32,
 		}
 
 		isFirst = false
+	}
+
+	return data, nil
+}
+
+// readPackedObjectVerified reads an object out of checksummed blocks:
+// each touched block's payload is read whole and verified, and object
+// bytes are sliced from the verified buffer.
+func (s *Store) readPackedObjectVerified(p *Partition, blockNum uint32, blockHeader *block.BlockHeader, offset uint32) ([]byte, error) {
+	payload, err := p.verifiedBlockPayload(blockNum, blockHeader)
+	if err != nil {
+		return nil, err
+	}
+
+	// The object header lives at `offset` relative to the block start;
+	// the payload buffer starts at BlockHeaderSize.
+	if offset < block.BlockHeaderSize || offset-block.BlockHeaderSize+block.ObjectHeaderSize > uint32(len(payload)) {
+		return nil, fmt.Errorf("%w: block %d object offset %d outside verified payload", ErrCorruptBlock, blockNum, offset)
+	}
+	rel := offset - block.BlockHeaderSize
+	objHeader := &block.ObjectHeader{}
+	objHeader.Decode(payload[rel : rel+block.ObjectHeaderSize])
+
+	if !objHeader.Continues() {
+		start := rel + block.ObjectHeaderSize
+		end := start + objHeader.DataLen
+		if end > uint32(len(payload)) {
+			return nil, fmt.Errorf("%w: block %d object data overruns verified payload", ErrCorruptBlock, blockNum)
+		}
+		out := make([]byte, objHeader.DataLen)
+		copy(out, payload[start:end])
+		return out, nil
+	}
+
+	// Spanning object: first chunk from this payload, remaining chunks
+	// from verified continuation blocks.
+	data := make([]byte, 0, objHeader.DataLen)
+	remaining := objHeader.DataLen
+
+	first := payload[rel+block.ObjectHeaderSize:]
+	if uint32(len(first)) > remaining {
+		first = first[:remaining]
+	}
+	data = append(data, first...)
+	remaining -= uint32(len(first))
+
+	currentBlock := blockNum
+	for remaining > 0 {
+		currentBlock++
+		contHeader, err := p.readBlockHeader(currentBlock)
+		if err != nil {
+			return nil, err
+		}
+		contPayload, err := p.verifiedBlockPayload(currentBlock, contHeader)
+		if err != nil {
+			return nil, err
+		}
+		chunk := contPayload
+		if uint32(len(chunk)) > remaining {
+			chunk = chunk[:remaining]
+		}
+		if len(chunk) == 0 {
+			return nil, fmt.Errorf("%w: block %d spanning chain ends %d bytes short", ErrCorruptBlock, currentBlock, remaining)
+		}
+		data = append(data, chunk...)
+		remaining -= uint32(len(chunk))
 	}
 
 	return data, nil

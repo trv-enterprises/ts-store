@@ -132,6 +132,16 @@ func (s *Store) recoverPartition(p *Partition) error {
 		p.meta.HeadBlock = orphanedHead
 	}
 
+	// Phase 1b: Verify the head block's payload checksum (issue #58).
+	// Every later phase trusts the head's DataLen and object chain; a
+	// checksummed head that fails verification is wiped and the head
+	// rolled back rather than followed blindly into garbage. Only the
+	// head is verified here — a full-partition sweep would read the
+	// whole store on every open.
+	if err := s.wipeCorruptHead(p); err != nil {
+		return err
+	}
+
 	// Phase 2: Roll back a spanning write that crashed mid-span
 	if err := s.repairIncompleteSpan(p); err != nil {
 		return err
@@ -236,6 +246,38 @@ func (s *Store) wipeBlocks(p *Partition, from, to uint32) error {
 	return nil
 }
 
+// wipeCorruptHead verifies the head block's checksum (when present) and,
+// on mismatch, wipes the corrupt block and rolls the head back. Repeats
+// in case the new head is corrupt too, so recovery lands on a block it
+// can actually trust. Bounded loss: only blocks that provably fail
+// their checksum are discarded; legacy (unchecksummed) blocks are left
+// alone.
+func (s *Store) wipeCorruptHead(p *Partition) error {
+	for {
+		head := p.meta.HeadBlock
+		header, err := p.readBlockHeader(head)
+		if err != nil {
+			return nil
+		}
+		if header.DataLen == 0 && header.Flags == 0 {
+			return nil // empty
+		}
+		if !header.HasChecksum() {
+			return nil // legacy block; nothing to verify against
+		}
+		if _, err := p.verifiedBlockPayload(head, header); err == nil {
+			return nil // head is sound
+		}
+		fmt.Printf("store recovery: partition %d block %d failed checksum; discarding\n", p.id, head)
+		if err := s.wipeBlocks(p, head, head); err != nil {
+			return err
+		}
+		if head == 0 {
+			return nil // partition now empty
+		}
+	}
+}
+
 // findOrphanedHeadInPartition finds orphaned blocks in a partition.
 func (s *Store) findOrphanedHeadInPartition(p *Partition) (uint32, error) {
 	currentHead := p.meta.HeadBlock
@@ -264,6 +306,16 @@ func (s *Store) findOrphanedHeadInPartition(p *Partition) (uint32, error) {
 
 		if header.Flags == 0 && header.DataLen == 0 {
 			break // Empty block, no orphan
+		}
+
+		// Don't adopt a checksummed block whose payload fails
+		// verification as the head — pre-#58 any nonzero bytes were
+		// treated as a valid block, so recovery could follow a bogus
+		// header into garbage or mis-repair.
+		if header.HasChecksum() {
+			if _, err := p.verifiedBlockPayload(nextBlock, header); err != nil {
+				break
+			}
 		}
 
 		currentHead = nextBlock

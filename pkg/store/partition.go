@@ -300,6 +300,55 @@ func (p *Partition) writeBlockHeader(blockNum uint32, header *block.BlockHeader)
 	return err
 }
 
+// writeBlockHeaderChecksummed stamps a CRC32C of the block's used data
+// area into the header, then writes the header. The payload is read
+// back from disk because packed blocks mutate in place (appends rewrite
+// the previous object's link), so the caller's in-memory bytes never
+// cover the whole area. Called on the put paths AFTER the object bytes
+// land, so the read-back sees the final payload (issue #58).
+func (p *Partition) writeBlockHeaderChecksummed(blockNum uint32, header *block.BlockHeader) error {
+	payload, err := p.readBlockPayload(blockNum, header)
+	if err != nil {
+		return err
+	}
+	header.SetChecksum(block.PayloadChecksum(payload))
+	return p.writeBlockHeader(blockNum, header)
+}
+
+// readBlockPayload reads the block's used data area
+// [BlockHeaderSize, BlockHeaderSize+DataLen), bounds-checking DataLen so
+// a corrupted length can't drive a huge allocation or out-of-block read.
+func (p *Partition) readBlockPayload(blockNum uint32, header *block.BlockHeader) ([]byte, error) {
+	if header.DataLen > p.blockSize-block.BlockHeaderSize {
+		return nil, fmt.Errorf("%w: block %d data length %d exceeds block size", ErrCorruptBlock, blockNum, header.DataLen)
+	}
+	payload := make([]byte, header.DataLen)
+	if header.DataLen == 0 {
+		return payload, nil
+	}
+	if _, err := p.dataFile.ReadAt(payload, p.blockOffset(blockNum)+block.BlockHeaderSize); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// verifiedBlockPayload returns the block's used data area, verified
+// against the header's checksum when one is present. Legacy blocks
+// (no checksum stamped) are returned unverified — pre-#58 data keeps
+// reading without migration.
+func (p *Partition) verifiedBlockPayload(blockNum uint32, header *block.BlockHeader) ([]byte, error) {
+	payload, err := p.readBlockPayload(blockNum, header)
+	if err != nil {
+		return nil, err
+	}
+	if header.HasChecksum() {
+		if got := block.PayloadChecksum(payload); got != header.Checksum() {
+			return nil, fmt.Errorf("%w: block %d payload crc %08x, header says %08x", ErrCorruptBlock, blockNum, got, header.Checksum())
+		}
+	}
+	return payload, nil
+}
+
 // readIndexEntry reads an index entry.
 func (p *Partition) readIndexEntry(entryNum uint32) (*block.IndexEntry, error) {
 	buf := make([]byte, block.IndexEntrySize)
