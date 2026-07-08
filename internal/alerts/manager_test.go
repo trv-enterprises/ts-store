@@ -171,6 +171,54 @@ func TestCreateAlertRejectsMismatchedOptions(t *testing.T) {
 			},
 			wantSub: "broker_url and mqtt.topic",
 		},
+		// Sink URL validation (issue #42): scheme + host checked at
+		// create so a bad target is a clean 400, not a runtime
+		// last_error at first fire.
+		{
+			name: "webhook url without scheme",
+			req: CreateAlertRequest{
+				Type:        "webhook",
+				AlertCommon: store.AlertCommon{Name: "x", Condition: "t > 0"},
+				Webhook:     &WebhookOptions{URL: "not a url"},
+			},
+			wantSub: "scheme must be one of http, https",
+		},
+		{
+			name: "webhook url with ws scheme",
+			req: CreateAlertRequest{
+				Type:        "webhook",
+				AlertCommon: store.AlertCommon{Name: "x", Condition: "t > 0"},
+				Webhook:     &WebhookOptions{URL: "wss://e/hook"},
+			},
+			wantSub: "scheme must be one of http, https",
+		},
+		{
+			name: "ws url with http scheme",
+			req: CreateAlertRequest{
+				Type:        "ws",
+				AlertCommon: store.AlertCommon{Name: "x", Condition: "t > 0"},
+				WS:          &WSOptions{URL: "http://e/stream"},
+			},
+			wantSub: "scheme must be one of ws, wss",
+		},
+		{
+			name: "webhook url missing host",
+			req: CreateAlertRequest{
+				Type:        "webhook",
+				AlertCommon: store.AlertCommon{Name: "x", Condition: "t > 0"},
+				Webhook:     &WebhookOptions{URL: "http://"},
+			},
+			wantSub: "missing host",
+		},
+		{
+			name: "mqtt broker url with bogus scheme",
+			req: CreateAlertRequest{
+				Type:        "mqtt",
+				AlertCommon: store.AlertCommon{Name: "x", Condition: "t > 0"},
+				MQTT:        &MQTTOptions{BrokerURL: "http://b:1883", Topic: "t"},
+			},
+			wantSub: "scheme must be one of",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
