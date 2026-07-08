@@ -583,7 +583,11 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 		return
 	}
 
-	includeData := c.Query("include_data") == "true"
+	// Data included by default (include_data=false to exclude) — same
+	// default as /newest and /oldest and as documented in swagger. /range
+	// previously defaulted to false, stranding spec-following clients
+	// with data-less records (issue #40).
+	includeData := c.Query("include_data") != "false"
 	spec := parseExpandSpec(c)
 
 	objects := make([]DataResponse, 0, limit)

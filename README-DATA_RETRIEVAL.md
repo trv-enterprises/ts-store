@@ -162,7 +162,7 @@ GET /api/stores/:store/data/range
 | `end_time`           | query | int64  | --      | End of range (inclusive), nanoseconds |
 | `since`              | query | string | --      | Relative duration from now |
 | `after`              | query | int64  | --      | Cursor: return records after this timestamp (exclusive) |
-| `include_data`       | query | bool   | false   | Set `true` to include data payload |
+| `include_data`       | query | bool   | true    | Set `false` to return metadata only |
 | `filter`             | query | string | --      | Substring match against serialized data |
 | `filter_ignore_case` | query | bool   | false   | Case-insensitive substring matching |
 | `format`             | query | string | `"full"` | `"full"` or `"compact"` -- schema stores only |
