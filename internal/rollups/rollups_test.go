@@ -6,6 +6,7 @@ package rollups
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -781,5 +782,85 @@ func TestStartNowPolicySkipsBacklog(t *testing.T) {
 	// Start ran a hair after `now`, so allow the boundary to have advanced.
 	if got < wantCursor || got > wantCursor+minute {
 		t.Errorf("cursor = %d, want current aligned boundary in [%d, %d]", got, wantCursor, wantCursor+minute)
+	}
+}
+
+// TestCursorPersistedOncePerBatch is the issue #44 behavior: advancing
+// the cursor is memory-only, and one rollupOnce pass over many windows
+// (including empty ones) leaves the cursor file at the final position —
+// previously every window did its own write+rename, up to 1000 file ops
+// per tick of a cold backfill on SD-card devices.
+func TestCursorPersistedOncePerBatch(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "cursorsrc")
+	defer src.Close()
+
+	minute := int64(time.Minute)
+	now := time.Now().UnixNano()
+	start := ((now - 100*minute) / minute) * minute
+	putTemp(t, src, start+1, 10)
+	// Windows 2..99 empty; a record near now keeps lastClosedEnd recent.
+	putTemp(t, src, start+90*minute+1, 20)
+
+	sz, err := deriveSizing("1d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("cursorsrc-1m", "", sz), "cursorsrc")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	tsch, _ := deriveTargetSchema("temp:avg", "", map[string]bool{"temp": true})
+	if _, err := target.SetSchema(tsch); err != nil {
+		t.Fatalf("set target schema: %v", err)
+	}
+
+	cursorPath := filepath.Join(base, "w.cursor")
+	w, err := NewWorker(Options{
+		ID: "c1", SourceName: "cursorsrc", TargetName: "cursorsrc-1m",
+		Source: src, Target: target,
+		WindowDuration: "1m", AggFields: "temp:avg",
+		RestartPolicy: "resume", CursorPath: cursorPath,
+	})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	// advanceCursor alone must not touch disk.
+	w.advanceCursor(start)
+	if got := readCursor(cursorPath); got != 0 {
+		t.Fatalf("advanceCursor wrote the cursor file (got %d); it must be memory-only", got)
+	}
+
+	// One batch pass: cursor file lands at the final in-memory position.
+	if err := w.rollupOnce(); err != nil {
+		t.Fatalf("rollupOnce: %v", err)
+	}
+	w.mu.RLock()
+	mem := w.lastWindowEnd
+	w.mu.RUnlock()
+	if mem <= start {
+		t.Fatalf("cursor did not advance in memory: %d", mem)
+	}
+	if got := readCursor(cursorPath); got != mem {
+		t.Errorf("cursor file = %d, want the batch-final position %d", got, mem)
+	}
+
+	// An idle pass (nothing to advance) must not rewrite the file.
+	before, err := os.Stat(cursorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := w.rollupOnce(); err != nil {
+		t.Fatalf("idle rollupOnce: %v", err)
+	}
+	after, err := os.Stat(cursorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("idle tick rewrote the cursor file; it must not")
 	}
 }
