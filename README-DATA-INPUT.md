@@ -37,7 +37,7 @@ GET /api/stores/:store/ws/write?api_key=<key>&format=full
 
 **Query parameters:**
 - `api_key` - Required for authentication
-- `format` - For schema stores: `compact` or `full` (default: `full`)
+- `format` - For schema stores: `compact` or `full` (default: `full`). With `compact`, `data` must be an index-keyed object matching the store's current schema (e.g. `{"1": 72.5}`); invalid payloads are rejected with an error frame.
 
 **Client sends:**
 ```json
