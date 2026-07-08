@@ -1704,6 +1704,13 @@ components:
         poll_interval:
           type: string
           example: 30s
+        grace:
+          type: string
+          example: 30s
+          description: >-
+            How long past a window's end the worker waits before closing
+            it, so late-arriving records (buffered flushes, reconnects)
+            still land in their window. Defaults to poll_interval.
         restart_policy:
           type: string
           enum: [resume, now]
@@ -1742,6 +1749,18 @@ components:
         windows_written:
           type: integer
           format: int64
+        gap_detected:
+          type: boolean
+          description: >-
+            Set (sticky for the process lifetime) when the worker found its
+            cursor before the source's oldest surviving record and jumped it
+            forward — the skipped windows produced no rollup rows and never
+            will. Real after downtime longer than source retention; a
+            long-idle source can also trigger it benignly.
+        windows_skipped:
+          type: integer
+          format: int64
+          description: Cumulative count of windows jumped over by gap handling.
         last_error:
           type: string
           description: >-

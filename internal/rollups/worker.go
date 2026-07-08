@@ -38,6 +38,16 @@ type Status struct {
 	LastWindowEnd int64  `json:"last_window_end,omitempty"`
 	WindowsWritten int64 `json:"windows_written"`
 
+	// Gap handling (issue #43). GapDetected is set (sticky for the
+	// process lifetime) when the worker found its cursor pointing before
+	// the source's oldest surviving record and jumped it forward —
+	// meaning the skipped windows produced no rollup rows and never
+	// will. That's a real data gap after downtime longer than source
+	// retention; a long-idle source can also trigger it benignly.
+	// WindowsSkipped counts the windows jumped over, cumulatively.
+	GapDetected    bool  `json:"gap_detected,omitempty"`
+	WindowsSkipped int64 `json:"windows_skipped,omitempty"`
+
 	// State is "running", "stopped", or "error". "error" means the most
 	// recent rollup pass failed; the next clean pass restores "running".
 	// LastError/LastErrorAt are kept across that recovery as history —
@@ -68,11 +78,14 @@ type Worker struct {
 	aggFields     string // raw spec, kept so the config can be re-derived on schema drift
 	aggDefault    string
 	pollInterval  time.Duration
+	graceNanos    int64 // late-data grace before a window is considered closed
 	restartPolicy string
 	cursorPath    string
 
 	lastWindowEnd  int64
 	windowsWritten int64
+	gapDetected    bool
+	windowsSkipped int64
 	state          string
 	lastError      string
 	lastErrorAt    time.Time
@@ -95,9 +108,14 @@ type Options struct {
 	AggFields      string
 	AggDefault     string
 	PollInterval   string
-	RestartPolicy  string // "resume" (default) | "now"
-	CursorPath     string
-	CreatedAt      time.Time
+	// Grace is how long past a window's end the worker waits before
+	// closing it, so late-arriving records (a device flushing buffered
+	// readings after an MQTT retry or reconnect) still land in their
+	// window. Empty defaults to the poll interval.
+	Grace         string
+	RestartPolicy string // "resume" (default) | "now"
+	CursorPath    string
+	CreatedAt     time.Time
 }
 
 // NewWorker builds a Worker, parsing the window and aggregation spec up front
@@ -136,6 +154,18 @@ func NewWorker(opts Options) (*Worker, error) {
 		poll = d
 	}
 
+	grace := poll
+	if opts.Grace != "" {
+		d, err := duration.ParseDuration(opts.Grace)
+		if err != nil {
+			return nil, fmt.Errorf("invalid grace %q: %w", opts.Grace, err)
+		}
+		if d < 0 {
+			return nil, fmt.Errorf("invalid grace %q: must not be negative", opts.Grace)
+		}
+		grace = d
+	}
+
 	restart := opts.RestartPolicy
 	if restart == "" {
 		restart = "resume"
@@ -154,6 +184,7 @@ func NewWorker(opts Options) (*Worker, error) {
 		aggFields:     opts.AggFields,
 		aggDefault:    opts.AggDefault,
 		pollInterval:  poll,
+		graceNanos:    grace.Nanoseconds(),
 		restartPolicy: restart,
 		cursorPath:    opts.CursorPath,
 		state:         "stopped",
@@ -263,8 +294,12 @@ func (w *Worker) rollupOnce() error {
 	}()
 
 	now := time.Now().UnixNano()
-	// Last fully-closed window boundary (exclusive upper bound on window ends).
-	lastClosedEnd := (now / w.windowNanos) * w.windowNanos
+	// Last fully-closed window boundary (exclusive upper bound on window
+	// ends). Windows only close once they are `grace` past their end, so
+	// late-arriving records — a device flushing buffered readings after
+	// an MQTT retry or reconnect — still land in their window instead of
+	// silently never appearing in any rollup row (issue #43a).
+	lastClosedEnd := ((now - w.graceNanos) / w.windowNanos) * w.windowNanos
 
 	nextStart := cursor
 	if nextStart == 0 {
@@ -273,6 +308,24 @@ func (w *Worker) rollupOnce() error {
 			return nil // source empty; nothing to roll up yet
 		}
 		nextStart = (oldest / w.windowNanos) * w.windowNanos
+	} else if oldest := w.sourceOldest(); oldest > 0 {
+		// Downtime gap (issue #43b): the cursor points before the
+		// source's oldest surviving record, so windows [cursor,
+		// oldestAligned) can never produce a row — after downtime
+		// longer than source retention that data expired un-rolled-up.
+		// Jump instead of crawling there one empty window per
+		// iteration (30 days of 1m windows was ~43 minutes of no-op
+		// catch-up), and surface the gap in Status.
+		oldestAligned := (oldest / w.windowNanos) * w.windowNanos
+		if nextStart < oldestAligned {
+			skipped := (oldestAligned - nextStart) / w.windowNanos
+			w.mu.Lock()
+			w.gapDetected = true
+			w.windowsSkipped += skipped
+			w.lastWindowEnd = oldestAligned
+			w.mu.Unlock()
+			nextStart = oldestAligned
+		}
 	}
 
 	processed := 0
@@ -481,6 +534,8 @@ func (w *Worker) Status() Status {
 		State:          w.state,
 		LastWindowEnd:  w.lastWindowEnd,
 		WindowsWritten: atomic.LoadInt64(&w.windowsWritten),
+		GapDetected:    w.gapDetected,
+		WindowsSkipped: w.windowsSkipped,
 		LastError:      w.lastError,
 		LastErrorAt:    w.lastErrorAt,
 		CreatedAt:      w.createdAt,
