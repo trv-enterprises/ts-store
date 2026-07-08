@@ -609,3 +609,47 @@ func TestV2InsertAndRetrieve(t *testing.T) {
 		t.Errorf("Expected 1 object, got %d", listResp.Count)
 	}
 }
+
+// TestRangeIncludesDataByDefault confirms /range defaults include_data
+// to true, matching /newest, /oldest, and the documented default
+// (issue #40 — it previously defaulted to false, so a spec-following
+// client got records with no data).
+func TestRangeIncludesDataByDefault(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := createStore(t, router, "range-default-test")
+	insertJSON(t, router, "range-default-test", apiKey, 1000000000, map[string]string{"msg": "hello"})
+	insertJSON(t, router, "range-default-test", apiKey, 1001000000, map[string]string{"msg": "world"})
+
+	// No include_data param: data must be present.
+	req, _ := http.NewRequest("GET",
+		"/api/stores/range-default-test/data/range?start_time=1000000000&end_time=1001000000", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp DataListResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Count != 2 {
+		t.Fatalf("Expected 2 objects, got %d", resp.Count)
+	}
+	if resp.Objects[0].Data == nil {
+		t.Error("Expected /range to include data by default")
+	}
+
+	// Opt-out still works.
+	req, _ = http.NewRequest("GET",
+		"/api/stores/range-default-test/data/range?start_time=1000000000&end_time=1001000000&include_data=false", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Objects[0].Data != nil {
+		t.Error("Expected data to be excluded with include_data=false")
+	}
+}
