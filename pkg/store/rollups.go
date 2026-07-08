@@ -27,6 +27,7 @@ type RollupConfig struct {
 	AggFields      string    `json:"agg_fields,omitempty"`   // "cpu:avg+max,mem:avg"
 	AggDefault     string    `json:"agg_default,omitempty"`  // fallback func, e.g. "avg"
 	PollInterval   string    `json:"poll_interval,omitempty"`
+	Grace          string    `json:"grace,omitempty"` // late-data grace before a window closes; default = poll_interval
 	RestartPolicy  string    `json:"restart_policy,omitempty"` // "resume" (default) | "now"
 	Retention      string    `json:"retention,omitempty"`      // how long to keep rollup rows, e.g. "1y", "90d"
 	EdgeTolerance  float64   `json:"edge_tolerance,omitempty"` // max over-retention fraction; default 0.10

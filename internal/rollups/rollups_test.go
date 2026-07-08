@@ -864,3 +864,146 @@ func TestCursorPersistedOncePerBatch(t *testing.T) {
 		t.Error("idle tick rewrote the cursor file; it must not")
 	}
 }
+
+// TestGraceDefersWindowClose (issue #43a): a window is only processed
+// once `grace` has elapsed past its end, so late-arriving records (a
+// device flushing buffered readings) still land in their window. With a
+// 10m grace, a record 2 minutes old stays unprocessed; with zero grace
+// its (closed) window rolls up immediately.
+func TestGraceDefersWindowClose(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "gracesrc")
+	defer src.Close()
+
+	minute := int64(time.Minute)
+	now := time.Now().UnixNano()
+	recTs := ((now-2*minute)/minute)*minute + 1
+	putTemp(t, src, recTs, 10)
+
+	sz, err := deriveSizing("1d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("gracesrc-1m", "", sz), "gracesrc")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	tsch, _ := deriveTargetSchema("temp:avg", "", map[string]bool{"temp": true})
+	if _, err := target.SetSchema(tsch); err != nil {
+		t.Fatalf("set target schema: %v", err)
+	}
+
+	build := func(grace string) *Worker {
+		t.Helper()
+		w, err := NewWorker(Options{
+			ID: "g1", SourceName: "gracesrc", TargetName: "gracesrc-1m",
+			Source: src, Target: target,
+			WindowDuration: "1m", AggFields: "temp:avg",
+			RestartPolicy: "now", Grace: grace,
+		})
+		if err != nil {
+			t.Fatalf("NewWorker(grace=%s): %v", grace, err)
+		}
+		return w
+	}
+
+	// 10m grace: the record's window end (~2m ago) is within grace —
+	// nothing rolls up yet.
+	wGrace := build("10m")
+	if err := wGrace.rollupOnce(); err != nil {
+		t.Fatalf("rollupOnce (grace): %v", err)
+	}
+	handles, err := target.GetOldestObjects(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 0 {
+		t.Fatalf("10m grace: expected no rows yet, got %d", len(handles))
+	}
+
+	// Zero grace: the window closed ~1m ago, so it rolls up.
+	wNone := build("0s")
+	if err := wNone.rollupOnce(); err != nil {
+		t.Fatalf("rollupOnce (no grace): %v", err)
+	}
+	handles, err = target.GetOldestObjects(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("zero grace: expected 1 row, got %d", len(handles))
+	}
+}
+
+// TestGapJumpSkipsExpiredWindows (issue #43b): when the cursor points
+// before the source's oldest surviving record (downtime longer than
+// source retention), the worker jumps to the aligned source-oldest in
+// one step — instead of crawling one empty window per iteration — and
+// surfaces gap_detected / windows_skipped in Status.
+func TestGapJumpSkipsExpiredWindows(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "gapsrc")
+	defer src.Close()
+
+	minute := int64(time.Minute)
+	now := time.Now().UnixNano()
+	oldest := ((now-5*minute)/minute)*minute + 1
+	putTemp(t, src, oldest, 10)
+
+	sz, err := deriveSizing("1d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("gapsrc-1m", "", sz), "gapsrc")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	tsch, _ := deriveTargetSchema("temp:avg", "", map[string]bool{"temp": true})
+	if _, err := target.SetSchema(tsch); err != nil {
+		t.Fatalf("set target schema: %v", err)
+	}
+
+	w, err := NewWorker(Options{
+		ID: "gap1", SourceName: "gapsrc", TargetName: "gapsrc-1m",
+		Source: src, Target: target,
+		WindowDuration: "1m", AggFields: "temp:avg",
+		RestartPolicy: "resume", Grace: "0s",
+	})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	// Simulate a cursor stranded 60m back — as after downtime longer
+	// than source retention.
+	staleCursor := ((now - 60*minute) / minute) * minute
+	w.mu.Lock()
+	w.lastWindowEnd = staleCursor
+	w.mu.Unlock()
+
+	if err := w.rollupOnce(); err != nil {
+		t.Fatalf("rollupOnce: %v", err)
+	}
+
+	st := w.Status()
+	if !st.GapDetected {
+		t.Error("gap_detected should be set after a cursor jump")
+	}
+	oldestAligned := (oldest / minute) * minute
+	wantSkipped := (oldestAligned - staleCursor) / minute
+	if st.WindowsSkipped != wantSkipped {
+		t.Errorf("windows_skipped = %d, want %d", st.WindowsSkipped, wantSkipped)
+	}
+	if st.LastWindowEnd < oldestAligned {
+		t.Errorf("cursor did not jump: %d < %d", st.LastWindowEnd, oldestAligned)
+	}
+	// The surviving record's window still rolled up.
+	handles, err := target.GetOldestObjects(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(handles) != 1 {
+		t.Errorf("expected the surviving window's row, got %d rows", len(handles))
+	}
+}

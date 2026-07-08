@@ -98,6 +98,7 @@ type CreateRollupRequest struct {
 	AggFields     string  `json:"agg_fields,omitempty"`
 	AggDefault    string  `json:"agg_default,omitempty"`
 	PollInterval  string  `json:"poll_interval,omitempty"`
+	Grace         string  `json:"grace,omitempty"` // late-data grace; default = poll_interval
 	RestartPolicy string  `json:"restart_policy,omitempty"`
 	Retention     string  `json:"retention,omitempty"`
 	EdgeTolerance float64 `json:"edge_tolerance,omitempty"`
@@ -196,6 +197,7 @@ func (m *Manager) CreateRollup(req CreateRollupRequest) (Status, error) {
 		AggFields:      req.AggFields,
 		AggDefault:     req.AggDefault,
 		PollInterval:   req.PollInterval,
+		Grace:          req.Grace,
 		RestartPolicy:  req.RestartPolicy,
 		Retention:      req.Retention,
 		EdgeTolerance:  req.EdgeTolerance,
@@ -223,6 +225,7 @@ func sameRollupSpec(rc store.RollupConfig, req CreateRollupRequest, cw string) b
 		rc.AggFields == req.AggFields &&
 		rc.AggDefault == req.AggDefault &&
 		rc.PollInterval == req.PollInterval &&
+		rc.Grace == req.Grace &&
 		rc.RestartPolicy == req.RestartPolicy &&
 		rc.Retention == req.Retention &&
 		rc.EdgeTolerance == req.EdgeTolerance &&
@@ -392,6 +395,7 @@ func (m *Manager) buildWorkerWithTarget(rc store.RollupConfig, target *store.Sto
 		AggFields:      rc.AggFields,
 		AggDefault:     rc.AggDefault,
 		PollInterval:   rc.PollInterval,
+		Grace:          rc.Grace,
 		RestartPolicy:  rc.RestartPolicy,
 		CursorPath:     cursorPathFor(m.source, rc.ID),
 		CreatedAt:      rc.CreatedAt,
