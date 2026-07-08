@@ -182,6 +182,10 @@ The MQTT client connects on first dispatch and stays connected. `qos` defaults t
 
 The server rejects requests where `type` is missing or unknown, where the nested options block for the chosen `type` is absent, or where any of the *other* transport blocks are also set. `max_replay` without `restart_policy="resume"` is rejected. `external_ref` over 512 bytes or containing NUL bytes is rejected.
 
+Sink URLs are parsed at create time and must carry a host and a scheme matching the transport — `http`/`https` for webhooks, `ws`/`wss` for WebSocket sinks, and one of paho's accepted schemes (`tcp`, `ssl`, `tls`, `ws`, `wss`, `mqtt`, `mqtts`, `unix`) for MQTT broker URLs. A malformed or mis-schemed URL is a 400 at create rather than a runtime `last_error` at first fire.
+
+**SSRF posture.** Loopback, link-local, and private-range sink targets are deliberately *not* blocked: alerts posting to services on the same box or LAN are a core homelab pattern here. The consequence is that anyone holding a store API key can make the daemon POST to any address the daemon can reach. Treat store API keys accordingly on shared or internet-exposed deployments; a deny-list (e.g. blocking `169.254.0.0/16`) can be revisited if that threat model ever applies.
+
 ### Alert payload
 
 The body POSTed to the webhook (and the contents of the `alert` field on a WS frame, and the MQTT publish body) is the same JSON shape across all three transports:

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -139,6 +140,27 @@ type CreateAlertRequest struct {
 	MQTT    *MQTTOptions    `json:"mqtt,omitempty"`
 }
 
+// validateSinkURL parses raw and requires one of the given schemes plus
+// a host. The sinks themselves never url.Parse — without this check a
+// typo'd URL (or an http:// URL handed to the WS sink) was accepted at
+// create and only surfaced at first fire as a confusing runtime
+// last_error (issue #42). Loopback/link-local targets are deliberately
+// NOT blocked: local sinks are a legitimate homelab pattern; the SSRF
+// posture is documented in docs/alerting-architecture.md.
+func validateSinkURL(raw, field string, schemes ...string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %v", field, err)
+	}
+	if !slices.Contains(schemes, u.Scheme) {
+		return fmt.Errorf("invalid %s %q: scheme must be one of %s", field, redactURL(raw), strings.Join(schemes, ", "))
+	}
+	if u.Host == "" {
+		return fmt.Errorf("invalid %s %q: missing host", field, redactURL(raw))
+	}
+	return nil
+}
+
 // CreateAlert validates the unified request, dispatches to the
 // transport-specific persistence + worker construction, and returns the
 // worker status.
@@ -158,6 +180,9 @@ func (m *Manager) CreateAlert(req CreateAlertRequest) (Status, error) {
 		if req.Webhook.URL == "" {
 			return Status{}, fmt.Errorf("webhook.url is required")
 		}
+		if err := validateSinkURL(req.Webhook.URL, "webhook.url", "http", "https"); err != nil {
+			return Status{}, err
+		}
 		return m.createWebhook(req)
 	case "ws":
 		if req.WS == nil {
@@ -169,6 +194,9 @@ func (m *Manager) CreateAlert(req CreateAlertRequest) (Status, error) {
 		if req.WS.URL == "" {
 			return Status{}, fmt.Errorf("ws.url is required")
 		}
+		if err := validateSinkURL(req.WS.URL, "ws.url", "ws", "wss"); err != nil {
+			return Status{}, err
+		}
 		return m.createWS(req)
 	case "mqtt":
 		if req.MQTT == nil {
@@ -179,6 +207,10 @@ func (m *Manager) CreateAlert(req CreateAlertRequest) (Status, error) {
 		}
 		if req.MQTT.BrokerURL == "" || req.MQTT.Topic == "" {
 			return Status{}, fmt.Errorf("mqtt.broker_url and mqtt.topic are required")
+		}
+		// The scheme set is what paho's AddBroker accepts.
+		if err := validateSinkURL(req.MQTT.BrokerURL, "mqtt.broker_url", "tcp", "ssl", "tls", "ws", "wss", "mqtt", "mqtts", "unix"); err != nil {
+			return Status{}, err
 		}
 		return m.createMQTT(req)
 	case "":
