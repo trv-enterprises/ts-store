@@ -25,6 +25,10 @@ import (
 var (
 	ErrStoreAlreadyOpen = errors.New("store is already open")
 	ErrStoreNotOpen     = errors.New("store is not open")
+
+	// ErrHasDependents marks a delete refused because other stores link
+	// to this store's API keys (rollup targets). Handlers map it to 409.
+	ErrHasDependents = errors.New("store has dependents")
 )
 
 // StoreService manages store lifecycle and operations.
@@ -245,8 +249,8 @@ func (s *StoreService) Close(name string) error {
 // depend on this store's API keys — e.g. rollup targets that link here for auth.
 func (s *StoreService) Delete(name string) error {
 	if deps, err := s.keyManager.LinkedDependents(name); err == nil && len(deps) > 0 {
-		return fmt.Errorf("cannot delete %q: %d store(s) link to its API keys (%s); remove those rollups first",
-			name, len(deps), strings.Join(deps, ", "))
+		return fmt.Errorf("%w: cannot delete %q: %d store(s) link to its API keys (%s); remove those rollups first",
+			ErrHasDependents, name, len(deps), strings.Join(deps, ", "))
 	}
 	return s.deleteStoreInternal(name)
 }

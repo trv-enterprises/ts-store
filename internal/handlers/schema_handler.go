@@ -52,7 +52,7 @@ func (h *SchemaHandler) Get(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
@@ -108,7 +108,7 @@ func (h *SchemaHandler) ListVersions(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
@@ -149,7 +149,7 @@ func (h *SchemaHandler) Put(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 

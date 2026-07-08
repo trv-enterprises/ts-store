@@ -208,6 +208,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: Other stores link to this store's API keys (rollup targets) — remove those rollups first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/stores/{store}/reset:
     post:
@@ -261,6 +267,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StoreStats'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/stores/{store}/metrics:
     get:
@@ -281,6 +289,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StoreActivity'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/stores/{store}/metrics/reset:
     post:
