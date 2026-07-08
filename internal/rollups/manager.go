@@ -397,6 +397,7 @@ func (m *Manager) buildWorkerWithTarget(rc store.RollupConfig, target *store.Sto
 		PollInterval:   rc.PollInterval,
 		Grace:          rc.Grace,
 		RestartPolicy:  rc.RestartPolicy,
+		Retention:      rc.Retention,
 		CursorPath:     cursorPathFor(m.source, rc.ID),
 		CreatedAt:      rc.CreatedAt,
 	})

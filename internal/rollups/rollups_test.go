@@ -1007,3 +1007,80 @@ func TestGapJumpSkipsExpiredWindows(t *testing.T) {
 		t.Errorf("expected the surviving window's row, got %d rows", len(handles))
 	}
 }
+
+// TestStatusAnswersHealthAndCoverage (issue #45): Status alone should
+// answer "what does this rollup do, is it healthy, and how far behind
+// is it?" — lag, last/next run, config echo, and target coverage —
+// without reading rollup_configs.json on the device.
+func TestStatusAnswersHealthAndCoverage(t *testing.T) {
+	base := t.TempDir()
+	provider := newFakeProvider(base)
+	src := newSourceStore(t, base, "healthsrc")
+	defer src.Close()
+
+	minute := int64(time.Minute)
+	now := time.Now().UnixNano()
+	start := ((now - 10*minute) / minute) * minute
+	putTemp(t, src, start+1, 10)
+
+	sz, err := deriveSizing("90d", "1m", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.CreateRollupTarget(targetConfig("healthsrc-1m", "", sz), "healthsrc")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	tsch, _ := deriveTargetSchema("temp:avg", "", map[string]bool{"temp": true})
+	if _, err := target.SetSchema(tsch); err != nil {
+		t.Fatalf("set target schema: %v", err)
+	}
+
+	w, err := NewWorker(Options{
+		ID: "h1", SourceName: "healthsrc", TargetName: "healthsrc-1m",
+		Source: src, Target: target,
+		WindowDuration: "1m", AggFields: "temp:avg", AggDefault: "avg",
+		RestartPolicy: "now", Grace: "0s", Retention: "90d",
+	})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	// Before any pass: no lag/last_run yet, but config echo present.
+	st := w.Status()
+	if st.LastRunAt.IsZero() != true || st.Lag != "" {
+		t.Errorf("pre-run status should have zero last_run_at and no lag: %+v", st)
+	}
+	if st.PollInterval != "30s" || st.Grace != "0s" || st.RestartPolicy != "now" ||
+		st.AggFields != "temp:avg" || st.AggDefault != "avg" || st.Retention != "90d" {
+		t.Errorf("config echo wrong: %+v", st)
+	}
+
+	// Set the cursor near the record so one pass rolls up its window.
+	w.mu.Lock()
+	w.lastWindowEnd = start
+	w.mu.Unlock()
+	if err := w.rollupOnce(); err != nil {
+		t.Fatalf("rollupOnce: %v", err)
+	}
+
+	st = w.Status()
+	if st.LastRunAt.IsZero() {
+		t.Error("last_run_at should be stamped after a pass")
+	}
+	if st.NextRunAt.IsZero() || !st.NextRunAt.After(st.LastRunAt) {
+		t.Errorf("next_run_at should be last_run_at + poll_interval: %+v", st)
+	}
+	if st.Lag == "" {
+		t.Error("lag should be reported once a window has been processed")
+	}
+	if _, err := time.ParseDuration(st.Lag); err != nil {
+		t.Errorf("lag %q is not a parseable duration: %v", st.Lag, err)
+	}
+	if st.TargetNewest == 0 || st.TargetOldest == 0 {
+		t.Errorf("target coverage should be reported after a row was written: oldest=%d newest=%d", st.TargetOldest, st.TargetNewest)
+	}
+	if st.TargetNewest != start+minute {
+		t.Errorf("target_newest = %d, want the written window end %d", st.TargetNewest, start+minute)
+	}
+}

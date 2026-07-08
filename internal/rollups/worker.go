@@ -48,6 +48,25 @@ type Status struct {
 	GapDetected    bool  `json:"gap_detected,omitempty"`
 	WindowsSkipped int64 `json:"windows_skipped,omitempty"`
 
+	// Health & coverage (issue #45): answer "is it healthy and how far
+	// behind?" without reading rollup_configs.json on the device.
+	Lag       string    `json:"lag,omitempty"`         // now - last_window_end, rounded to seconds; omitted before the first window
+	LastRunAt time.Time `json:"last_run_at,omitzero"`  // when the worker last completed a pass
+	NextRunAt time.Time `json:"next_run_at,omitzero"`  // approximate: last_run_at + poll_interval
+
+	// Config echo — what this rollup does, from the persisted config
+	// (effective values where a default applies).
+	AggFields     string `json:"agg_fields,omitempty"`
+	AggDefault    string `json:"agg_default,omitempty"`
+	PollInterval  string `json:"poll_interval"`
+	Grace         string `json:"grace"`
+	RestartPolicy string `json:"restart_policy"`
+	Retention     string `json:"retention,omitempty"`
+
+	// Target coverage: timestamps of the oldest/newest rollup rows.
+	TargetOldest int64 `json:"target_oldest,omitempty"`
+	TargetNewest int64 `json:"target_newest,omitempty"`
+
 	// State is "running", "stopped", or "error". "error" means the most
 	// recent rollup pass failed; the next clean pass restores "running".
 	// LastError/LastErrorAt are kept across that recovery as history —
@@ -86,6 +105,8 @@ type Worker struct {
 	windowsWritten int64
 	gapDetected    bool
 	windowsSkipped int64
+	lastRunAt      time.Time
+	retention      string // echoed in Status; sizing already applied at create
 	state          string
 	lastError      string
 	lastErrorAt    time.Time
@@ -114,6 +135,7 @@ type Options struct {
 	// window. Empty defaults to the poll interval.
 	Grace         string
 	RestartPolicy string // "resume" (default) | "now"
+	Retention     string // echoed in Status only; sizing applied at create
 	CursorPath    string
 	CreatedAt     time.Time
 }
@@ -186,6 +208,7 @@ func NewWorker(opts Options) (*Worker, error) {
 		pollInterval:  poll,
 		graceNanos:    grace.Nanoseconds(),
 		restartPolicy: restart,
+		retention:     opts.Retention,
 		cursorPath:    opts.CursorPath,
 		state:         "stopped",
 		createdAt:     opts.CreatedAt,
@@ -283,11 +306,13 @@ func (w *Worker) rollupOnce() error {
 	// Persist the cursor once per batch, whatever the exit path (done,
 	// error, stop, window cap) — advanceCursor is memory-only. Skipped
 	// when nothing advanced, so idle ticks still cost zero file ops.
+	// Also stamps last_run_at for Status.
 	startCursor := cursor
 	defer func() {
-		w.mu.RLock()
+		w.mu.Lock()
 		end := w.lastWindowEnd
-		w.mu.RUnlock()
+		w.lastRunAt = time.Now().UTC()
+		w.mu.Unlock()
 		if end != startCursor {
 			w.writeCursor(end)
 		}
@@ -523,9 +548,13 @@ func readCursor(path string) int64 {
 
 // Status returns a snapshot for HTTP/CLI display.
 func (w *Worker) Status() Status {
+	// Target coverage read before taking w.mu (store has its own lock).
+	targetStats := w.target.Stats()
+
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return Status{
+
+	st := Status{
 		ID:             w.id,
 		Name:           w.name,
 		SourceStore:    w.sourceName,
@@ -536,8 +565,24 @@ func (w *Worker) Status() Status {
 		WindowsWritten: atomic.LoadInt64(&w.windowsWritten),
 		GapDetected:    w.gapDetected,
 		WindowsSkipped: w.windowsSkipped,
+		LastRunAt:      w.lastRunAt,
+		AggFields:      w.aggFields,
+		AggDefault:     w.aggDefault,
+		PollInterval:   w.pollInterval.String(),
+		Grace:          time.Duration(w.graceNanos).String(),
+		RestartPolicy:  w.restartPolicy,
+		Retention:      w.retention,
+		TargetOldest:   targetStats.OldestTimestamp,
+		TargetNewest:   targetStats.NewestTimestamp,
 		LastError:      w.lastError,
 		LastErrorAt:    w.lastErrorAt,
 		CreatedAt:      w.createdAt,
 	}
+	if w.lastWindowEnd > 0 {
+		st.Lag = time.Duration(time.Now().UnixNano() - w.lastWindowEnd).Round(time.Second).String()
+	}
+	if !w.lastRunAt.IsZero() {
+		st.NextRunAt = w.lastRunAt.Add(w.pollInterval)
+	}
+	return st
 }
