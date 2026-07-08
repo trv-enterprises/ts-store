@@ -249,6 +249,19 @@ func (w *Worker) rollupOnce() error {
 	cursor := w.lastWindowEnd
 	w.mu.RUnlock()
 
+	// Persist the cursor once per batch, whatever the exit path (done,
+	// error, stop, window cap) — advanceCursor is memory-only. Skipped
+	// when nothing advanced, so idle ticks still cost zero file ops.
+	startCursor := cursor
+	defer func() {
+		w.mu.RLock()
+		end := w.lastWindowEnd
+		w.mu.RUnlock()
+		if end != startCursor {
+			w.writeCursor(end)
+		}
+	}()
+
 	now := time.Now().UnixNano()
 	// Last fully-closed window boundary (exclusive upper bound on window ends).
 	lastClosedEnd := (now / w.windowNanos) * w.windowNanos
@@ -379,11 +392,16 @@ func (w *Worker) refreshSchemaAndConfig() error {
 	return nil
 }
 
+// advanceCursor moves the in-memory cursor only. Persistence happens
+// once per rollupOnce batch (see the flush there) — a per-window
+// write+rename during a cold backfill was up to 1000 file ops per tick,
+// needless flash wear on SD-card devices (issue #44). Crash-safety is
+// unchanged in kind: losing an unflushed batch only means re-processing
+// those windows on the next start, which rollups already tolerate.
 func (w *Worker) advanceCursor(windowEnd int64) {
 	w.mu.Lock()
 	w.lastWindowEnd = windowEnd
 	w.mu.Unlock()
-	w.writeCursor(windowEnd)
 }
 
 func (w *Worker) sourceOldest() int64 {
