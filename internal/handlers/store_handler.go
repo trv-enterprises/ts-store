@@ -68,7 +68,7 @@ func (h *StoreHandler) Delete(c *gin.Context) {
 	storeName := c.Param("store")
 
 	if err := h.storeService.Delete(storeName); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err) // 409 when rollup dependents link here
 		return
 	}
 
@@ -81,7 +81,7 @@ func (h *StoreHandler) Stats(c *gin.Context) {
 
 	stats, err := h.storeService.Stats(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
@@ -96,7 +96,7 @@ func (h *StoreHandler) Metrics(c *gin.Context) {
 	storeName := c.Param("store")
 	activity, err := h.storeService.Metrics(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, activity)
@@ -108,7 +108,7 @@ func (h *StoreHandler) Metrics(c *gin.Context) {
 func (h *StoreHandler) ResetMetrics(c *gin.Context) {
 	storeName := c.Param("store")
 	if err := h.storeService.ResetMetrics(storeName); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "metrics reset"})
@@ -128,7 +128,7 @@ func (h *StoreHandler) Reset(c *gin.Context) {
 	storeName := c.Param("store")
 
 	if err := h.storeService.Reset(storeName); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 

@@ -122,7 +122,7 @@ func (h *UnifiedHandler) Put(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
@@ -227,7 +227,7 @@ func (h *UnifiedHandler) GetByTime(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
@@ -255,7 +255,7 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
@@ -363,7 +363,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
@@ -492,7 +492,7 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 
 	st, err := h.storeService.GetOrOpen(storeName)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondStoreError(c, err)
 		return
 	}
 
