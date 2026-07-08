@@ -127,7 +127,14 @@ func (w *wsWriter) processMessage(message []byte) error {
 			}
 			dataBytes = compacted
 		} else {
-			// Assume data is already in compact format
+			// format=compact: the payload claims to already be in
+			// compact (index-keyed) form. Validate it — HTTP has no
+			// compact write path and always validates+compacts, so
+			// without this a WS client could insert arbitrary bytes
+			// that reads then fail to expand (issue #41).
+			if err := w.store.ValidateCompact(req.Data); err != nil {
+				return err
+			}
 			dataBytes = req.Data
 		}
 	case store.DataTypeJSON:

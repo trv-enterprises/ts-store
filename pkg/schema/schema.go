@@ -349,6 +349,25 @@ func (ss *SchemaSet) ValidateData(data []byte) error {
 	return ss.validateFull(parsed)
 }
 
+// ValidateCompactData validates a payload that claims to already be in
+// compact form: every key must be an integer index defined by the
+// current schema version. Unlike ValidateData it does not sniff the
+// format — a full-form (named-key) payload is rejected, because a
+// compact write path storing named keys would corrupt reads that
+// expand records by index.
+func (ss *SchemaSet) ValidateCompactData(data []byte) error {
+	if ss.CurrentVersion == 0 {
+		return ErrInvalidSchema
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+	}
+
+	return ss.validateCompact(parsed)
+}
+
 func (ss *SchemaSet) validateFull(data map[string]interface{}) error {
 	nameToIdx := ss.nameToIndex[ss.CurrentVersion]
 

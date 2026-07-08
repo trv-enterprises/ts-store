@@ -97,6 +97,25 @@ func (s *Store) ValidateAndCompact(data []byte) ([]byte, error) {
 	return s.schemaSet.FullToCompact(data)
 }
 
+// ValidateCompact validates data that is already in compact
+// (index-keyed) form against the current schema: valid JSON object,
+// every key an integer index the schema defines. Only valid for schema
+// stores.
+func (s *Store) ValidateCompact(data []byte) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.dataTypeLocked() != DataTypeSchema {
+		return ErrSchemaNotSupported
+	}
+
+	if s.schemaSet == nil {
+		return ErrSchemaRequired
+	}
+
+	return s.schemaSet.ValidateCompactData(data)
+}
+
 // ExpandData converts compact data to full format.
 // Only valid for schema stores.
 func (s *Store) ExpandData(data []byte, schemaVersion int) ([]byte, error) {
