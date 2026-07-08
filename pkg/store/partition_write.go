@@ -116,13 +116,14 @@ func (s *Store) appendToCurrentBlockV2(timestamp int64, data []byte, schemaVer u
 		}
 	}
 
-	// Update block header DataLen
+	// Update block header DataLen (+ payload checksum, computed over the
+	// final bytes now that the object landed)
 	blockHeader, err := p.readBlockHeader(blockNum)
 	if err != nil {
 		return nil, err
 	}
 	blockHeader.DataLen = dataOffset + uint32(len(data)) - block.BlockHeaderSize
-	if err := p.writeBlockHeader(blockNum, blockHeader); err != nil {
+	if err := p.writeBlockHeaderChecksummed(blockNum, blockHeader); err != nil {
 		return nil, err
 	}
 
@@ -150,16 +151,6 @@ func (s *Store) writeToNewBlockV2(timestamp int64, data []byte, schemaVer uint32
 		return nil, err
 	}
 
-	// Initialize block header
-	blockHeader := &block.BlockHeader{
-		Timestamp: timestamp,
-		DataLen:   block.ObjectHeaderSize + uint32(len(data)),
-		Flags:     block.FlagPrimary | block.FlagPacked,
-	}
-	if err := p.writeBlockHeader(blockNum, blockHeader); err != nil {
-		return nil, err
-	}
-
 	// Write object header
 	objOffset := uint32(block.BlockHeaderSize)
 	objHeader := &block.ObjectHeader{
@@ -180,6 +171,19 @@ func (s *Store) writeToNewBlockV2(timestamp int64, data []byte, schemaVer uint32
 		if _, err := p.dataFile.WriteAt(data, fileOffset); err != nil {
 			return nil, err
 		}
+	}
+
+	// Write the block header (+ checksum) LAST, after the payload it
+	// covers — a crash before this point leaves an empty header, which
+	// recovery treats as an empty block, instead of a header pointing
+	// at zeros.
+	blockHeader := &block.BlockHeader{
+		Timestamp: timestamp,
+		DataLen:   block.ObjectHeaderSize + uint32(len(data)),
+		Flags:     block.FlagPrimary | block.FlagPacked,
+	}
+	if err := p.writeBlockHeaderChecksummed(blockNum, blockHeader); err != nil {
+		return nil, err
 	}
 
 	// Write index entry
@@ -237,12 +241,6 @@ func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte, schemaVer ui
 			chunkSize = uint32(len(data))
 		}
 
-		blockHeader := &block.BlockHeader{
-			Timestamp: timestamp,
-			DataLen:   block.ObjectHeaderSize + chunkSize,
-			Flags:     block.FlagPrimary | block.FlagPacked,
-		}
-
 		objFlags := uint32(block.ObjFlagLastInBlock)
 		if chunkSize < uint32(len(data)) {
 			objFlags |= block.ObjFlagContinues
@@ -256,10 +254,6 @@ func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte, schemaVer ui
 			Reserved:   schemaVer,
 		}
 
-		if err := p.writeBlockHeader(currentBlock, blockHeader); err != nil {
-			return nil, err
-		}
-
 		if err := p.writeObjectHeader(currentBlock, block.BlockHeaderSize, objHeader); err != nil {
 			return nil, err
 		}
@@ -267,6 +261,16 @@ func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte, schemaVer ui
 		// Write data chunk
 		fileOffset := p.blockOffset(currentBlock) + int64(block.BlockHeaderSize+block.ObjectHeaderSize)
 		if _, err := p.dataFile.WriteAt(data[0:chunkSize], fileOffset); err != nil {
+			return nil, err
+		}
+
+		// Block header (+ checksum) last, after the payload it covers.
+		blockHeader := &block.BlockHeader{
+			Timestamp: timestamp,
+			DataLen:   block.ObjectHeaderSize + chunkSize,
+			Flags:     block.FlagPrimary | block.FlagPacked,
+		}
+		if err := p.writeBlockHeaderChecksummed(currentBlock, blockHeader); err != nil {
 			return nil, err
 		}
 
@@ -298,19 +302,19 @@ func (s *Store) writeSpanningObjectV2(timestamp int64, data []byte, schemaVer ui
 		p.meta.HeadBlock = nextBlock
 		currentBlock = nextBlock
 
-		// Write continuation block header
+		// Write data chunk
+		fileOffset := p.blockOffset(currentBlock) + int64(block.BlockHeaderSize)
+		if _, err := p.dataFile.WriteAt(data[dataPos:dataPos+chunkSize], fileOffset); err != nil {
+			return nil, err
+		}
+
+		// Continuation block header (+ checksum) after its payload.
 		contHeader := &block.BlockHeader{
 			Timestamp: 0, // Continuation blocks have timestamp 0
 			DataLen:   chunkSize,
 			Flags:     block.FlagPrimary | block.FlagPacked | block.FlagContinuation,
 		}
-		if err := p.writeBlockHeader(currentBlock, contHeader); err != nil {
-			return nil, err
-		}
-
-		// Write data chunk
-		fileOffset := p.blockOffset(currentBlock) + int64(block.BlockHeaderSize)
-		if _, err := p.dataFile.WriteAt(data[dataPos:dataPos+chunkSize], fileOffset); err != nil {
+		if err := p.writeBlockHeaderChecksummed(currentBlock, contHeader); err != nil {
 			return nil, err
 		}
 

@@ -24,6 +24,7 @@ var (
 	ErrVersionMismatch     = errors.New("store version mismatch")
 	ErrV1NotSupported      = errors.New("V1 circular-buffer stores are no longer supported")
 	ErrBlockOutOfRange     = errors.New("block number out of range")
+	ErrCorruptBlock        = errors.New("corrupt block (checksum mismatch)")
 	ErrInvalidTimestamp    = errors.New("invalid timestamp")
 	ErrTimestampOutOfOrder = errors.New("timestamp must be greater than newest entry")
 )

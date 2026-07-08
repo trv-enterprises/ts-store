@@ -8,6 +8,7 @@ package block
 import (
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"time"
 )
 
@@ -24,7 +25,41 @@ type BlockHeader struct {
 	Timestamp int64  // Unix nanoseconds
 	DataLen   uint32 // Actual data length in this block
 	Flags     uint32 // Block flags (primary, packed, continuation)
-	Reserved  uint64 // Padding/future use (maintains 8-byte alignment)
+	// Reserved carries the payload checksum (issue #58): the high 32
+	// bits hold ChecksumMagic and the low 32 bits a CRC32C of the
+	// block's used data area [BlockHeaderSize, BlockHeaderSize+DataLen).
+	// Blocks written before checksumming existed have Reserved == 0 and
+	// are treated as unchecksummed — readers skip verification, so old
+	// stores keep working without migration.
+	Reserved uint64
+}
+
+// ChecksumMagic marks BlockHeader.Reserved as carrying a CRC32C. The
+// magic distinguishes a real checksum (which may legitimately be zero)
+// from the zero Reserved of pre-checksum blocks.
+const ChecksumMagic uint32 = 0xC32C0001
+
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// PayloadChecksum computes the CRC32C of a block's used data area.
+func PayloadChecksum(payload []byte) uint32 {
+	return crc32.Checksum(payload, castagnoli)
+}
+
+// SetChecksum stamps a payload CRC32C (with magic) into Reserved.
+func (h *BlockHeader) SetChecksum(crc uint32) {
+	h.Reserved = uint64(ChecksumMagic)<<32 | uint64(crc)
+}
+
+// HasChecksum reports whether Reserved carries a checksum.
+func (h *BlockHeader) HasChecksum() bool {
+	return uint32(h.Reserved>>32) == ChecksumMagic
+}
+
+// Checksum returns the stamped payload CRC32C. Only meaningful when
+// HasChecksum is true.
+func (h *BlockHeader) Checksum() uint32 {
+	return uint32(h.Reserved)
 }
 
 const (
