@@ -647,9 +647,10 @@ All data retrieval endpoints require store-level authentication. Provide the sto
 |--------|---------|
 | `X-API-Key` header | `X-API-Key: tsstore_a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
 | `Authorization` header | `Authorization: Bearer tsstore_a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
-| `api_key` query parameter | `?api_key=tsstore_a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
 
 The store API key is generated when the store is created and shown only once.
+
+Credentials are header-only — the `api_key` query parameter is accepted solely on the inbound WebSocket handshake (`/ws/write`), where the browser WebSocket API cannot set headers.
 
 ---
 

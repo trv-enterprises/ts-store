@@ -44,8 +44,7 @@ func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
 			return
 		}
 
-		// Get API key from header or query param
-		// Supports: X-API-Key header, Authorization: Bearer, or api_key query param
+		// Get API key from header: X-API-Key or Authorization: Bearer.
 		apiKeyValue := c.GetHeader("X-API-Key")
 		if apiKeyValue == "" {
 			// Check Authorization: Bearer header
@@ -54,7 +53,11 @@ func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
 				apiKeyValue = strings.TrimPrefix(authHeader, "Bearer ")
 			}
 		}
-		if apiKeyValue == "" {
+		// The api_key query fallback exists only for the browser WebSocket
+		// handshake — the WebSocket API can't set request headers. Query
+		// credentials land in proxy/access logs and browser history, so
+		// every other route is header-only.
+		if apiKeyValue == "" && strings.HasSuffix(c.FullPath(), "/ws/write") {
 			apiKeyValue = c.Query("api_key")
 		}
 
@@ -107,15 +110,14 @@ func GetKeyEntry(c *gin.Context) *apikey.KeyEntry {
 	return nil
 }
 
-// AdminAuth creates middleware that validates the admin key for store management operations.
-// The admin key can be provided via X-Admin-Key header or admin_key query parameter.
+// AdminAuth creates middleware that validates the admin key for store
+// management operations. The admin key must be provided via the
+// X-Admin-Key header — the former admin_key query fallback is gone (query
+// credentials leak into proxy/access logs, and nothing header-incapable
+// ever needs admin operations).
 func AdminAuth(adminKey string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get admin key from header or query param
 		providedKey := c.GetHeader("X-Admin-Key")
-		if providedKey == "" {
-			providedKey = c.Query("admin_key")
-		}
 
 		if providedKey == "" {
 			// Check if they sent X-API-Key instead, and give a helpful hint

@@ -79,15 +79,16 @@ ts-store uses two types of authentication:
 ### Admin Key (for store management)
 - Required for creating new stores
 - Configured at server startup via `TSSTORE_ADMIN_KEY` (min 20 characters)
-- Pass via `X-Admin-Key` header or `admin_key` query parameter
+- Pass via the `X-Admin-Key` header
 
 ### Store API Key (for data operations)
 - Each store has its own API key, generated when the store is created
 - The key is shown only once - store it securely
-- Pass via any of these methods (checked in order):
+- Pass via either header (checked in order):
   - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
   - Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-  - Query param: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+
+Credentials are header-only — query-string keys would land in proxy and access logs. The one exception is the inbound WebSocket handshake (`/ws/write?api_key=...`), where the browser WebSocket API cannot set headers.
 
 ## Core Endpoints
 
