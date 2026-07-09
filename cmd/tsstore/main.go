@@ -1594,12 +1594,13 @@ func printStreamUsage() {
 	fmt.Println(`tsstore stream - Manage outbound data streams
 
 Usage:
-  tsstore stream ws <store> [options]      Create a WebSocket push connection
-  tsstore stream mqtt <store> [options]    Create an MQTT sink connection
-  tsstore stream list <store> [options]    List a store's connections (and --alerts)
+  tsstore stream ws <store> [options]           Create a WebSocket push connection
+  tsstore stream mqtt <store> [options]         Create an MQTT sink connection
+  tsstore stream list <store> [options]         List a store's connections (and --alerts)
+  tsstore stream get <store> <conn-id>          Show one connection
+  tsstore stream rm <store> <conn-id>           Remove a connection
 
-Use "tsstore stream ws -h", "tsstore stream mqtt -h", or
-"tsstore stream list -h" for details.`)
+Use "tsstore stream <subcommand> -h" for details.`)
 }
 
 func printStreamWSUsage() {
@@ -1665,10 +1666,14 @@ func runStreamCommand(args []string) {
 		runStreamMQTT(args[1:])
 	case "list":
 		runStreamList(args[1:])
+	case "get":
+		runStreamGet(args[1:])
+	case "rm":
+		runStreamRm(args[1:])
 	case "-h", "--help":
 		printStreamUsage()
 	default:
-		fmt.Printf("Unknown stream type: %s (use 'ws', 'mqtt', or 'list')\n", subcommand)
+		fmt.Printf("Unknown stream subcommand: %s (use 'ws', 'mqtt', 'list', 'get', or 'rm')\n", subcommand)
 		printStreamUsage()
 		os.Exit(1)
 	}
@@ -1733,6 +1738,121 @@ Options:
 Examples:
   tsstore stream list my-store
   tsstore stream list my-store --alerts --api-key $KEY`)
+}
+
+// runStreamGet shows a single WS or MQTT connection.
+func runStreamGet(args []string) {
+	storeName, connID, connType, apiKey := parseStreamConnArgs(args, "get")
+	cfg := loadStreamConfig()
+	connType = resolveStreamConnType(cfg, apiKey, storeName, connID, connType)
+	apiGet(cfg, apiKey, fmt.Sprintf("/api/stores/%s/%s/connections/%s", storeName, connType, connID))
+}
+
+// runStreamRm removes a single WS or MQTT connection.
+func runStreamRm(args []string) {
+	storeName, connID, connType, apiKey := parseStreamConnArgs(args, "rm")
+	cfg := loadStreamConfig()
+	connType = resolveStreamConnType(cfg, apiKey, storeName, connID, connType)
+	apiDelete(cfg, apiKey, fmt.Sprintf("/api/stores/%s/%s/connections/%s", storeName, connType, connID))
+}
+
+// parseStreamConnArgs parses "<store> <conn-id> [--type ws|mqtt] [--api-key k]"
+// for stream get/rm. Exits on bad usage; the returned api key is resolved.
+func parseStreamConnArgs(args []string, verb string) (storeName, connID, connType, apiKey string) {
+	usage := func() {
+		fmt.Printf(`Usage: tsstore stream %s <store> <conn-id> [options]
+
+Options:
+  --type <ws|mqtt>  Connection type; omit to look it up by ID
+  --api-key <key>   Store API key (or set TSSTORE_API_KEY)
+`, verb)
+	}
+	positional := 0
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--type":
+			i, _ = consumeFlag(args, i, &connType)
+		case "--api-key":
+			i, _ = consumeFlag(args, i, &apiKey)
+		case "-h", "--help":
+			usage()
+			os.Exit(0)
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				fmt.Printf("Unknown option: %s\n", args[i])
+				os.Exit(1)
+			}
+			switch positional {
+			case 0:
+				storeName = args[i]
+			case 1:
+				connID = args[i]
+			default:
+				fmt.Println("Error: too many arguments")
+				os.Exit(1)
+			}
+			positional++
+		}
+	}
+	if storeName == "" || connID == "" {
+		usage()
+		os.Exit(1)
+	}
+	if connType != "" && connType != "ws" && connType != "mqtt" {
+		fmt.Printf("Error: invalid --type %q (must be \"ws\" or \"mqtt\")\n", connType)
+		os.Exit(1)
+	}
+	apiKey = resolveAPIKey(apiKey)
+	if apiKey == "" {
+		fmt.Println("Error: API key required (use --api-key or set TSSTORE_API_KEY)")
+		os.Exit(1)
+	}
+	return storeName, connID, connType, apiKey
+}
+
+// resolveStreamConnType returns connType unchanged when given; otherwise it
+// looks the ID up in the store's consolidated connections list so the caller
+// doesn't have to know whether the connection is WS or MQTT.
+func resolveStreamConnType(cfg *config.Config, apiKey, storeName, connID, connType string) string {
+	if connType != "" {
+		return connType
+	}
+	body := apiGetBody(cfg, apiKey, fmt.Sprintf("/api/stores/%s/connections", storeName))
+	var conns struct {
+		WS []struct {
+			ID string `json:"id"`
+		} `json:"ws"`
+		MQTT []struct {
+			ID string `json:"id"`
+		} `json:"mqtt"`
+	}
+	if err := json.Unmarshal(body, &conns); err != nil {
+		fmt.Printf("Error: could not parse connections list: %v\n", err)
+		os.Exit(1)
+	}
+	inWS, inMQTT := false, false
+	for _, c := range conns.WS {
+		if c.ID == connID {
+			inWS = true
+		}
+	}
+	for _, c := range conns.MQTT {
+		if c.ID == connID {
+			inMQTT = true
+		}
+	}
+	switch {
+	case inWS && inMQTT:
+		fmt.Printf("Error: connection %s exists as both ws and mqtt — disambiguate with --type\n", connID)
+		os.Exit(1)
+	case inWS:
+		return "ws"
+	case inMQTT:
+		return "mqtt"
+	}
+	fmt.Printf("Error: no connection %s on store %s (see 'tsstore stream list %s')\n", connID, storeName, storeName)
+	os.Exit(1)
+	return ""
 }
 
 func runStreamWS(args []string) {
@@ -2061,6 +2181,30 @@ func apiGet(cfg *config.Config, apiKey, path string) {
 	}
 	req.Header.Set("X-API-Key", apiKey)
 	doAPIRequest(req, http.StatusOK)
+}
+
+// apiGetBody performs a GET against the local server and returns the raw
+// response body instead of printing it. Exits on transport error or non-200.
+func apiGetBody(cfg *config.Config, apiKey, path string) []byte {
+	req, err := http.NewRequest("GET", apiBaseURL(cfg)+path, nil)
+	if err != nil {
+		log.Fatalf("Failed to create request: %v", err)
+	}
+	req.Header.Set("X-API-Key", apiKey)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Printf("Error: could not reach server: %v\n", err)
+		fmt.Println("Make sure the ts-store server is running (tsstore serve)")
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Error (%d): %s\n", resp.StatusCode, string(body))
+		os.Exit(1)
+	}
+	return body
 }
 
 // apiDelete performs a DELETE against the local server and prints the response.
