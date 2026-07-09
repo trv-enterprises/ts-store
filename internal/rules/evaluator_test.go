@@ -167,3 +167,23 @@ func TestEvaluatorStopDoesntPanic(t *testing.T) {
 	// Stop without sending anything must be clean.
 	e.Stop()
 }
+
+func TestEvaluatorCountsDropsWhenQueueFull(t *testing.T) {
+	// Never started: nothing drains dataCh, so pushes past the buffer
+	// capacity (1000) must land in the default branch and be counted.
+	e := NewEvaluator("s", mustParse(t, "hot", "temperature > 80"), 0, "", func(notify.Alert) {})
+
+	for i := 0; i < 1005; i++ {
+		e.Evaluate(int64(i), map[string]interface{}{"temperature": 90.0})
+	}
+
+	if got := e.RecordsDropped(); got != 5 {
+		t.Errorf("RecordsDropped: got %d, want 5", got)
+	}
+
+	// ResetCounters must zero it along with the other counters.
+	e.ResetCounters()
+	if got := e.RecordsDropped(); got != 0 {
+		t.Errorf("RecordsDropped after reset: got %d, want 0", got)
+	}
+}

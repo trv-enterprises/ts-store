@@ -51,6 +51,7 @@ type AlertListEntry struct {
 	alerts.Status
 	RecordsEvaluated int64 `json:"records_evaluated"`
 	RecordsMatched   int64 `json:"records_matched"`
+	RecordsDropped   int64 `json:"records_dropped"`
 	AlertsDropped    int64 `json:"alerts_dropped"`
 }
 
@@ -69,6 +70,7 @@ func mergeAlerts(statuses []alerts.Status, metrics []alerts.Metrics) []AlertList
 			Status:           s,
 			RecordsEvaluated: m.RecordsEvaluated,
 			RecordsMatched:   m.RecordsMatched,
+			RecordsDropped:   m.RecordsDropped,
 			AlertsDropped:    m.AlertsDropped,
 		})
 	}

@@ -35,11 +35,13 @@ type Evaluator struct {
 	onAlert func(alert notify.Alert)
 
 	// Activity counters. Atomic int64 — one increment per incoming
-	// record (RecordsEvaluated) and per match (RecordsMatched).
+	// record (RecordsEvaluated), per match (RecordsMatched), and per
+	// record dropped because the queue was full (RecordsDropped).
 	// Process-lifetime by default; the owning Worker exposes a reset
 	// path.
 	recordsEvaluated atomic.Int64
 	recordsMatched   atomic.Int64
+	recordsDropped   atomic.Int64
 }
 
 type dataRecord struct {
@@ -79,7 +81,10 @@ func (e *Evaluator) Evaluate(timestamp int64, data map[string]interface{}) {
 	select {
 	case e.dataCh <- dataRecord{timestamp: timestamp, data: data}:
 	default:
-		// Queue full, drop (shouldn't happen with large buffer)
+		// Queue full — likely a slow sink stalling the evaluator
+		// goroutine while writes keep arriving. Count the drop so the
+		// stall is observable in metrics.
+		e.recordsDropped.Add(1)
 	}
 }
 
@@ -206,8 +211,15 @@ func (e *Evaluator) RecordsEvaluated() int64 { return e.recordsEvaluated.Load() 
 // RecordsEvaluated.)
 func (e *Evaluator) RecordsMatched() int64 { return e.recordsMatched.Load() }
 
-// ResetCounters zeros the recordsEvaluated and recordsMatched counters.
+// RecordsDropped returns the number of records dropped because the
+// evaluation queue was full, since the evaluator started or was last
+// reset. Dropped records are never evaluated, so RecordsEvaluated
+// undercounts by exactly this amount.
+func (e *Evaluator) RecordsDropped() int64 { return e.recordsDropped.Load() }
+
+// ResetCounters zeros the activity counters.
 func (e *Evaluator) ResetCounters() {
 	e.recordsEvaluated.Store(0)
 	e.recordsMatched.Store(0)
+	e.recordsDropped.Store(0)
 }
