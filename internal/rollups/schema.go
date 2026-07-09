@@ -164,9 +164,9 @@ func aggResultType(fn aggregation.AggFunc, srcNumeric bool) schema.FieldType {
 	switch fn {
 	case aggregation.AggCount:
 		return schema.FieldTypeUint32
-	case aggregation.AggSum, aggregation.AggAvg, aggregation.AggMax, aggregation.AggMin:
+	case aggregation.AggSum, aggregation.AggAvg, aggregation.AggMax, aggregation.AggMin, aggregation.AggStddev:
 		return schema.FieldTypeFloat64
-	case aggregation.AggLast:
+	case aggregation.AggLast, aggregation.AggFirst:
 		if srcNumeric {
 			return schema.FieldTypeFloat64
 		}

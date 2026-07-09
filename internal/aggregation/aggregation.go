@@ -4,7 +4,7 @@
 
 // Package aggregation provides time-windowed aggregation for numeric time-series data.
 // It supports streaming (Add/Flush) and batch modes, with configurable per-field
-// aggregation functions (sum, avg, max, min, count, last).
+// aggregation functions (sum, avg, max, min, count, last, first, stddev).
 package aggregation
 
 import (
@@ -21,18 +21,20 @@ import (
 type AggFunc string
 
 const (
-	AggSum   AggFunc = "sum"
-	AggAvg   AggFunc = "avg"
-	AggMax   AggFunc = "max"
-	AggMin   AggFunc = "min"
-	AggCount AggFunc = "count"
-	AggLast  AggFunc = "last"
+	AggSum    AggFunc = "sum"
+	AggAvg    AggFunc = "avg"
+	AggMax    AggFunc = "max"
+	AggMin    AggFunc = "min"
+	AggCount  AggFunc = "count"
+	AggLast   AggFunc = "last"
+	AggFirst  AggFunc = "first"
+	AggStddev AggFunc = "stddev"
 )
 
 // ValidAggFuncs is the set of valid aggregation functions.
 var ValidAggFuncs = map[AggFunc]bool{
 	AggSum: true, AggAvg: true, AggMax: true, AggMin: true,
-	AggCount: true, AggLast: true,
+	AggCount: true, AggLast: true, AggFirst: true, AggStddev: true,
 }
 
 // FieldAgg maps a field name to one or more aggregation functions.
@@ -286,9 +288,12 @@ type fieldState struct {
 	sum      float64
 	max      float64
 	min      float64
-	count    int // all samples seen (drives count/window_count)
-	numCount int // samples that were numeric (drives sum/avg/min/max)
+	mean     float64 // Welford running mean (drives stddev)
+	m2       float64 // Welford sum of squared deviations (drives stddev)
+	count    int     // all samples seen (drives count/window_count)
+	numCount int     // samples that were numeric (drives sum/avg/min/max/stddev)
 	last     interface{}
+	first    interface{}
 }
 
 func newFieldState(fn AggFunc) *fieldState {
@@ -300,6 +305,9 @@ func newFieldState(fn AggFunc) *fieldState {
 }
 
 func (fs *fieldState) add(value interface{}) {
+	if fs.count == 0 {
+		fs.first = value
+	}
 	fs.last = value
 	fs.count++
 
@@ -316,6 +324,10 @@ func (fs *fieldState) add(value interface{}) {
 	if f < fs.min {
 		fs.min = f
 	}
+	// Welford's online algorithm: numerically stable running variance.
+	delta := f - fs.mean
+	fs.mean += delta / float64(fs.numCount)
+	fs.m2 += delta * (f - fs.mean)
 }
 
 func (fs *fieldState) result(partial bool) interface{} {
@@ -332,6 +344,8 @@ func (fs *fieldState) resultFor(fn AggFunc, partial bool) interface{} {
 		return fs.count
 	case AggLast:
 		return fs.last
+	case AggFirst:
+		return fs.first
 	}
 
 	// The remaining functions are numeric and need at least one numeric
@@ -352,6 +366,10 @@ func (fs *fieldState) resultFor(fn AggFunc, partial bool) interface{} {
 		return fs.max
 	case AggMin:
 		return fs.min
+	case AggStddev:
+		// Population stddev: defined for a single sample (0), unlike the
+		// sample variant, so rollup targets never see a nil for it.
+		return math.Sqrt(fs.m2 / float64(fs.numCount))
 	}
 	return fs.last
 }

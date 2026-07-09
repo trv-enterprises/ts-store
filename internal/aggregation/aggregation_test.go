@@ -606,3 +606,104 @@ func TestNumericAggsNilForAllNonNumericField(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregateBatch_First(t *testing.T) {
+	cfg := makeConfig(t, time.Minute,
+		[]FieldAgg{{Field: "val", Function: AggFirst}, {Field: "name", Function: AggFirst}},
+		"", map[string]bool{"val": true, "name": false})
+
+	ns := int64(time.Minute)
+	records := []TimestampedRecord{
+		{Timestamp: 0*ns + 1, Data: map[string]interface{}{"val": 10.0, "name": "alpha"}},
+		{Timestamp: 0*ns + 2, Data: map[string]interface{}{"val": 20.0, "name": "beta"}},
+		{Timestamp: 0*ns + 3, Data: map[string]interface{}{"val": 30.0, "name": "gamma"}},
+	}
+
+	results := AggregateBatch(records, cfg)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(results))
+	}
+	if v := results[0].Data["val"].(float64); v != 10.0 {
+		t.Errorf("first: got %f, want 10.0", v)
+	}
+	if v := results[0].Data["name"].(string); v != "alpha" {
+		t.Errorf("first non-numeric: got %q, want \"alpha\"", v)
+	}
+}
+
+func TestAggregateBatch_Stddev(t *testing.T) {
+	cfg := makeConfig(t, time.Minute,
+		[]FieldAgg{{Field: "val", Function: AggStddev}},
+		"", map[string]bool{"val": true})
+
+	ns := int64(time.Minute)
+	// Population stddev of 2,4,4,4,5,5,7,9 is exactly 2.
+	vals := []float64{2, 4, 4, 4, 5, 5, 7, 9}
+	var records []TimestampedRecord
+	for i, v := range vals {
+		records = append(records, TimestampedRecord{
+			Timestamp: 0*ns + int64(i) + 1,
+			Data:      map[string]interface{}{"val": v},
+		})
+	}
+
+	results := AggregateBatch(records, cfg)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 window, got %d", len(results))
+	}
+	sd := results[0].Data["val"].(float64)
+	if math.Abs(sd-2.0) > 1e-9 {
+		t.Errorf("stddev: got %f, want 2.0", sd)
+	}
+}
+
+func TestStddev_SingleSampleIsZero(t *testing.T) {
+	cfg := makeConfig(t, time.Minute, nil, AggStddev, map[string]bool{"val": true})
+	acc := NewAccumulator(cfg)
+
+	ns := int64(time.Minute)
+	acc.Add(0*ns+1, map[string]interface{}{"val": 42.0})
+	r := acc.Add(1*ns+1, map[string]interface{}{"val": 1.0}) // closes window
+
+	if r == nil {
+		t.Fatal("expected result on window close")
+	}
+	if sd := r.Data["val"].(float64); sd != 0.0 {
+		t.Errorf("stddev of single sample: got %f, want 0.0", sd)
+	}
+}
+
+func TestStddev_NilForAllNonNumericField(t *testing.T) {
+	cfg := makeConfig(t, time.Minute, nil, AggStddev, map[string]bool{"val": true})
+	acc := NewAccumulator(cfg)
+
+	ns := int64(time.Minute)
+	acc.Add(0*ns+1, map[string]interface{}{"val": "n/a"})
+	r := acc.Add(1*ns+1, map[string]interface{}{"val": "x"})
+
+	if r == nil {
+		t.Fatal("expected result on window close")
+	}
+	if v, present := r.Data["val"]; present && v != nil {
+		t.Errorf("stddev over all-non-numeric field emitted %v; want absent/nil", v)
+	}
+}
+
+func TestFirst_MixedNonNumericLeading(t *testing.T) {
+	// first is positional like last: it returns the first sample seen,
+	// numeric or not.
+	cfg := makeConfig(t, time.Minute, nil, AggFirst, map[string]bool{"val": true})
+	acc := NewAccumulator(cfg)
+
+	ns := int64(time.Minute)
+	acc.Add(0*ns+1, map[string]interface{}{"val": "boot"})
+	acc.Add(0*ns+2, map[string]interface{}{"val": 20.0})
+	r := acc.Add(1*ns+1, map[string]interface{}{"val": 1.0})
+
+	if r == nil {
+		t.Fatal("expected result on window close")
+	}
+	if v := r.Data["val"].(string); v != "boot" {
+		t.Errorf("first: got %v, want \"boot\"", v)
+	}
+}

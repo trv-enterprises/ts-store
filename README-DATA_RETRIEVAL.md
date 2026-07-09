@@ -326,7 +326,7 @@ When `agg_window` is set, ts-store batches records within each time window and s
 
 - `agg_fields` assigns specific functions to named fields (format: `field:function`)
 - `agg_default` applies to any numeric field not listed in `agg_fields`
-- Available functions: `avg`, `sum`, `min`, `max`, `last`, `first`, `count`
+- Available functions: `avg`, `sum`, `min`, `max`, `last`, `first`, `count`, `stddev` (population standard deviation)
 
 Output retains the original field names:
 ```json
