@@ -609,14 +609,18 @@ ts-store uses a two-tier authentication model to protect both administrative and
 Admin Operations (POST /api/stores):
   ┌─────────────────────────────────────────────────────────┐
   │  Header: X-Admin-Key: <admin-key>                       │
-  │  Query:  ?admin_key=<admin-key>                         │
   └─────────────────────────────────────────────────────────┘
 
-Store Operations (data, schema, websocket):
+Store Operations (data, schema):
   ┌─────────────────────────────────────────────────────────┐
   │  Header: X-API-Key: tsstore_xxxx-xxxx-xxxx-xxxx         │
   │  Header: Authorization: Bearer tsstore_xxxx-xxxx-xxxx   │
+  └─────────────────────────────────────────────────────────┘
+
+WebSocket Handshake (GET /:store/ws/write) only:
+  ┌─────────────────────────────────────────────────────────┐
   │  Query:  ?api_key=tsstore_xxxx-xxxx-xxxx                │
+  │  (browser WebSocket API cannot set request headers)     │
   └─────────────────────────────────────────────────────────┘
 ```
 

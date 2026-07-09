@@ -11,7 +11,6 @@ info:
     ### Admin Key (for store management)
     Required for creating new stores. Pass via:
     - Header: `X-Admin-Key: <admin-key>`
-    - Query parameter: `?admin_key=<admin-key>`
 
     The admin key is configured at server startup (min 20 characters).
 
@@ -19,9 +18,13 @@ info:
     Required for all data operations on a store. Pass via (checked in order):
     - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
     - Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-    - Query parameter: `?api_key=tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 
     Store API keys are generated when creating a store and shown only once.
+
+    Credentials are header-only: query-string keys would land in proxy and
+    access logs. The single exception is the inbound WebSocket handshake
+    (`GET /api/stores/:store/ws/write?api_key=...`), because the browser
+    WebSocket API cannot set request headers.
 
     ## TLS/HTTPS
     The server supports optional TLS. When configured with certificate and key files,
@@ -143,10 +146,9 @@ paths:
         Creates a new store and returns the API key.
         **Important:** The API key is shown only once. Save it securely.
 
-        Requires admin authentication via `X-Admin-Key` header or `admin_key` query parameter.
+        Requires admin authentication via the `X-Admin-Key` header.
       security:
         - AdminKeyHeader: []
-        - AdminKeyQuery: []
       requestBody:
         required: true
         content:
@@ -190,7 +192,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -229,7 +230,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -304,7 +304,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -328,7 +327,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       requestBody:
@@ -375,7 +373,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Timestamp'
@@ -403,7 +400,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Timestamp'
@@ -439,7 +435,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Limit100'
@@ -495,7 +490,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Limit'
@@ -535,7 +529,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/Limit'
@@ -574,7 +567,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - name: version
@@ -616,7 +608,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       requestBody:
@@ -665,7 +656,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -720,7 +710,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - name: include_alerts
@@ -783,7 +772,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -811,7 +799,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       requestBody:
@@ -845,7 +832,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/ConnectionId'
@@ -869,7 +855,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/ConnectionId'
@@ -898,7 +883,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -929,7 +913,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       requestBody:
@@ -963,7 +946,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/ConnectionId'
@@ -987,7 +969,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - $ref: '#/components/parameters/ConnectionId'
@@ -1018,7 +999,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -1049,7 +1029,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       requestBody:
@@ -1091,7 +1070,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - name: alertId
@@ -1117,7 +1095,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - name: alertId
@@ -1140,7 +1117,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       responses:
@@ -1167,7 +1143,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
       requestBody:
@@ -1204,7 +1179,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - name: rollupId
@@ -1229,7 +1203,6 @@ paths:
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
-        - ApiKeyQuery: []
       parameters:
         - $ref: '#/components/parameters/StoreName'
         - name: rollupId
@@ -1254,21 +1227,11 @@ components:
       type: http
       scheme: bearer
       description: API key in Authorization Bearer header
-    ApiKeyQuery:
-      type: apiKey
-      in: query
-      name: api_key
-      description: API key in query parameter
     AdminKeyHeader:
       type: apiKey
       in: header
       name: X-Admin-Key
       description: Admin key for store management operations
-    AdminKeyQuery:
-      type: apiKey
-      in: query
-      name: admin_key
-      description: Admin key in query parameter
 
   parameters:
     StoreName:
