@@ -6,8 +6,11 @@
 package middleware
 
 import (
+	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/apikey"
@@ -170,7 +173,11 @@ func CORS() gin.HandlerFunc {
 	}
 }
 
-// RequestLogger creates request logging middleware.
+// RequestLogger creates request logging middleware. Requests that complete
+// with status >= 400 are logged with method, path, status, latency and
+// client IP, so failed auth and client/server errors are visible in the
+// server log (probing, misconfigured clients). Successful requests are not
+// logged — they'd swamp the log at sensor write rates.
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Skip logging for health checks
@@ -179,13 +186,30 @@ func RequestLogger() gin.HandlerFunc {
 			return
 		}
 
+		start := time.Now()
 		c.Next()
 
-		// Log after request completes
 		status := c.Writer.Status()
 		if status >= 400 {
-			// Log errors - could integrate with proper logger
-			_ = status // placeholder
+			log.Printf("http: %s %s -> %d (%s) from %s",
+				c.Request.Method, redactedRequestURL(c.Request.URL), status,
+				time.Since(start).Round(time.Millisecond), c.ClientIP())
 		}
 	}
+}
+
+// redactedRequestURL renders path?query with credential-bearing query
+// values (api_key, admin_key) masked, so keys sent via query string never
+// land in the log.
+func redactedRequestURL(u *url.URL) string {
+	if u.RawQuery == "" {
+		return u.Path
+	}
+	q := u.Query()
+	for _, k := range []string{"api_key", "admin_key"} {
+		if q.Has(k) {
+			q.Set(k, "REDACTED")
+		}
+	}
+	return u.Path + "?" + q.Encode()
 }
