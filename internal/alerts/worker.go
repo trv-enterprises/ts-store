@@ -354,13 +354,14 @@ func (w *Worker) noteDeliveryFailure(alert notify.Alert, err error) {
 }
 
 // Metrics is the activity snapshot for a Worker, exposed via the per-store
-// /metrics endpoint. RecordsEvaluated and RecordsMatched come from the
-// evaluator (cheap atomic loads).
+// /metrics endpoint. RecordsEvaluated, RecordsMatched and RecordsDropped
+// come from the evaluator (cheap atomic loads).
 type Metrics struct {
 	ID               string `json:"id"`
 	Type             string `json:"type"` // "webhook" | "ws" | "mqtt"
 	RecordsEvaluated int64  `json:"records_evaluated"`
 	RecordsMatched   int64  `json:"records_matched"`
+	RecordsDropped   int64  `json:"records_dropped"`
 	AlertsFired      int64  `json:"alerts_fired"`
 	AlertsDropped    int64  `json:"alerts_dropped"`
 }
@@ -372,6 +373,7 @@ func (w *Worker) Metrics() Metrics {
 		Type:             w.alertType,
 		RecordsEvaluated: w.evaluator.RecordsEvaluated(),
 		RecordsMatched:   w.evaluator.RecordsMatched(),
+		RecordsDropped:   w.evaluator.RecordsDropped(),
 		AlertsFired:      atomic.LoadInt64(&w.alertsFired),
 		AlertsDropped:    atomic.LoadInt64(&w.alertsDropped),
 	}

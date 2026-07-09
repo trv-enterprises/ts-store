@@ -1505,12 +1505,19 @@ components:
               type:
                 type: string
                 enum: [webhook, ws, mqtt]
-              rules_tested:
+              records_evaluated:
                 type: integer
                 format: int64
-              rules_matched:
+              records_matched:
                 type: integer
                 format: int64
+              records_dropped:
+                type: integer
+                format: int64
+                description: |
+                  Records dropped unevaluated because the evaluator's
+                  queue was full (typically a slow sink stalling the
+                  evaluator goroutine).
               alerts_fired:
                 type: integer
                 format: int64
@@ -2283,6 +2290,12 @@ components:
               type: integer
               format: int64
               description: Records that matched the rule.
+            records_dropped:
+              type: integer
+              format: int64
+              description: >-
+                Records dropped unevaluated because the evaluator's queue
+                was full (typically a slow sink stalling evaluation).
             alerts_dropped:
               type: integer
               format: int64

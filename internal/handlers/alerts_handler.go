@@ -57,8 +57,8 @@ func (h *AlertsHandler) Create(c *gin.Context) {
 
 // List handles GET /api/stores/:store/alerts — returns all three types tagged,
 // each entry joining the alert's status with its runtime activity counters
-// (records_evaluated, records_matched, alerts_dropped) so a caller sees rule
-// health, not just configuration.
+// (records_evaluated, records_matched, records_dropped, alerts_dropped) so a
+// caller sees rule health, not just configuration.
 func (h *AlertsHandler) List(c *gin.Context) {
 	mgr := h.resolveManager(c)
 	if mgr == nil {
