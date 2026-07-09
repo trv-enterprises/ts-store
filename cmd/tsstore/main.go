@@ -177,6 +177,31 @@ Examples:
   tsstore key revoke my-store a1b2c3d4`)
 }
 
+// flagValue returns the value following a flag, exiting with an error when
+// it's missing. Shared by the older hand-rolled parsers (serve/create/calc/
+// status), which previously ignored missing values and unknown flags
+// silently.
+func flagValue(args []string, i int, flag string) (string, int) {
+	if i+1 >= len(args) {
+		fmt.Printf("Error: %s requires a value\n", flag)
+		os.Exit(1)
+	}
+	return args[i+1], i + 1
+}
+
+// numericFlagValue is flagValue plus strict positive-integer parsing — the
+// previous fmt.Sscanf parsing turned "--blocks 10x24" into 10 without
+// complaint.
+func numericFlagValue(args []string, i int, flag string) (uint32, int) {
+	v, next := flagValue(args, i, flag)
+	n, err := strconv.ParseUint(v, 10, 32)
+	if err != nil || n == 0 {
+		fmt.Printf("Error: invalid value for %s: %q (expected a positive integer)\n", flag, v)
+		os.Exit(1)
+	}
+	return uint32(n), next
+}
+
 func runServer(args []string) {
 	// Parse serve options
 	noSocket := false
@@ -190,10 +215,11 @@ func runServer(args []string) {
 		case "--no-socket":
 			noSocket = true
 		case "--socket":
-			if i+1 < len(args) {
-				i++
-				socketPathOverride = args[i]
-			}
+			socketPathOverride, i = flagValue(args, i, "--socket")
+		default:
+			fmt.Printf("Unknown option: %s\n", args[i])
+			printServeUsage()
+			os.Exit(1)
 		}
 	}
 
@@ -457,42 +483,19 @@ func runCreateCommand(args []string) {
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--blocks":
-			if i+1 < len(args) {
-				i++
-				var n int
-				fmt.Sscanf(args[i], "%d", &n)
-				if n > 0 {
-					numBlocks = uint32(n)
-				}
-			}
+			numBlocks, i = numericFlagValue(args, i, "--blocks")
 		case "--data-size":
-			if i+1 < len(args) {
-				i++
-				var n int
-				fmt.Sscanf(args[i], "%d", &n)
-				if n > 0 {
-					dataBlockSize = uint32(n)
-				}
-			}
+			dataBlockSize, i = numericFlagValue(args, i, "--data-size")
 		case "--index-size":
-			if i+1 < len(args) {
-				i++
-				var n int
-				fmt.Sscanf(args[i], "%d", &n)
-				if n > 0 {
-					indexBlockSize = uint32(n)
-				}
-			}
+			indexBlockSize, i = numericFlagValue(args, i, "--index-size")
 		case "--path":
-			if i+1 < len(args) {
-				i++
-				basePath = args[i]
-			}
+			basePath, i = flagValue(args, i, "--path")
 		case "--type":
-			if i+1 < len(args) {
-				i++
-				dataType = args[i]
-			}
+			dataType, i = flagValue(args, i, "--type")
+		default:
+			fmt.Printf("Unknown option: %s\n", args[i])
+			printCreateUsage()
+			os.Exit(1)
 		}
 	}
 
@@ -749,6 +752,7 @@ Usage:
 Options:
   --blocks <n>       Number of blocks (default: from config or 1024)
   --block-size <n>   Data block size in bytes (default: from config or 4096)
+                     (--data-size is accepted as an alias, matching "create")
   --index-size <n>   Index block size in bytes (default: from config or 4096)
   --object-size <n>  Calculate capacity for specific object size in bytes
 
@@ -773,41 +777,19 @@ func runCalcCommand(args []string) {
 			printCalcUsage()
 			return
 		case "--blocks":
-			if i+1 < len(args) {
-				i++
-				var n int
-				fmt.Sscanf(args[i], "%d", &n)
-				if n > 0 {
-					numBlocks = uint32(n)
-				}
-			}
-		case "--block-size":
-			if i+1 < len(args) {
-				i++
-				var n int
-				fmt.Sscanf(args[i], "%d", &n)
-				if n > 0 {
-					blockSize = uint32(n)
-				}
-			}
+			numBlocks, i = numericFlagValue(args, i, "--blocks")
+		case "--block-size", "--data-size":
+			// --data-size is an alias: create calls this same value
+			// --data-size, and the two commands are used together.
+			blockSize, i = numericFlagValue(args, i, args[i])
 		case "--index-size":
-			if i+1 < len(args) {
-				i++
-				var n int
-				fmt.Sscanf(args[i], "%d", &n)
-				if n > 0 {
-					indexBlockSize = uint32(n)
-				}
-			}
+			indexBlockSize, i = numericFlagValue(args, i, "--index-size")
 		case "--object-size":
-			if i+1 < len(args) {
-				i++
-				var n int
-				fmt.Sscanf(args[i], "%d", &n)
-				if n > 0 {
-					objectSize = uint32(n)
-				}
-			}
+			objectSize, i = numericFlagValue(args, i, "--object-size")
+		default:
+			fmt.Printf("Unknown option: %s\n", args[i])
+			printCalcUsage()
+			os.Exit(1)
 		}
 	}
 
@@ -1078,14 +1060,15 @@ func runStatusCommand(args []string) {
 			printStatusUsage()
 			return
 		case "--path":
-			if i+1 < len(args) {
-				i++
-				basePath = args[i]
-			}
+			basePath, i = flagValue(args, i, "--path")
 		case "--json":
 			jsonOutput = true
 		case "--offline":
 			offlineMode = true
+		default:
+			fmt.Printf("Unknown option: %s\n", args[i])
+			printStatusUsage()
+			os.Exit(1)
 		}
 	}
 
