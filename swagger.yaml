@@ -1402,7 +1402,7 @@ components:
         type: string
       description: |
         Per-field aggregation functions as comma-separated field:function pairs.
-        Valid functions: sum, avg, max, min, count, last.
+        Valid functions: sum, avg, max, min, count, last, first, stddev.
       example: "cpu.pct:avg,memory.used:max"
 
     AggDefault:
@@ -1410,7 +1410,7 @@ components:
       in: query
       schema:
         type: string
-        enum: [sum, avg, max, min, count, last]
+        enum: [sum, avg, max, min, count, last, first, stddev]
       description: Default aggregation function for numeric fields not listed in agg_fields. Non-numeric fields always use 'last'.
       example: avg
 

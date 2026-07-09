@@ -166,6 +166,26 @@ func TestDeriveTargetSchema(t *testing.T) {
 	if !contains(n2, "temp_avg") || !contains(n2, "temp_max") {
 		t.Errorf("multi-func schema fields = %v", n2)
 	}
+
+	// first mirrors last (string for non-numeric source, float64 for numeric);
+	// stddev is always float64.
+	sch3, err := deriveTargetSchema("temp:stddev+first,name:first", "", srcNumeric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := make(map[string]schema.FieldType)
+	for _, f := range sch3.Fields {
+		types[f.Name] = f.Type
+	}
+	if types["temp_stddev"] != schema.FieldTypeFloat64 {
+		t.Errorf("temp_stddev type = %v, want float64", types["temp_stddev"])
+	}
+	if types["temp_first"] != schema.FieldTypeFloat64 {
+		t.Errorf("temp_first type = %v, want float64", types["temp_first"])
+	}
+	if types["name"] != schema.FieldTypeString {
+		t.Errorf("name (first, non-numeric) type = %v, want string", types["name"])
+	}
 }
 
 func fieldNames(s *schema.Schema) []string {
