@@ -36,6 +36,12 @@ type Status struct {
 	AlertsFired   int64  `json:"alerts_fired"`
 	LastTimestamp int64  `json:"last_timestamp,omitempty"`
 
+	// LagMs is how far the worker's cursor trails the newest record in
+	// the store, in milliseconds — 0 when caught up or the store is
+	// empty. Sustained growth means the drain rate (maxBatchSize per
+	// poll) can't keep up with the store's write rate.
+	LagMs int64 `json:"lag_ms"`
+
 	// LastFiredAt is when the rule last fired (survives restarts — it is
 	// persisted next to the cursor and re-seeded on Start). Omitted if
 	// the rule has never fired.
@@ -283,6 +289,17 @@ func (w *Worker) pollOnce() error {
 	lastTs := w.lastTs
 	w.mu.RUnlock()
 
+	// Idle early-out: the newest timestamp is O(partitions) of metadata,
+	// while GetObjectsInRange block-scans every partition in range under
+	// RLock. With per-second polling the idle tick dominates total cost
+	// (issue #4), so skip the scan when nothing was written since the
+	// cursor. Any error falls through to the range read to be surfaced.
+	if newestTs, err := w.store.GetNewestTimestamp(); err == store.ErrEmptyStore {
+		return nil
+	} else if err == nil && newestTs <= lastTs {
+		return nil
+	}
+
 	endTime := time.Now().UnixNano()
 	handles, err := w.store.GetObjectsInRange(lastTs+1, endTime, maxBatchSize)
 	if err != nil {
@@ -483,6 +500,10 @@ func readCursor(path string) int64 {
 func (w *Worker) Status() Status {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
+	var lagMs int64
+	if newest, err := w.store.GetNewestTimestamp(); err == nil && newest > w.lastTs {
+		lagMs = (newest - w.lastTs) / int64(time.Millisecond)
+	}
 	return Status{
 		ID:               w.id,
 		Type:             w.alertType,
@@ -490,6 +511,7 @@ func (w *Worker) Status() Status {
 		RuleName:         w.ruleName,
 		AlertsFired:      atomic.LoadInt64(&w.alertsFired),
 		LastTimestamp:    w.lastTs,
+		LagMs:            lagMs,
 		LastFiredAt:      w.evaluator.LastFired(),
 		State:            w.state,
 		LastError:        w.lastError,
