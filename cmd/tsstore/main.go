@@ -294,6 +294,11 @@ func runServer(args []string) {
 		})
 	})
 
+	// One limiter shared by admin and store auth: after repeated 401s a
+	// client IP gets 429s for a growing cooldown, so keys can't be
+	// brute-forced at wire speed (defaults: 10 failures, 30s..15m blocks).
+	authLimiter := middleware.NewAuthLimiter(0, 0, 0)
+
 	// Initialize handlers
 	storeHandler := handlers.NewStoreHandler(storeService)
 	unifiedHandler := handlers.NewUnifiedHandler(storeService)
@@ -312,8 +317,8 @@ func runServer(args []string) {
 		// Store management
 		stores := api.Group("/stores")
 		{
-			stores.POST("", middleware.AdminAuth(cfg.Server.AdminKey), storeHandler.Create) // Create new store (requires admin key)
-			stores.GET("", storeHandler.List)                                               // List open stores (no auth)
+			stores.POST("", middleware.AuthFailureLimiter(authLimiter), middleware.AdminAuth(cfg.Server.AdminKey), storeHandler.Create) // Create new store (requires admin key)
+			stores.GET("", storeHandler.List)                                                                                           // List open stores (no auth)
 			// Operational stats — block counts, time range, partition layout.
 			// Deliberately unauthenticated so dashboards, monitors, and other
 			// observability consumers don't need a per-store API key just to
@@ -325,6 +330,7 @@ func runServer(args []string) {
 
 		// Store-specific operations (require auth)
 		storeRoutes := stores.Group("/:store")
+		storeRoutes.Use(middleware.AuthFailureLimiter(authLimiter))
 		storeRoutes.Use(middleware.Auth(keyManager))
 		{
 			storeRoutes.DELETE("", storeHandler.Delete)

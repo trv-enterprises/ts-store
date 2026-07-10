@@ -89,6 +89,7 @@ func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
 		// Store authenticated info in context
 		c.Set(StoreNameKey, storeName)
 		c.Set(KeyEntryKey, keyEntry)
+		c.Set(AuthPassedKey, true)
 
 		c.Next()
 	}
@@ -137,6 +138,7 @@ func AdminAuth(adminKey string) gin.HandlerFunc {
 			return
 		}
 
+		c.Set(AuthPassedKey, true)
 		c.Next()
 	}
 }

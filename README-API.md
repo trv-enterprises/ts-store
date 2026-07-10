@@ -90,6 +90,10 @@ ts-store uses two types of authentication:
 
 Credentials are header-only — query-string keys would land in proxy and access logs. The one exception is the inbound WebSocket handshake (`/ws/write?api_key=...`), where the browser WebSocket API cannot set headers.
 
+### Failed-auth rate limiting
+
+Repeated authentication failures are throttled per client IP: after 10 consecutive `401`s the IP receives `429 Too Many Requests` (with a `Retry-After` header) for 30 seconds, doubling on each further block up to 15 minutes. Any successful authentication from that IP clears its counter. This applies to both store API keys and the admin key; the state is in-memory and resets on server restart.
+
 ## Core Endpoints
 
 ### Health Check
