@@ -369,3 +369,44 @@ func TestCreateStoreWithPartitionOptions(t *testing.T) {
 		t.Errorf("expected 4 partitions, got %d", cfg.NumPartitions)
 	}
 }
+
+// ListAllInfo must not open stores: opening spawns per-store WS/MQTT/alerts/
+// rollups managers that stay alive until shutdown, so a listing on a device
+// with many dormant stores would pin them all open (issue #52).
+func TestListAllInfoDoesNotOpenStores(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Store: config.StoreConfig{
+			BasePath:       tmpDir,
+			DataBlockSize:  4096,
+			IndexBlockSize: 4096,
+			NumBlocks:      64,
+		},
+	}
+
+	keyManager := apikey.NewManager(tmpDir)
+	svc1 := NewStoreService(cfg, keyManager)
+	_, _ = svc1.Create(&CreateStoreRequest{Name: "info-json", DataType: "json"})
+	_, _ = svc1.Create(&CreateStoreRequest{Name: "info-schema", DataType: "schema"})
+	svc1.CloseAll()
+
+	svc2 := NewStoreService(cfg, keyManager)
+	defer svc2.CloseAll()
+
+	infos := svc2.ListAllInfo()
+	types := map[string]string{}
+	for _, i := range infos {
+		types[i.Name] = i.DataType
+	}
+	if types["info-json"] != "json" {
+		t.Errorf("info-json data type = %q, want json", types["info-json"])
+	}
+	if types["info-schema"] != "schema" {
+		t.Errorf("info-schema data type = %q, want schema", types["info-schema"])
+	}
+
+	if open := svc2.ListOpen(); len(open) != 0 {
+		t.Errorf("ListAllInfo opened stores: %v", open)
+	}
+}
