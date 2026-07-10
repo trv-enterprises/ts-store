@@ -1765,6 +1765,14 @@ components:
           type: integer
           format: int64
           description: Timestamp (ns) of the newest rollup row in the target.
+        source_oldest:
+          type: integer
+          format: int64
+          description: >-
+            Timestamp (ns) of the oldest raw record still in the source
+            store. With target_oldest/target_newest this lets a client
+            compute the raw-vs-rollup split for a two-query read: raw
+            data older than source_oldest survives only as rollup rows.
         last_error:
           type: string
           description: >-

@@ -64,8 +64,15 @@ type Status struct {
 	Retention     string `json:"retention,omitempty"`
 
 	// Target coverage: timestamps of the oldest/newest rollup rows.
+	// Together with SourceOldest these let a client compute the raw vs
+	// rollup split for a two-query read (issue #59): query the rollup
+	// target for [start, source_oldest) and the source for the rest —
+	// raw data older than source_oldest survives only as rollup rows.
 	TargetOldest int64 `json:"target_oldest,omitempty"`
 	TargetNewest int64 `json:"target_newest,omitempty"`
+
+	// SourceOldest is the oldest raw record still in the source store.
+	SourceOldest int64 `json:"source_oldest,omitempty"`
 
 	// State is "running", "stopped", or "error". "error" means the most
 	// recent rollup pass failed; the next clean pass restores "running".
@@ -548,8 +555,9 @@ func readCursor(path string) int64 {
 
 // Status returns a snapshot for HTTP/CLI display.
 func (w *Worker) Status() Status {
-	// Target coverage read before taking w.mu (store has its own lock).
+	// Coverage read before taking w.mu (stores have their own locks).
 	targetStats := w.target.Stats()
+	sourceStats := w.source.Stats()
 
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -574,6 +582,7 @@ func (w *Worker) Status() Status {
 		Retention:      w.retention,
 		TargetOldest:   targetStats.OldestTimestamp,
 		TargetNewest:   targetStats.NewestTimestamp,
+		SourceOldest:   sourceStats.OldestTimestamp,
 		LastError:      w.lastError,
 		LastErrorAt:    w.lastErrorAt,
 		CreatedAt:      w.createdAt,

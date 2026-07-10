@@ -729,6 +729,50 @@ window without a second call:
   "count": 24 }
 ```
 
+### Spanning raw and rollup data (the two-query pattern)
+
+A single query cannot span a source store and its rollup target — they are
+separate stores with different record shapes. To render something like "last
+90 days at 1h resolution, plus the freshest raw detail", issue **two queries
+and split at the source's oldest surviving raw record**.
+
+The rollup status tells you everything needed to compute the split:
+
+```
+GET /api/stores/sensors/rollups          # or /rollups/:id
+```
+
+```json
+{
+  "target_store": "sensors-1h",
+  "window": "1h",
+  "source_oldest": 1704067200000000000,
+  "target_oldest": 1696118400000000000,
+  "target_newest": 1711925000000000000
+}
+```
+
+- `source_oldest` — oldest raw record still in the source. Anything older
+  survives **only** as rollup rows; this is your natural split point.
+- `target_oldest` / `target_newest` — the rollup target's coverage, i.e. how
+  far back the aggregated history actually reaches and how fresh it is.
+
+Then:
+
+```bash
+# 1. Aggregated history: rollup target from your start time up to the split.
+GET /api/stores/sensors-1h/data/range?start_time=<start>&end_time=<source_oldest>
+
+# 2. Raw detail: source store from the split onward.
+GET /api/stores/sensors/data/range?start_time=<source_oldest>&end_time=<now>
+```
+
+Remember the half-open window stamping: a rollup row stamped `T` covers
+`[T − window, T)`, so the two result sets meet cleanly at the split without
+double-counting. If you need the seam at a coarser granularity (e.g. hour
+boundaries), round `source_oldest` **up** to the next window boundary and use
+that for both queries.
+
 ---
 
 [Back to main README](README.md) | [API Reference](README-API.md) | [Data Input](README-DATA-INPUT.md) | [Data Output](README-DATA-OUTPUT.md) | [CLI Reference](README-CLI.md)
