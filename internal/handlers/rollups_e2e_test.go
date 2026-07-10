@@ -7,8 +7,10 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -153,5 +155,74 @@ func TestRollupsEndToEnd(t *testing.T) {
 	// Delete the rollup.
 	if w := do("DELETE", "/api/stores/sensors/rollups/"+st.ID, ""); w.Code != http.StatusOK {
 		t.Errorf("DELETE rollup: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRollupDeleteLifecycle(t *testing.T) {
+	router, storeService, apiKey := setupRollupsRouter(t)
+
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		var r *http.Request
+		if body == "" {
+			r, _ = http.NewRequest(method, path, nil)
+		} else {
+			r, _ = http.NewRequest(method, path, bytes.NewBufferString(body))
+			r.Header.Set("Content-Type", "application/json")
+		}
+		r.Header.Set("X-API-Key", apiKey)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := do("PUT", "/api/stores/sensors/schema",
+		`{"fields":[{"index":1,"name":"temp","type":"float64"}]}`); w.Code != http.StatusOK {
+		t.Fatalf("PUT schema: %d %s", w.Code, w.Body.String())
+	}
+
+	createRollup := func() string {
+		w := do("POST", "/api/stores/sensors/rollups",
+			`{"window":"1m","agg_fields":"temp:avg","retention":"1d"}`)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("POST rollup: %d %s", w.Code, w.Body.String())
+		}
+		var st struct {
+			ID string `json:"id"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &st)
+		return st.ID
+	}
+
+	// Plain delete keeps the target; the source delete is then refused with
+	// an error that names the surviving target.
+	id := createRollup()
+	if w := do("DELETE", "/api/stores/sensors/rollups/"+id, ""); w.Code != http.StatusOK {
+		t.Fatalf("DELETE rollup: %d %s", w.Code, w.Body.String())
+	}
+	err := storeService.Delete("sensors")
+	if !errors.Is(err, service.ErrHasDependents) {
+		t.Fatalf("Delete(source) after plain rollup delete = %v, want ErrHasDependents", err)
+	}
+	if !strings.Contains(err.Error(), "sensors-1m") {
+		t.Errorf("dependents error should name sensors-1m: %v", err)
+	}
+
+	// A malformed delete_target is rejected.
+	id = createRollup()
+	if w := do("DELETE", "/api/stores/sensors/rollups/"+id+"?delete_target=yesplease", ""); w.Code != http.StatusBadRequest {
+		t.Errorf("DELETE with bad delete_target: %d, want 400", w.Code)
+	}
+
+	// delete_target=true removes the target and its key link, so the source
+	// can now be deleted.
+	w := do("DELETE", "/api/stores/sensors/rollups/"+id+"?delete_target=true", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE rollup with delete_target: %d %s", w.Code, w.Body.String())
+	}
+	if w := do("GET", "/api/stores/sensors-1m/data/newest", ""); w.Code == http.StatusOK {
+		t.Errorf("target sensors-1m still readable after delete_target: %d", w.Code)
+	}
+	if err := storeService.Delete("sensors"); err != nil {
+		t.Errorf("Delete(source) after delete_target = %v, want nil", err)
 	}
 }

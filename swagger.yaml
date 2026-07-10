@@ -210,7 +210,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Other stores link to this store's API keys (rollup targets) — remove those rollups first.
+          description: Other stores link to this store's API keys (rollup targets) — the error names them; delete those stores first (e.g. delete the rollup with delete_target=true).
           content:
             application/json:
               schema:
@@ -1199,7 +1199,11 @@ paths:
       tags:
         - Rollups
       summary: Delete a rollup
-      description: Stops the worker and removes the rollup config. The target store is left intact.
+      description: >
+        Stops the worker and removes the rollup config. The target store is left
+        intact by default; pass delete_target=true to also delete the target store
+        and its linked API keys (refused if another rollup still writes to the
+        same target).
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -1210,6 +1214,13 @@ paths:
           required: true
           schema:
             type: string
+        - name: delete_target
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Also delete the target store and its linked API keys.
       responses:
         '200':
           description: Rollup deleted

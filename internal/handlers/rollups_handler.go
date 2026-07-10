@@ -7,6 +7,7 @@ package handlers
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tviviano/ts-store/internal/middleware"
@@ -82,18 +83,32 @@ func (h *RollupsHandler) Get(c *gin.Context) {
 }
 
 // Delete handles DELETE /api/stores/:store/rollups/:id. Removes the rollup
-// config and stops its worker; the target store is left intact.
+// config and stops its worker; the target store is left intact unless
+// ?delete_target=true, which removes the target and its linked API keys too.
 func (h *RollupsHandler) Delete(c *gin.Context) {
 	mgr := h.resolveManager(c)
 	if mgr == nil {
 		return
 	}
-	if err := mgr.DeleteRollup(c.Param("id")); err != nil {
+	deleteTarget := false
+	if raw, ok := c.GetQuery("delete_target"); ok {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "delete_target must be a boolean"})
+			return
+		}
+		deleteTarget = v
+	}
+	if err := mgr.DeleteRollup(c.Param("id"), deleteTarget); err != nil {
 		if errors.Is(err, rollups.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "rollup not found"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if deleteTarget {
+		c.JSON(http.StatusOK, gin.H{"message": "rollup and target store deleted"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "rollup deleted"})

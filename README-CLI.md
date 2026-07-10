@@ -182,6 +182,10 @@ Starts a local file server on port 21090, serves `swagger.yaml` with CORS header
 ./tsstore rollups list system-stats
 ./tsstore rollups get  system-stats <rollup-id>
 ./tsstore rollups rm   system-stats <rollup-id>
+
+# Delete a rollup AND its target store (removes the target's linked API keys
+# too, so the source store can later be deleted without a dependents error):
+./tsstore rollups rm   system-stats <rollup-id> --delete-target
 ```
 
 **Required for create:** `--window <duration>` and at least one of `--fields`/`--default`.
