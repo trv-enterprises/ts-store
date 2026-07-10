@@ -215,3 +215,54 @@ func TestReset(t *testing.T) {
 		t.Fatalf("GetObjectByTime after reset failed: %v", err)
 	}
 }
+
+func TestReadDataTypeAt(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	for _, tc := range []struct {
+		name string
+		dt   DataType
+	}{
+		{"dt-binary", DataTypeBinary},
+		{"dt-text", DataTypeText},
+		{"dt-json", DataTypeJSON},
+		{"dt-schema", DataTypeSchema},
+	} {
+		cfg := DefaultConfig()
+		cfg.Name = tc.name
+		cfg.Path = tmpDir
+		cfg.DataType = tc.dt
+		s, err := Create(cfg)
+		if err != nil {
+			t.Fatalf("Failed to create store %s: %v", tc.name, err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("Failed to close store %s: %v", tc.name, err)
+		}
+
+		got, err := ReadDataTypeAt(filepath.Join(tmpDir, tc.name))
+		if err != nil {
+			t.Fatalf("ReadDataTypeAt(%s) failed: %v", tc.name, err)
+		}
+		if got != tc.dt {
+			t.Errorf("ReadDataTypeAt(%s) = %v, want %v", tc.name, got, tc.dt)
+		}
+	}
+
+	// Missing store directory should surface the open error.
+	if _, err := ReadDataTypeAt(filepath.Join(tmpDir, "no-such-store")); err == nil {
+		t.Error("ReadDataTypeAt on missing store should fail")
+	}
+
+	// A file too short to hold the metadata header should fail cleanly.
+	shortDir := filepath.Join(tmpDir, "short-store")
+	if err := os.MkdirAll(shortDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shortDir, "meta.tsdb"), []byte("tiny"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDataTypeAt(shortDir); err == nil {
+		t.Error("ReadDataTypeAt on truncated meta file should fail")
+	}
+}

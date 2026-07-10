@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -187,6 +188,33 @@ func Open(path string, name string) (*Store, error) {
 
 	metaFile.Close()
 	return nil, ErrInvalidMagic
+}
+
+// ReadDataTypeAt reads a store's data type straight from its meta.tsdb
+// without opening the store. Opening is expensive at the service layer —
+// it spawns WS/MQTT/alerts/rollups managers that stay alive until
+// shutdown — and callers like the store listing only need this one byte.
+func ReadDataTypeAt(storeDir string) (DataType, error) {
+	f, err := os.Open(filepath.Join(storeDir, metaFileName))
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	// DataType is byte 24 of the V2 global metadata block (see
+	// GlobalMetadata.Encode); the first 8 bytes are the magic.
+	buf := make([]byte, 25)
+	if _, err := io.ReadFull(f, buf); err != nil {
+		return 0, fmt.Errorf("failed to read metadata header: %w", err)
+	}
+	magic := binary.LittleEndian.Uint64(buf[0:8])
+	if IsV1Store(magic) {
+		return 0, ErrV1NotSupported
+	}
+	if !IsV2Store(magic) {
+		return 0, ErrInvalidMagic
+	}
+	return DataType(buf[24]), nil
 }
 
 // openV2 opens a V2 partitioned store.

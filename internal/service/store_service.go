@@ -419,9 +419,11 @@ func (s *StoreService) ListAllInfo() []StoreInfo {
 			info.Role = "source"
 		}
 
-		// Data type (open lazily; stores stay cached open).
-		if st, err := s.GetOrOpen(name); err == nil {
-			info.DataType = st.DataType().String()
+		// Data type — read straight from meta.tsdb. Opening the store here
+		// would spawn its WS/MQTT/alerts/rollups managers and pin it open
+		// until shutdown; a listing must not change which stores are open.
+		if dt, err := store.ReadDataTypeAt(dir); err == nil {
+			info.DataType = dt.String()
 		}
 
 		out = append(out, info)
