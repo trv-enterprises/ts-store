@@ -310,12 +310,15 @@ When you query a rollup target's data, the response envelope echoes a `rollup` d
 GET    /api/stores/:store/rollups          # list rollups on this source
 GET    /api/stores/:store/rollups/:id      # one rollup's status
 DELETE /api/stores/:store/rollups/:id      # remove rollup (target store left intact)
+DELETE /api/stores/:store/rollups/:id?delete_target=true   # remove rollup AND its target store
 ```
+
+`delete_target=true` also removes the target's linked API keys, so the source store can afterwards be deleted without a dependents conflict. It is refused if another rollup still writes to the same target.
 
 ### Changing a rollup
 Rollup parameters can't be changed in place (a new window or agg spec invalidates already-written rows; a new retention changes the target's fixed capacity). To apply new parameters, POST with **`"force_recreate": true`** — the target is flushed/recreated, the cursor is reset, and the rollup is rebuilt from all source history still available. A parameter-changing POST **without** `force_recreate` is rejected.
 
-> Deleting a source store that has linked rollup targets is refused (the targets share its API keys). Remove the rollups first.
+> Deleting a source store that still has linked rollup targets is refused (the targets share its API keys) — the error names the surviving targets. Delete those target stores first, either directly or by deleting their rollups with `delete_target=true`.
 
 ## Swagger UI
 

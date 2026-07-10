@@ -25,7 +25,8 @@ Subcommands:
   add  <store> --window <d> [options]   Create a rollup on <store>
   list <store>                          List rollups for a store
   get  <store> <rollup-id>              Show one rollup's status
-  rm   <store> <rollup-id>              Delete a rollup (target store kept)
+  rm   <store> <rollup-id>              Delete a rollup (target store kept
+                                        unless --delete-target is passed)
 
 Create options:
   --window <duration>      Aggregation window, e.g. 1m, 1h, 1d (required)
@@ -52,7 +53,8 @@ Examples:
 
   tsstore rollups list system-stats
   tsstore rollups get  system-stats a1b2c3d4
-  tsstore rollups rm   system-stats a1b2c3d4`)
+  tsstore rollups rm   system-stats a1b2c3d4
+  tsstore rollups rm   system-stats a1b2c3d4 --delete-target`)
 }
 
 func runRollupsCommand(args []string) {
@@ -211,14 +213,27 @@ func runRollupsGet(args []string) {
 }
 
 func runRollupsRm(args []string) {
-	storeName, rollupID, apiKey := parseRollupStoreAndID(args, "rm")
+	deleteTarget := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--delete-target" {
+			deleteTarget = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	storeName, rollupID, apiKey := parseRollupStoreAndID(rest, "rm")
 	key := resolveAPIKey(apiKey)
 	if key == "" {
 		fmt.Println("Error: API key required")
 		os.Exit(1)
 	}
 	cfg := loadStreamConfig()
-	apiDelete(cfg, key, fmt.Sprintf("/api/stores/%s/rollups/%s", storeName, rollupID))
+	path := fmt.Sprintf("/api/stores/%s/rollups/%s", storeName, rollupID)
+	if deleteTarget {
+		path += "?delete_target=true"
+	}
+	apiDelete(cfg, key, path)
 }
 
 // parseRollupStoreAndID parses "<store> <rollup-id> [--api-key k]" for get/rm.

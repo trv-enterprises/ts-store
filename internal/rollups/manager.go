@@ -339,9 +339,12 @@ func (m *Manager) GetRollup(id string) (Status, error) {
 	return w.Status(), nil
 }
 
-// DeleteRollup stops the worker, removes the persisted config and cursor. The
-// target store is left intact (its data may still be wanted).
-func (m *Manager) DeleteRollup(id string) error {
+// DeleteRollup stops the worker, removes the persisted config and cursor.
+// By default the target store is left intact (its data may still be wanted);
+// pass deleteTarget to remove it too, which also drops its linked API keys so
+// the source store can later be deleted without a dependents conflict. A
+// target still fed by another rollup is never deleted.
+func (m *Manager) DeleteRollup(id string, deleteTarget bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -349,11 +352,24 @@ func (m *Manager) DeleteRollup(id string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	if deleteTarget {
+		for otherID, other := range m.workers {
+			if otherID != id && other.targetName == w.targetName {
+				return fmt.Errorf("target %q is also written by rollup %q; delete that rollup first or omit delete_target", w.targetName, otherID)
+			}
+		}
+	}
 	w.Stop()
 	delete(m.workers, id)
 	removeCursor(m.source, id)
 	if err := m.source.RemoveRollupConfig(id); err != nil && err != store.ErrObjectNotFound {
 		return err
+	}
+	if deleteTarget {
+		if err := m.provider.DeleteStore(w.targetName); err != nil {
+			return fmt.Errorf("rollup deleted but target %q was not: %w", w.targetName, err)
+		}
+		log.Printf("rollups %s: deleted target %q with rollup %s", m.sourceName, w.targetName, id)
 	}
 	return nil
 }
