@@ -233,7 +233,9 @@ func runServer(args []string) {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.LoadFromEnv()
+	if err := cfg.LoadFromEnv(); err != nil {
+		log.Fatalf("Failed to load config from environment: %v", err)
+	}
 
 	// Apply command-line overrides
 	if noSocket {
@@ -509,7 +511,9 @@ func runCreateCommand(args []string) {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.LoadFromEnv()
+	if err := cfg.LoadFromEnv(); err != nil {
+		log.Fatalf("Failed to load config from environment: %v", err)
+	}
 
 	// Override base path if specified
 	if basePath != "" {
@@ -571,7 +575,9 @@ func runKeyCommand(args []string) {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.LoadFromEnv()
+	if err := cfg.LoadFromEnv(); err != nil {
+		log.Fatalf("Failed to load config from environment: %v", err)
+	}
 
 	keyManager := apikey.NewManager(cfg.Store.BasePath)
 
@@ -803,7 +809,9 @@ func runCalcCommand(args []string) {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.LoadFromEnv()
+	if err := cfg.LoadFromEnv(); err != nil {
+		log.Fatalf("Failed to load config from environment: %v", err)
+	}
 
 	// Apply defaults from config if not specified
 	if numBlocks == 0 {
@@ -1082,7 +1090,9 @@ func runStatusCommand(args []string) {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.LoadFromEnv()
+	if err := cfg.LoadFromEnv(); err != nil {
+		log.Fatalf("Failed to load config from environment: %v", err)
+	}
 
 	// Override base path if specified
 	if basePath != "" {
@@ -2139,7 +2149,9 @@ func loadStreamConfig() *config.Config {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-	cfg.LoadFromEnv()
+	if err := cfg.LoadFromEnv(); err != nil {
+		log.Fatalf("Failed to load config from environment: %v", err)
+	}
 	return cfg
 }
 

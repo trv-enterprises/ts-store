@@ -7,8 +7,10 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // Config holds the server configuration.
@@ -94,19 +96,26 @@ func (c *Config) Save(path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// LoadFromEnv overrides config values from environment variables.
-func (c *Config) LoadFromEnv() {
+// LoadFromEnv overrides config values from environment variables. A set but
+// invalid value is an error, not a silent fallback to the default — the
+// serve usage text advertises these variables, so a typo'd value looking
+// like it worked is worse than refusing to start.
+func (c *Config) LoadFromEnv() error {
 	if host := os.Getenv("TSSTORE_HOST"); host != "" {
 		c.Server.Host = host
 	}
 	if port := os.Getenv("TSSTORE_PORT"); port != "" {
-		// Parse port - simple for now
-		var p int
-		if _, err := parseEnvInt(port, &p); err == nil && p > 0 {
-			c.Server.Port = p
+		p, err := strconv.Atoi(port)
+		if err != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("invalid TSSTORE_PORT %q: expected a port number (1-65535)", port)
 		}
+		c.Server.Port = p
 	}
 	if mode := os.Getenv("TSSTORE_MODE"); mode != "" {
+		// gin.SetMode panics on anything else — catch it at config time.
+		if mode != "debug" && mode != "release" && mode != "test" {
+			return fmt.Errorf("invalid TSSTORE_MODE %q: expected \"debug\" or \"release\"", mode)
+		}
 		c.Server.Mode = mode
 	}
 	if basePath := os.Getenv("TSSTORE_DATA_PATH"); basePath != "" {
@@ -124,21 +133,10 @@ func (c *Config) LoadFromEnv() {
 	if tlsKey := os.Getenv("TSSTORE_TLS_KEY"); tlsKey != "" {
 		c.Server.TLS.KeyFile = tlsKey
 	}
+	return nil
 }
 
 // TLSEnabled returns true if TLS is configured with both cert and key files.
 func (c *Config) TLSEnabled() bool {
 	return c.Server.TLS.CertFile != "" && c.Server.TLS.KeyFile != ""
-}
-
-func parseEnvInt(s string, v *int) (int, error) {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, os.ErrInvalid
-		}
-		n = n*10 + int(c-'0')
-	}
-	*v = n
-	return n, nil
 }
