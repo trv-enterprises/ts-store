@@ -1103,4 +1103,9 @@ func TestStatusAnswersHealthAndCoverage(t *testing.T) {
 	if st.TargetNewest != start+minute {
 		t.Errorf("target_newest = %d, want the written window end %d", st.TargetNewest, start+minute)
 	}
+	// source_oldest lets clients compute the raw-vs-rollup query split
+	// (issue #59): it must report the oldest raw record in the source.
+	if st.SourceOldest != start+1 {
+		t.Errorf("source_oldest = %d, want %d", st.SourceOldest, start+1)
+	}
 }
