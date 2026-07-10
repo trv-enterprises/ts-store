@@ -603,3 +603,75 @@ func TestWorkerCooldownSurvivesRestart(t *testing.T) {
 		t.Errorf("cooldown must survive restart; got %d alerts: %+v", len(got), got)
 	}
 }
+
+func TestWorkerIdlePollEarlyOut(t *testing.T) {
+	s := newTestStore(t, "idle")
+	sink := &stubSink{}
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
+
+	// pollOnce is driven directly (no worker loop), but the evaluator
+	// goroutine must run for Evaluate() to drain its queue.
+	w.evaluator.Start()
+	defer w.evaluator.Stop()
+
+	// Empty store: pollOnce is a no-op, no error.
+	w.lastTs = 0
+	if err := w.pollOnce(); err != nil {
+		t.Fatalf("pollOnce on empty store: %v", err)
+	}
+
+	// Data exists but is older than the cursor: early-out, cursor untouched.
+	ts := writeRecord(t, s, map[string]interface{}{"temperature": 95.0})
+	w.lastTs = ts + 1
+	if err := w.pollOnce(); err != nil {
+		t.Fatalf("pollOnce with stale data: %v", err)
+	}
+	if w.lastTs != ts+1 {
+		t.Errorf("lastTs moved on idle poll: %d", w.lastTs)
+	}
+	if n := w.evaluator.RecordsEvaluated(); n != 0 {
+		t.Errorf("idle poll evaluated records: %d", n)
+	}
+
+	// New data past the cursor is still picked up. (pollOnce is called
+	// directly — the evaluator goroutine isn't running, so assert on the
+	// evaluation counter rather than the sink.)
+	ts2 := writeRecord(t, s, map[string]interface{}{"temperature": 96.0})
+	if err := w.pollOnce(); err != nil {
+		t.Fatalf("pollOnce with new data: %v", err)
+	}
+	if w.lastTs != ts2 {
+		t.Errorf("lastTs after processing: got %d, want %d", w.lastTs, ts2)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for w.evaluator.RecordsEvaluated() != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := w.evaluator.RecordsEvaluated(); n != 1 {
+		t.Errorf("new record not evaluated: records_evaluated = %d", n)
+	}
+}
+
+func TestWorkerStatusLag(t *testing.T) {
+	s := newTestStore(t, "lag")
+	sink := &stubSink{}
+	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
+
+	// Empty store: no lag.
+	if lag := w.Status().LagMs; lag != 0 {
+		t.Errorf("lag on empty store: %d", lag)
+	}
+
+	// Cursor trails the newest record by ~2.5s.
+	ts := writeRecord(t, s, map[string]interface{}{"temperature": 10.0})
+	w.lastTs = ts - (2500 * int64(time.Millisecond))
+	if lag := w.Status().LagMs; lag < 2400 || lag > 2600 {
+		t.Errorf("lag = %dms, want ~2500ms", lag)
+	}
+
+	// Caught up: no lag.
+	w.lastTs = ts
+	if lag := w.Status().LagMs; lag != 0 {
+		t.Errorf("lag when caught up: %d", lag)
+	}
+}

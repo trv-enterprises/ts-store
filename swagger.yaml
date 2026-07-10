@@ -1951,6 +1951,14 @@ components:
         last_timestamp:
           type: integer
           format: int64
+        lag_ms:
+          type: integer
+          format: int64
+          description: >-
+            How far the worker's cursor trails the newest record in the
+            store, in milliseconds — 0 when caught up or the store is
+            empty. Sustained growth means the worker's drain rate can't
+            keep up with the store's write rate.
         last_fired_at:
           type: string
           format: date-time
