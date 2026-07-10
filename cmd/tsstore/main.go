@@ -456,6 +456,12 @@ func runServer(args []string) {
 		log.Printf("Server shutdown error: %v", err)
 	}
 
+	// srv.Shutdown doesn't wait for (or close) hijacked connections, so
+	// terminate active inbound WS write sessions before closing the stores
+	// they write to — otherwise a session could be mid-PutObject on a
+	// closed store.
+	wsHandler.Shutdown(ctx)
+
 	// Close all stores
 	if err := storeService.CloseAll(); err != nil {
 		log.Printf("Error closing stores: %v", err)
