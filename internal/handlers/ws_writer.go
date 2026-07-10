@@ -6,6 +6,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -40,10 +41,11 @@ var wsMaxMessageBytes int64 = 4 << 20
 
 // wsWriter handles receiving data from a WebSocket client and storing it.
 type wsWriter struct {
-	conn    *websocket.Conn
-	store   *store.Store
-	format  string // "compact" or "full"
-	closeCh chan struct{}
+	conn     *websocket.Conn
+	store    *store.Store
+	format   string // "compact" or "full"
+	closeCh  chan struct{}
+	stopOnce sync.Once
 }
 
 // newWSWriter creates a new WebSocket writer.
@@ -59,6 +61,20 @@ func newWSWriter(conn *websocket.Conn, st *store.Store, format string) *wsWriter
 		format:  format,
 		closeCh: make(chan struct{}),
 	}
+}
+
+// stop asks the write loop to exit: it signals closeCh, tells the client
+// we're going away, and expires the pending read so run() doesn't sit in
+// ReadMessage for up to its 60s deadline. Safe to call more than once and
+// concurrently with run(); used on server shutdown.
+func (w *wsWriter) stop() {
+	w.stopOnce.Do(func() {
+		close(w.closeCh)
+		_ = w.conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+			time.Now().Add(time.Second))
+		_ = w.conn.SetReadDeadline(time.Now())
+	})
 }
 
 // run starts the write loop.
@@ -82,6 +98,13 @@ func (w *wsWriter) run() {
 			}
 			// Check if it's a timeout
 			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+				// A stop() expires the read deadline on purpose — exit
+				// instead of treating it as an idle keep-alive timeout.
+				select {
+				case <-w.closeCh:
+					return
+				default:
+				}
 				// Send ping to keep alive
 				if err := w.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
 					return
