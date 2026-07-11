@@ -1,6 +1,6 @@
 # Alerting Architecture
 
-This document describes the design of the ts-store alerting system as of v0.9.0. The alerting design is unchanged since v0.6.8 — each alert still runs its own polling worker (see [Architecture](#architecture)). A future refactor to reduce the per-alert polling cost is tracked but not yet scheduled (see [Future work](#future-work)).
+This document describes the design of the ts-store alerting system as of v0.16.0. Since issue [#4](https://github.com/trv-enterprises/ts-store/issues/4) landed, each store runs **one shared poll loop** that scans once per tick and fans new records out to every alert's evaluator (see [Architecture](#architecture)); before that, every alert ran its own polling worker (N alerts → N redundant scans per second).
 
 ## Overview
 
@@ -37,15 +37,22 @@ All three are persisted per-store as JSON, run as independent goroutines, and su
 │           │  ▲                                                             │
 └───────────┼──┼─────────────────────────────────────────────────────────────┘
             │  │
-            │  │ poll every PollInterval (default 1s)
+            │  │ ONE shared scan per tick (min of the alerts' poll_intervals)
             │  │
 ┌───────────┼──┼─────────────────────────────────────────────────────────────┐
 │ alerts.Manager (per-store)                                                 │
 │           │  │                                                             │
 │   ┌───────▼──┴────────┐                                                    │
-│   │ alerts.Worker     │  One per configured alert resource.                │
-│   │                   │  Range-polls the store, expands schema data,       │
-│   │                   │  feeds each record into the Evaluator.             │
+│   │ alerts.poller     │  One per store. Scans once from the minimum of     │
+│   │ (shared loop)     │  the workers' cursors, reads + expands + parses    │
+│   │                   │  each record once, fans the batch out.             │
+│   └───────┬───────────┘                                                    │
+│           │ deliverBatch(records)   (one shared read-only parsed map)      │
+│           ▼                                                                │
+│   ┌───────────────────┐                                                    │
+│   │ alerts.Worker     │  One per configured alert resource. Filters the    │
+│   │                   │  batch by its own cursor, feeds eligible records   │
+│   │                   │  into its Evaluator.                               │
 │   └───────┬───────────┘                                                    │
 │           │                                                                │
 │           │ Evaluate(ts, data)                                             │
@@ -68,8 +75,9 @@ All three are persisted per-store as JSON, run as independent goroutines, and su
 
 ## Data flow
 
-1. **Polling**: each Worker calls `store.GetObjectsInRange(lastTs+1, now, 100)` every `poll_interval` (default `1s`).
-2. **Schema expansion**: for schema-type stores, records are expanded via `store.ExpandData` so condition fields resolve to schema field names.
+1. **Polling**: the store's shared poller calls `store.GetObjectsInRange(lastTs+1, now, 100)` once per tick, where `lastTs` is the shared scan cursor and the tick is the **minimum `poll_interval` across the store's alerts** (each alert's value is a hint; the fastest wins for the whole store). An idle tick — nothing written since the cursor — early-outs on the store's newest timestamp without scanning (issue #57).
+2. **Schema expansion**: for schema-type stores, records are expanded via `store.ExpandData` so condition fields resolve to schema field names. Expansion and JSON parsing happen **once per record**; the parsed map is fanned out read-only to every worker.
+2a. **Fan-out**: each worker filters the batch by its own cursor (`lastTs`), so a record is evaluated at most once per alert even when the shared scan re-covers old ranges — e.g. when a `resume`-policy alert registers with a persisted cursor behind the shared position, the scan is pulled back and only that alert replays the backlog.
 3. **Evaluation**: parsed JSON is handed to `rules.Evaluator.Evaluate(ts, data)`, which buffers it in a 1000-element channel.
 4. **Match → dispatch**: in a separate goroutine, each rule is checked; on a match, cooldown is enforced; on first-allowed match, the callback fires `Sink.Send(alert)`.
 5. **Cursor & restart policy**: each alert configures its own `restart_policy` (default `"now"`):
@@ -106,7 +114,7 @@ Every alert — webhook, WS, MQTT — carries the same rule + dispatch policy fi
 | `external_ref` | no | Opaque pass-through string (≤512 bytes, no NUL); echoed verbatim on every alert payload. |
 | `restart_policy` | no | `"now"` (default — start from wall-clock now, no cursor) or `"resume"` (replay from cursor on restart). |
 | `max_replay` | no | Duration cap on resume replay window. Only valid when `restart_policy="resume"`. Default: unbounded. |
-| `poll_interval` | no | How often the worker polls the store (default `1s`). |
+| `poll_interval` | no | Poll cadence hint (default `1s`). The store's shared loop ticks at the **minimum** across its alerts, so a faster alert speeds up every alert on the store and a slow value only takes effect if it is the minimum. |
 
 `condition` syntax: `field <op> value`, optionally compounded with `AND` / `OR`. Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`. Values: numbers, quoted strings, booleans. Field names may include dots and hyphens (`cpu.percent`, `temp.cpu_c`).
 
@@ -268,11 +276,7 @@ Store: sensors
 
 ## Future work
 
-- **Reduce N×scan cost of per-alert polling** ([#4](https://github.com/trv-enterprises/ts-store/issues/4)): each alert runs its own poll loop, so N alerts on one store do N redundant `GetObjectsInRange` scans per second. This is fine at the current scale (1–3 alerts per store) but grows linearly with alert count — relevant because the dashboard's rule wizard creates one alert per rule. Issue #4 is the canonical tracking item and weighs two candidate approaches; **the choice is deferred until this is actually scheduled** (revisit when a store routinely has more than ~3 alerts, or sub-second alerting becomes a hard requirement):
-  - **Option A — in-process pub/sub event bus.** The store's write path publishes records; workers subscribe instead of polling. Eliminates polling entirely (~0ms latency, no cursor files) at the cost of write-path changes and a larger blast radius.
-  - **Option B — one shared poll loop per store.** Collapse N per-alert loops into a single `StoreEvaluator` that scans once per tick and fans records out to per-alert evaluators. Alerts-internal change only (no write-path changes), but keeps the up-to-1s latency and needs decisions on poll-interval reconciliation, per-alert filter handling, and a single per-store cursor.
-
-  Per-alert sinks, cooldowns, and dispatch semantics stay unchanged in either approach.
+- **Sub-second alerting (event bus)**: issue [#4](https://github.com/trv-enterprises/ts-store/issues/4) landed its Option B — the shared poll loop described above — which removed the N×scan cost. The alternative it weighed (Option A, an in-process pub/sub bus from the write path) remains the path to ~0ms write→evaluate latency if that ever becomes a requirement; polling latency today is up to the store's effective tick.
 - **Retry policies for webhook**: today, transient HTTP failures are not retried. A bounded exponential backoff inside `notify.Webhook` would be cheap to add.
 - **TLS / mTLS for MQTT**: `tcp://` brokers only. `ssl://` (TLS) and `wss://` (MQTT-over-WebSocket) need config knobs.
 - **Authentication on MQTT-over-WSS**: combine broker `wss://` URL with header auth for cloud-broker scenarios.

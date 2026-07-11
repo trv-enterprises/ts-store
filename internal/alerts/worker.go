@@ -5,7 +5,6 @@
 package alerts
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -62,9 +61,10 @@ type Status struct {
 	DeliveryFailures int64 `json:"delivery_failures,omitempty"`
 }
 
-// Worker polls a store for new records, evaluates a single rule against
-// each, and dispatches matches through the configured Sink. Workers are
-// created and owned by the alerts Manager.
+// Worker owns one alert's rule evaluator and sink, and receives new
+// records from the store's shared poller (issue #4: one scan per store
+// per tick instead of one per alert). Workers are created and owned by
+// the alerts Manager; record delivery arrives via deliverBatch.
 type Worker struct {
 	mu sync.RWMutex
 
@@ -75,9 +75,11 @@ type Worker struct {
 	alertType string // "webhook" | "ws" | "mqtt"
 	target    string // URL or broker/topic, for status display
 
-	evaluator    *rules.Evaluator
-	ruleName     string
-	sink         Sink
+	evaluator *rules.Evaluator
+	ruleName  string
+	sink      Sink
+	// pollInterval is a hint to the shared poller: the store's loop
+	// ticks at the minimum across its registered workers.
 	pollInterval time.Duration
 
 	// Restart policy. When restartPolicy == "resume", Start() reads
@@ -87,6 +89,10 @@ type Worker struct {
 	restartPolicy string
 	maxReplay     time.Duration
 
+	// lastTs is this alert's own cursor: records at or before it are
+	// never evaluated. It doubles as the replay floor — the shared
+	// poller may re-scan ranges other workers still need, and this
+	// filter is what keeps that idempotent per alert.
 	lastTs           int64
 	cursorPath       string
 	lastFiredPath    string
@@ -99,9 +105,6 @@ type Worker struct {
 	lastErrorAt time.Time
 
 	createdAt time.Time
-
-	stopCh chan struct{}
-	wg     sync.WaitGroup
 }
 
 // Options collects everything a Worker needs at construction time. Each
@@ -189,15 +192,16 @@ func NewWorker(opts Options) (*Worker, error) {
 		state:         "stopped",
 		createdAt:     opts.CreatedAt,
 		ruleName:      opts.Rule.Name,
-		stopCh:        make(chan struct{}),
 	}
 
 	w.evaluator = rules.NewEvaluator(opts.StoreName, parsedRule, cooldown, opts.Rule.ExternalRef, w.dispatch)
 	return w, nil
 }
 
-// Start runs the worker until Stop. The starting lastTs depends on
-// restart_policy:
+// Start readies the worker to receive records: it seeds lastTs, re-seeds
+// the cooldown mark, and starts the evaluator goroutine. Record delivery
+// begins when the Manager registers the worker with the store's shared
+// poller. The starting lastTs depends on restart_policy:
 //   - "" or "now" — wall-clock now; the cursor is neither read nor
 //     written for this worker.
 //   - "resume"    — read the cursor file (or 0 if missing). When
@@ -235,116 +239,71 @@ func (w *Worker) Start() {
 	}
 
 	w.evaluator.Start()
-	w.wg.Add(1)
-	go w.runLoop()
 }
 
-// Stop signals the worker to exit and waits for it. Sink and evaluator are
-// shut down here. Safe to call multiple times — subsequent calls are no-ops.
+// Stop shuts down the evaluator and sink. The Manager unregisters the
+// worker from the shared poller before calling this, so no deliveries
+// race the teardown. Safe to call multiple times.
 func (w *Worker) Stop() {
 	w.mu.Lock()
 	if w.state == "stopped" {
 		w.mu.Unlock()
 		return
 	}
-	close(w.stopCh)
+	w.state = "stopped"
 	w.mu.Unlock()
 
-	w.wg.Wait()
 	w.evaluator.Stop()
 	if err := w.sink.Close(); err != nil {
 		log.Printf("alerts %s/%s: sink close: %v", w.alertType, w.id, err)
 	}
-
-	w.mu.Lock()
-	w.state = "stopped"
-	w.mu.Unlock()
 }
 
-func (w *Worker) runLoop() {
-	defer w.wg.Done()
-
-	ticker := time.NewTicker(w.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-w.stopCh:
-			return
-		case <-ticker.C:
-			if err := w.pollOnce(); err != nil {
-				w.setError(err.Error())
-			} else {
-				w.noteSuccess()
-			}
-		}
-	}
+// lastTimestamp returns this alert's cursor position. The shared poller
+// uses it as the scan floor when the worker registers.
+func (w *Worker) lastTimestamp() int64 {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.lastTs
 }
 
-// pollOnce reads up to maxBatchSize records since lastTs and feeds each
-// to the evaluator. Cursor is advanced as records are seen, then written
-// once at the end of the batch.
-func (w *Worker) pollOnce() error {
+// deliverBatch feeds one shared-scan batch to this alert's evaluator.
+// Records at or before the alert's own cursor are skipped, which makes
+// re-scanned ranges (a resume worker registering with an older cursor
+// pulls the shared scan back) idempotent for everyone else. The cursor
+// is written once per batch, as before.
+func (w *Worker) deliverBatch(recs []pollRecord) {
 	w.mu.RLock()
 	lastTs := w.lastTs
+	stopped := w.state == "stopped"
 	w.mu.RUnlock()
-
-	// Idle early-out: the newest timestamp is O(partitions) of metadata,
-	// while GetObjectsInRange block-scans every partition in range under
-	// RLock. With per-second polling the idle tick dominates total cost
-	// (issue #4), so skip the scan when nothing was written since the
-	// cursor. Any error falls through to the range read to be surfaced.
-	if newestTs, err := w.store.GetNewestTimestamp(); err == store.ErrEmptyStore {
-		return nil
-	} else if err == nil && newestTs <= lastTs {
-		return nil
+	if stopped {
+		return
 	}
 
-	endTime := time.Now().UnixNano()
-	handles, err := w.store.GetObjectsInRange(lastTs+1, endTime, maxBatchSize)
-	if err != nil {
-		return fmt.Errorf("range read: %w", err)
-	}
-	if len(handles) == 0 {
-		return nil
-	}
-
-	for _, h := range handles {
-		data, err := w.store.GetObject(h)
-		if err != nil {
-			// Skip bad records but keep advancing — a single corrupt
-			// record must not stall alert evaluation forever.
-			lastTs = h.Timestamp
+	advanced := false
+	for _, r := range recs {
+		if r.ts <= lastTs {
 			continue
 		}
-
-		// Expand schema data so condition fields match the schema-defined
-		// names rather than positional indices.
-		var jsonData []byte
-		if w.store.DataType() == store.DataTypeSchema {
-			expanded, expErr := w.store.ExpandData(data, 0)
-			if expErr == nil {
-				jsonData = expanded
-			} else {
-				jsonData = data
-			}
-		} else {
-			jsonData = data
+		if r.parsed != nil {
+			w.evaluator.Evaluate(r.ts, r.parsed)
 		}
-
-		var parsed map[string]interface{}
-		if json.Unmarshal(jsonData, &parsed) == nil {
-			w.evaluator.Evaluate(h.Timestamp, parsed)
-		}
-
-		lastTs = h.Timestamp
+		lastTs = r.ts
+		advanced = true
+	}
+	if !advanced {
+		return
 	}
 
 	w.mu.Lock()
-	w.lastTs = lastTs
+	if lastTs > w.lastTs {
+		w.lastTs = lastTs
+	} else {
+		lastTs = w.lastTs
+	}
 	w.mu.Unlock()
 	w.writeCursor(lastTs)
-	return nil
 }
 
 // dispatch is the evaluator's onAlert callback. It hands the alert to the

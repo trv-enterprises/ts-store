@@ -60,7 +60,7 @@ func TestWebhookDeliveryFailureSurfacesInStatus(t *testing.T) {
 	s := newTestStore(t, "webhook-vis")
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 	sink.SetOnError(w.noteDeliveryFailure) // as the manager wires it
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	time.Sleep(150 * time.Millisecond)

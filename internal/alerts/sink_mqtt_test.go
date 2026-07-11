@@ -68,7 +68,7 @@ func TestMQTTSinkEndToEnd(t *testing.T) {
 
 	s := newTestStore(t, "mqtt-sink")
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	time.Sleep(150 * time.Millisecond)

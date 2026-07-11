@@ -26,7 +26,9 @@ var (
 	ErrNotFound      = errors.New("alert not found")
 )
 
-// Manager owns all webhook/WS/MQTT alert workers for a single store.
+// Manager owns all webhook/WS/MQTT alert workers for a single store,
+// plus the store's shared poller that scans once per tick and fans new
+// records out to every worker (issue #4).
 type Manager struct {
 	mu sync.RWMutex
 
@@ -34,6 +36,7 @@ type Manager struct {
 	storeName string
 
 	workers map[string]*Worker // alertID -> worker (IDs unique across types)
+	poller  *poller
 	closed  bool
 }
 
@@ -43,7 +46,15 @@ func NewManager(st *store.Store, storeName string) *Manager {
 		store:     st,
 		storeName: storeName,
 		workers:   make(map[string]*Worker),
+		poller:    newPoller(st, storeName),
 	}
+}
+
+// startWorker starts a built worker and registers it with the shared
+// poller. Caller holds m.mu and has already added it to m.workers.
+func (m *Manager) startWorker(w *Worker) {
+	w.Start()
+	m.poller.register(w)
 }
 
 // LoadAndStart reads persisted webhook/WS/MQTT alert configs and starts a
@@ -68,7 +79,7 @@ func (m *Manager) LoadAndStart() error {
 				continue
 			}
 			m.workers[a.ID] = w
-			w.Start()
+			m.startWorker(w)
 		}
 	}
 
@@ -82,7 +93,7 @@ func (m *Manager) LoadAndStart() error {
 				continue
 			}
 			m.workers[a.ID] = w
-			w.Start()
+			m.startWorker(w)
 		}
 	}
 
@@ -96,7 +107,7 @@ func (m *Manager) LoadAndStart() error {
 				continue
 			}
 			m.workers[a.ID] = w
-			w.Start()
+			m.startWorker(w)
 		}
 	}
 
@@ -244,7 +255,7 @@ func (m *Manager) createWebhook(req CreateAlertRequest) (Status, error) {
 		return Status{}, err
 	}
 	m.workers[alert.ID] = w
-	w.Start()
+	m.startWorker(w)
 	return w.Status(), nil
 }
 
@@ -271,7 +282,7 @@ func (m *Manager) createWS(req CreateAlertRequest) (Status, error) {
 		return Status{}, err
 	}
 	m.workers[alert.ID] = w
-	w.Start()
+	m.startWorker(w)
 	return w.Status(), nil
 }
 
@@ -305,7 +316,7 @@ func (m *Manager) createMQTT(req CreateAlertRequest) (Status, error) {
 		return Status{}, err
 	}
 	m.workers[alert.ID] = w
-	w.Start()
+	m.startWorker(w)
 	return w.Status(), nil
 }
 
@@ -520,6 +531,8 @@ func (m *Manager) DeleteAlert(alertID string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	// Unregister first so no fan-out delivery races the teardown.
+	m.poller.unregister(alertID)
 	w.Stop()
 	delete(m.workers, alertID)
 
@@ -551,6 +564,9 @@ func (m *Manager) Stop() error {
 	}
 	m.closed = true
 
+	// Stop the shared poller first so no scan/fan-out is in flight
+	// while workers tear down their evaluators and sinks.
+	m.poller.stop()
 	for _, w := range m.workers {
 		w.Stop()
 	}
