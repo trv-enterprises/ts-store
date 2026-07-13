@@ -2017,7 +2017,10 @@ components:
           properties:
             poll_interval:
               type: string
-              description: Worker poll cadence.
+              description: >-
+                Poll cadence hint. The store runs one shared poll loop for
+                all its alerts, ticking at the minimum poll_interval across
+                them.
               example: 1s
             webhook:
               description: Present when type is "webhook".
@@ -2137,7 +2140,11 @@ components:
               description: Transport discriminator.
             poll_interval:
               type: string
-              description: How often the worker polls the store (default 1s).
+              description: >-
+                Poll cadence hint (default 1s). The store runs one shared
+                poll loop for all its alerts, ticking at the minimum
+                poll_interval across them — a faster alert speeds up every
+                alert on the store.
               example: 1s
         - $ref: '#/components/schemas/AlertCommon'
         - type: object

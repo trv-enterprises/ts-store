@@ -160,7 +160,7 @@ Starts a local file server on port 21090, serves `swagger.yaml` with CORS header
 - `--external-ref <s>` — opaque pass-through string echoed on every alert payload
 - `--restart now|resume` — restart policy (default `now`). `resume` reads the persisted cursor on Start and replays records since.
 - `--max-replay <duration>` — when `--restart=resume`, cap replay window (e.g., `1h`). Default: unbounded.
-- `--poll <duration>` — poll interval (default `1s`)
+- `--poll <duration>` — poll cadence hint (default `1s`). The store runs one shared poll loop for all its alerts, ticking at the minimum across them.
 - `--header K:V` — additional HTTP header, repeatable (webhook/ws only)
 - `--api-key <key>` — store API key (or set `TSSTORE_API_KEY`)
 

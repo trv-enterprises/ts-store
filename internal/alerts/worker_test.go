@@ -93,10 +93,15 @@ func waitForAlerts(t *testing.T, sink *stubSink, n int, timeout time.Duration) {
 
 func newWorker(t *testing.T, s *store.Store, sink Sink, rule store.AlertCommon, cursorPath string) *Worker {
 	t.Helper()
+	return newWorkerWithID(t, s, sink, "w1", rule, cursorPath)
+}
+
+func newWorkerWithID(t *testing.T, s *store.Store, sink Sink, id string, rule store.AlertCommon, cursorPath string) *Worker {
+	t.Helper()
 	w, err := NewWorker(Options{
 		Store:        s,
 		StoreName:    "test",
-		ID:           "w1",
+		ID:           id,
 		Type:         "webhook",
 		Target:       "stub",
 		Rule:         rule,
@@ -111,12 +116,26 @@ func newWorker(t *testing.T, s *store.Store, sink Sink, rule store.AlertCommon, 
 	return w
 }
 
+// startPolling starts the workers and registers them with a fresh shared
+// poller for the store, mirroring what the Manager does. The poller is
+// stopped via test cleanup.
+func startPolling(t *testing.T, s *store.Store, workers ...*Worker) *poller {
+	t.Helper()
+	p := newPoller(s, "test")
+	t.Cleanup(p.stop)
+	for _, w := range workers {
+		w.Start()
+		p.register(w)
+	}
+	return p
+}
+
 func TestWorkerMatchingRecordFires(t *testing.T) {
 	s := newTestStore(t, "match")
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	// Wait one poll tick so the worker's lastTs is set, then write a record.
@@ -139,7 +158,7 @@ func TestWorkerNonMatchingRecordIgnored(t *testing.T) {
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	time.Sleep(100 * time.Millisecond)
@@ -157,7 +176,7 @@ func TestWorkerCooldownSuppresses(t *testing.T) {
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80", Cooldown: "1h"}, "")
 
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	time.Sleep(100 * time.Millisecond)
@@ -181,7 +200,7 @@ func TestWorkerWritesCursorOnResume(t *testing.T) {
 		store.AlertCommon{Name: "any", Condition: "temperature > 0", RestartPolicy: "resume"},
 		cursorPath)
 
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	time.Sleep(100 * time.Millisecond)
@@ -216,7 +235,7 @@ func TestWorkerSkipsCursorWhenPolicyIsNow(t *testing.T) {
 			w := newWorker(t, s, sink,
 				store.AlertCommon{Name: "any", Condition: "temperature > 0", RestartPolicy: policy},
 				cursorPath)
-			w.Start()
+			startPolling(t, s, w)
 			defer w.Stop()
 
 			time.Sleep(100 * time.Millisecond)
@@ -251,7 +270,7 @@ func TestWorkerResumeReadsCursor(t *testing.T) {
 	w := newWorker(t, s, sink,
 		store.AlertCommon{Name: "hot", Condition: "temperature > 80", RestartPolicy: "resume"},
 		cursorPath)
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	// Worker should replay the pre-existing record because the cursor
@@ -285,7 +304,7 @@ func TestWorkerResumeBoundedByMaxReplay(t *testing.T) {
 			RestartPolicy: "resume", MaxReplay: "100ms",
 		},
 		cursorPath)
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	// Give the worker a couple of poll cycles. The pre-Start record
@@ -312,7 +331,7 @@ func TestWorkerStartFromNowIgnoresHistory(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	// Give the worker a couple of poll cycles. No new writes, so no alerts.
@@ -343,7 +362,7 @@ func TestWorkerMetricsCountsRecordsAndDispatches(t *testing.T) {
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	// Wait one poll cycle so lastTs is set before we write.
@@ -387,7 +406,7 @@ func (e errSink) Error() string { return string(e) }
 func TestWorkerMetricsCountsDrops(t *testing.T) {
 	s := newTestStore(t, "drops")
 	w := newWorker(t, s, failingSink{}, store.AlertCommon{Name: "always", Condition: "temperature > 0"}, "")
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	time.Sleep(100 * time.Millisecond)
@@ -415,7 +434,7 @@ func TestWorkerResetMetricsZeros(t *testing.T) {
 	s := newTestStore(t, "reset")
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "x", Condition: "temperature > 0"}, "")
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 
 	time.Sleep(100 * time.Millisecond)
@@ -438,7 +457,7 @@ func TestWorkerStopClosesSink(t *testing.T) {
 	s := newTestStore(t, "stop")
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "any", Condition: "x > 0"}, "")
-	w.Start()
+	startPolling(t, s, w)
 	w.Stop()
 
 	if !sink.closed {
@@ -491,7 +510,7 @@ func TestWorkerErrorStateSetsAndRecovers(t *testing.T) {
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "r", Condition: "t > 0"}, "")
 
-	w.Start()
+	startPolling(t, s, w)
 	defer w.Stop()
 	if st := w.Status().State; st != "running" {
 		t.Fatalf("state after Start: %q, want running", st)
@@ -528,7 +547,7 @@ func TestWorkerSetErrorDoesNotResurrectStopped(t *testing.T) {
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "r", Condition: "t > 0"}, "")
 
-	w.Start()
+	startPolling(t, s, w)
 	w.Stop()
 
 	w.setError("late delivery failure")
@@ -574,7 +593,7 @@ func TestWorkerCooldownSurvivesRestart(t *testing.T) {
 	// First life: fire once.
 	sink1 := &stubSink{}
 	w1 := build(sink1)
-	w1.Start()
+	startPolling(t, s, w1)
 	time.Sleep(100 * time.Millisecond)
 	writeRecord(t, s, map[string]interface{}{"temperature": 90.0})
 	waitForAlerts(t, sink1, 1, 2*time.Second)
@@ -591,7 +610,7 @@ func TestWorkerCooldownSurvivesRestart(t *testing.T) {
 	// be closed, so a matching record is suppressed.
 	sink2 := &stubSink{}
 	w2 := build(sink2)
-	w2.Start()
+	startPolling(t, s, w2)
 	defer w2.Stop()
 	if got := w2.Status().LastFiredAt; got.IsZero() {
 		t.Error("Status.LastFiredAt should be seeded from disk after restart")
@@ -604,28 +623,32 @@ func TestWorkerCooldownSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestWorkerIdlePollEarlyOut(t *testing.T) {
+// TestSharedPollerIdleEarlyOut drives the shared poller's pollOnce
+// directly (no run loop) to pin down the idle early-out and cursor
+// semantics from issues #57 and #4.
+func TestSharedPollerIdleEarlyOut(t *testing.T) {
 	s := newTestStore(t, "idle")
 	sink := &stubSink{}
 	w := newWorker(t, s, sink, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
 
-	// pollOnce is driven directly (no worker loop), but the evaluator
-	// goroutine must run for Evaluate() to drain its queue.
-	w.evaluator.Start()
-	defer w.evaluator.Stop()
+	// Wire the poller by hand instead of register() so no run loop
+	// races the direct pollOnce calls below.
+	w.Start()
+	defer w.Stop()
+	p := newPoller(s, "test")
+	p.workers[w.id] = w
 
-	// Empty store: pollOnce is a no-op, no error.
+	// Empty store: pollOnce is a no-op.
 	w.lastTs = 0
-	if err := w.pollOnce(); err != nil {
-		t.Fatalf("pollOnce on empty store: %v", err)
-	}
+	p.lastTs = 0
+	p.pollOnce()
 
-	// Data exists but is older than the cursor: early-out, cursor untouched.
+	// Data exists but is older than the shared cursor: early-out, the
+	// worker's cursor is untouched and nothing is evaluated.
 	ts := writeRecord(t, s, map[string]interface{}{"temperature": 95.0})
 	w.lastTs = ts + 1
-	if err := w.pollOnce(); err != nil {
-		t.Fatalf("pollOnce with stale data: %v", err)
-	}
+	p.lastTs = ts + 1
+	p.pollOnce()
 	if w.lastTs != ts+1 {
 		t.Errorf("lastTs moved on idle poll: %d", w.lastTs)
 	}
@@ -633,15 +656,14 @@ func TestWorkerIdlePollEarlyOut(t *testing.T) {
 		t.Errorf("idle poll evaluated records: %d", n)
 	}
 
-	// New data past the cursor is still picked up. (pollOnce is called
-	// directly — the evaluator goroutine isn't running, so assert on the
-	// evaluation counter rather than the sink.)
+	// New data past the cursor is delivered and advances both cursors.
 	ts2 := writeRecord(t, s, map[string]interface{}{"temperature": 96.0})
-	if err := w.pollOnce(); err != nil {
-		t.Fatalf("pollOnce with new data: %v", err)
-	}
+	p.pollOnce()
 	if w.lastTs != ts2 {
-		t.Errorf("lastTs after processing: got %d, want %d", w.lastTs, ts2)
+		t.Errorf("worker lastTs after processing: got %d, want %d", w.lastTs, ts2)
+	}
+	if p.lastTs != ts2 {
+		t.Errorf("poller lastTs after processing: got %d, want %d", p.lastTs, ts2)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for w.evaluator.RecordsEvaluated() != 1 && time.Now().Before(deadline) {
@@ -649,6 +671,106 @@ func TestWorkerIdlePollEarlyOut(t *testing.T) {
 	}
 	if n := w.evaluator.RecordsEvaluated(); n != 1 {
 		t.Errorf("new record not evaluated: records_evaluated = %d", n)
+	}
+}
+
+// TestSharedPollerFansOutToAllWorkers is the core issue #4 behavior:
+// one write, one shared scan, every registered alert evaluates it.
+func TestSharedPollerFansOutToAllWorkers(t *testing.T) {
+	s := newTestStore(t, "fanout")
+	sinkA := &stubSink{}
+	sinkB := &stubSink{}
+	wA := newWorker(t, s, sinkA, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
+	wB := newWorkerWithID(t, s, sinkB, "w2", store.AlertCommon{Name: "cold", Condition: "temperature < 100"}, "")
+
+	startPolling(t, s, wA, wB)
+	defer wA.Stop()
+	defer wB.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+	writeRecord(t, s, map[string]interface{}{"temperature": 90.0})
+
+	waitForAlerts(t, sinkA, 1, 2*time.Second)
+	waitForAlerts(t, sinkB, 1, 2*time.Second)
+	if n := wA.evaluator.RecordsEvaluated(); n != 1 {
+		t.Errorf("worker A records_evaluated = %d, want 1", n)
+	}
+	if n := wB.evaluator.RecordsEvaluated(); n != 1 {
+		t.Errorf("worker B records_evaluated = %d, want 1", n)
+	}
+}
+
+// TestSharedPollerReplaysOnlyToLateRegistrant: a resume worker whose
+// cursor is behind the shared scan pulls the scan back on register, but
+// the replayed range must not re-fire alerts that are already past it.
+func TestSharedPollerReplaysOnlyToLateRegistrant(t *testing.T) {
+	s := newTestStore(t, "replay")
+	sinkA := &stubSink{}
+	wA := newWorker(t, s, sinkA, store.AlertCommon{Name: "hot", Condition: "temperature > 80"}, "")
+	p := startPolling(t, s, wA)
+	defer wA.Stop()
+
+	// Worker A sees and fires on a record, advancing past it.
+	time.Sleep(100 * time.Millisecond)
+	preTs := writeRecord(t, s, map[string]interface{}{"temperature": 90.0})
+	waitForAlerts(t, sinkA, 1, 2*time.Second)
+
+	// Worker B resumes from a cursor before that record.
+	cursorPath := filepath.Join(t.TempDir(), "alert.cursor")
+	if err := os.WriteFile(cursorPath, []byte(strconv.FormatInt(preTs-int64(time.Second), 10)+"\n"), 0644); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+	sinkB := &stubSink{}
+	wB := newWorkerWithID(t, s, sinkB, "w2",
+		store.AlertCommon{Name: "hot2", Condition: "temperature > 80", RestartPolicy: "resume"},
+		cursorPath)
+	wB.Start()
+	p.register(wB)
+	defer wB.Stop()
+
+	// B replays the backlog record; A must not re-evaluate it.
+	waitForAlerts(t, sinkB, 1, 2*time.Second)
+	time.Sleep(200 * time.Millisecond)
+	if got := sinkA.Received(); len(got) != 1 {
+		t.Errorf("worker A re-fired on replayed range: %d alerts", len(got))
+	}
+	if n := wA.evaluator.RecordsEvaluated(); n != 1 {
+		t.Errorf("worker A re-evaluated replayed records: records_evaluated = %d", n)
+	}
+}
+
+// TestPollerIntervalIsMinOfWorkers: each alert's poll_interval is a
+// hint; the shared loop ticks at the fastest one and re-computes when
+// workers come and go.
+func TestPollerIntervalIsMinOfWorkers(t *testing.T) {
+	s := newTestStore(t, "interval")
+	fast := newWorker(t, s, &stubSink{}, store.AlertCommon{Name: "f", Condition: "t > 0"}, "")
+	slow, err := NewWorker(Options{
+		Store: s, StoreName: "test", ID: "slow", Type: "webhook", Target: "stub",
+		Rule: store.AlertCommon{Name: "s", Condition: "t > 0"},
+		Sink: &stubSink{}, PollInterval: "10s", CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+
+	p := startPolling(t, s, fast, slow)
+	defer fast.Stop()
+	defer slow.Stop()
+
+	p.mu.Lock()
+	got := p.interval
+	p.mu.Unlock()
+	if got != 50*time.Millisecond {
+		t.Errorf("interval with fast worker = %v, want 50ms", got)
+	}
+
+	p.unregister(fast.id)
+	p.mu.Lock()
+	got = p.interval
+	p.mu.Unlock()
+	if got != 10*time.Second {
+		t.Errorf("interval after removing fast worker = %v, want 10s", got)
 	}
 }
 
