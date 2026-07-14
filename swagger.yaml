@@ -463,6 +463,7 @@ paths:
         - $ref: '#/components/parameters/Format'
         - $ref: '#/components/parameters/SchemaVersionView'
         - $ref: '#/components/parameters/AggWindow'
+        - $ref: '#/components/parameters/Step'
         - $ref: '#/components/parameters/AggFields'
         - $ref: '#/components/parameters/AggDefault'
       responses:
@@ -540,6 +541,7 @@ paths:
         - $ref: '#/components/parameters/Format'
         - $ref: '#/components/parameters/SchemaVersionView'
         - $ref: '#/components/parameters/AggWindow'
+        - $ref: '#/components/parameters/Step'
         - $ref: '#/components/parameters/AggFields'
         - $ref: '#/components/parameters/AggDefault'
       responses:
@@ -1366,8 +1368,25 @@ components:
         type: string
       description: |
         Aggregation window duration (e.g., 30s, 1m, 5m, 1h). When set, records are
-        aggregated into time windows. Only supported for JSON and schema stores.
+        aggregated into clock-aligned time windows. Only supported for JSON and
+        schema stores. The per-field default is `last` (downsampling / decimation);
+        override with `agg_default`/`agg_fields`. Mutually exclusive with `step`.
       example: 1m
+
+    Step:
+      name: step
+      in: query
+      schema:
+        type: string
+      description: |
+        Prometheus-style downsampling resolution (e.g., 30s, 1m, 1h). Like
+        `agg_window` it aggregates records into clock-aligned windows, but its
+        per-field default is `avg` for numeric fields (`last` for non-numeric) —
+        the natural default for "render this range at this resolution". Override
+        the default with `agg_default`/`agg_fields`. Field names are preserved
+        (e.g. `temperature` stays `temperature`). Mutually exclusive with
+        `agg_window`. Only supported for JSON and schema stores.
+      example: 1h
 
     AggFields:
       name: agg_fields

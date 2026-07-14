@@ -115,7 +115,8 @@ GET /api/stores/:store/data/newest
 | `filter`             | query | string | --      | Substring match against serialized data |
 | `filter_ignore_case` | query | bool   | false   | Case-insensitive substring matching |
 | `format`             | query | string | `"full"` | `"full"` or `"compact"` -- schema stores only |
-| `agg_window`         | query | string | --      | Aggregation window (e.g., `1m`, `5m`, `1h`) |
+| `agg_window`         | query | string | --      | Aggregation window (e.g., `1m`, `5m`, `1h`); per-field default `last` |
+| `step`               | query | string | --      | Prometheus-style resolution; like `agg_window` but numeric fields default to `avg`. Mutually exclusive with `agg_window` |
 | `agg_fields`         | query | string | --      | Per-field aggregation (e.g., `temperature:avg,humidity:avg`) |
 | `agg_default`        | query | string | --      | Default aggregation function (e.g., `avg` or `avg,sum,min,max`) |
 
@@ -166,7 +167,8 @@ GET /api/stores/:store/data/range
 | `filter`             | query | string | --      | Substring match against serialized data |
 | `filter_ignore_case` | query | bool   | false   | Case-insensitive substring matching |
 | `format`             | query | string | `"full"` | `"full"` or `"compact"` -- schema stores only |
-| `agg_window`         | query | string | --      | Aggregation window |
+| `agg_window`         | query | string | --      | Aggregation window; per-field default `last` |
+| `step`               | query | string | --      | Prometheus-style resolution; like `agg_window` but numeric fields default to `avg`. Mutually exclusive with `agg_window` |
 | `agg_fields`         | query | string | --      | Per-field aggregation |
 | `agg_default`        | query | string | --      | Default aggregation function |
 
@@ -364,6 +366,20 @@ Per-field multi-function syntax uses `+` to combine:
 ```
 
 Aggregation is also available on REST query endpoints (`/data/newest` and `/data/range`) using the same `agg_window`, `agg_fields`, and `agg_default` query parameters.
+
+#### `step` — Prometheus-style downsampling
+
+`step=<duration>` is a shorthand for "render this range at this resolution." It aggregates into clock-aligned windows exactly like `agg_window`, with one difference in the default: numeric fields are **averaged** (non-numeric fall to `last`), which is what you usually want when downsampling a series for a chart. A bare `agg_window`, by contrast, defaults every field to `last` (decimation — the value observed at each window boundary).
+
+```
+GET /api/stores/sensors/data/range?start_time=<t0>&end_time=<t1>&step=1h
+```
+
+- Field names are preserved: `temperature` averaged over the window is still returned as `temperature`, not `temperature_avg`.
+- Override the implied average per field with `agg_default` or `agg_fields` — e.g. `step=1h&agg_default=max`, or `step=1h&agg_fields=cpu:max` (cpu gets max, other numeric fields still average).
+- `step` and `agg_window` are mutually exclusive (both set the window); passing both is a `400`.
+
+`step` aggregates the raw store on the fly. To read pre-computed history at native resolution from a rollup store instead, see [Reading Rollup Stores](#reading-rollup-stores) and the raw-vs-rollup split pattern.
 
 ---
 

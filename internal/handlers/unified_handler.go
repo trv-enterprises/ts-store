@@ -7,6 +7,7 @@ package handlers
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -371,9 +372,12 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	filter := c.Query("filter")
 	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
 
-	// Check for aggregation
-	aggWindowStr := c.Query("agg_window")
-	hasAgg := aggWindowStr != ""
+	// Check for aggregation (agg_window, or the step shorthand)
+	aggWindowStr, hasAgg, fromStep, err := resolveAggWindow(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// When filtering or aggregating, fetch all records
 	fetchLimit := limit
@@ -432,7 +436,7 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 
 	// Aggregation path
 	if hasAgg {
-		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit, scan)
+		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, fromStep, limit, scan)
 		return
 	}
 
@@ -500,9 +504,12 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	filter := c.Query("filter")
 	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
 
-	// Check for aggregation
-	aggWindowStr := c.Query("agg_window")
-	hasAgg := aggWindowStr != ""
+	// Check for aggregation (agg_window, or the step shorthand)
+	aggWindowStr, hasAgg, fromStep, err := resolveAggWindow(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	// When filtering or aggregating, fetch all records in range
 	fetchLimit := limit
@@ -579,7 +586,7 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	// Aggregation path. /range takes explicit time bounds, so no scan window
 	// signal applies here.
 	if hasAgg {
-		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, limit, nil)
+		h.aggregateAndRespond(c, st, handles, filter, filterIgnoreCase, aggWindowStr, fromStep, limit, nil)
 		return
 	}
 
@@ -726,9 +733,32 @@ func (h *UnifiedHandler) formatData(data []byte, dataType store.DataType, st *st
 	}
 }
 
+// resolveAggWindow determines the aggregation window for a request and how it
+// was requested. A caller may set the window either via agg_window (the raw
+// downsampling knob, defaulting per-field to "last") or via step (a
+// Prometheus-flavored shorthand that additionally implies agg_default=avg).
+// Setting both is rejected — they'd fight over the window. Returns the window
+// string, whether aggregation is active, and whether step was the source.
+func resolveAggWindow(c *gin.Context) (windowStr string, hasAgg bool, fromStep bool, err error) {
+	aggWindowStr := c.Query("agg_window")
+	stepStr := c.Query("step")
+	if aggWindowStr != "" && stepStr != "" {
+		return "", false, false, errors.New("set either step or agg_window, not both")
+	}
+	if stepStr != "" {
+		return stepStr, true, true, nil
+	}
+	return aggWindowStr, aggWindowStr != "", false, nil
+}
+
 // aggregateAndRespond reads raw records, applies filtering, runs batch aggregation,
 // and writes the aggregated response. Only valid for JSON and schema stores.
-func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, handles []*store.ObjectHandle, filter string, filterIgnoreCase bool, aggWindowStr string, limit int, scan *ScanInfo) {
+//
+// fromStep marks that the window came from the step shorthand rather than
+// agg_window: when the caller supplied no explicit agg_fields/agg_default,
+// step implies averaging numeric fields (Prometheus-style downsampling) rather
+// than agg_window's plain "last" default.
+func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, handles []*store.ObjectHandle, filter string, filterIgnoreCase bool, aggWindowStr string, fromStep bool, limit int, scan *ScanInfo) {
 	dataType := st.DataType()
 	if dataType != store.DataTypeJSON && dataType != store.DataTypeSchema {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "aggregation is only supported for json and schema stores"})
@@ -736,9 +766,13 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 	}
 
 	// Parse aggregation config
+	windowLabel := "agg_window"
+	if fromStep {
+		windowLabel = "step"
+	}
 	aggWindow, err := duration.ParseDuration(aggWindowStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid agg_window: " + err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + windowLabel + ": " + err.Error()})
 		return
 	}
 
@@ -750,6 +784,13 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 	}
 
 	aggDefault := aggregation.AggFunc(c.Query("agg_default"))
+	// step means "downsample to this resolution", which implies averaging
+	// numeric fields — unlike a bare agg_window, whose per-field default is
+	// "last". Only fill this in when the caller gave no explicit spec, so
+	// step=1h&agg_default=max or step=1h&agg_fields=cpu:max still win.
+	if fromStep && aggFieldsStr == "" && aggDefault == "" {
+		aggDefault = aggregation.AggAvg
+	}
 
 	numericMap := aggregation.BuildNumericMap(st.GetSchemaSet())
 
