@@ -269,7 +269,7 @@ func openV2(path string, name string, storePath string, metaFile *os.File) (*Sto
 		if s.partitions[partID] != nil {
 			continue // Already opened by rollover recovery
 		}
-		part, err := openPartition(storePath, partID, s.globalMeta.BlockSize)
+		part, err := openPartition(storePath, partID, s.globalMeta.BlockSize, s.globalMeta.BlocksPerPart)
 		if err != nil {
 			// Clean up already opened partitions
 			for _, p := range s.partitions {

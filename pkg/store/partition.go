@@ -124,8 +124,13 @@ func createPartition(basePath string, id uint32, numBlocks uint32, blockSize uin
 	return p, nil
 }
 
-// openPartition opens an existing partition.
-func openPartition(basePath string, id uint32, blockSize uint32) (*Partition, error) {
+// openPartition opens an existing partition. expectedBlocks is the
+// per-partition block count from the store's global metadata; the
+// partition's own metadata must agree with it and with the directory's
+// partition ID, otherwise a corrupt meta file would be trusted as-is and
+// garbage HeadBlock/NumBlocks values surface later as confusing EOF
+// errors deep in the read/write paths instead of a clear diagnosis here.
+func openPartition(basePath string, id uint32, blockSize uint32, expectedBlocks uint32) (*Partition, error) {
 	partPath := filepath.Join(basePath, partitionDirName(id))
 
 	// Check if partition exists
@@ -150,6 +155,12 @@ func openPartition(basePath string, id uint32, blockSize uint32) (*Partition, er
 	}
 
 	meta := DecodePartitionMetadata(buf)
+
+	// Validate the decoded metadata before trusting any of its fields.
+	if err := validatePartitionMeta(meta, id, expectedBlocks); err != nil {
+		metaFile.Close()
+		return nil, err
+	}
 
 	// Open data file
 	dataFile, err := os.OpenFile(dataPath, os.O_RDWR, 0644)
@@ -177,6 +188,21 @@ func openPartition(basePath string, id uint32, blockSize uint32) (*Partition, er
 		numBlocks: meta.NumBlocks,
 		closed:    false,
 	}, nil
+}
+
+// validatePartitionMeta rejects partition metadata that contradicts the
+// directory it was read from or the store's global configuration.
+func validatePartitionMeta(meta *PartitionMetadata, id uint32, expectedBlocks uint32) error {
+	if meta.PartitionID != id {
+		return fmt.Errorf("partition %d metadata corrupt: partition_id says %d (directory and metadata disagree)", id, meta.PartitionID)
+	}
+	if meta.NumBlocks != expectedBlocks {
+		return fmt.Errorf("partition %d metadata corrupt: num_blocks is %d, global metadata says %d blocks per partition", id, meta.NumBlocks, expectedBlocks)
+	}
+	if meta.HeadBlock >= meta.NumBlocks {
+		return fmt.Errorf("partition %d metadata corrupt: head_block %d out of range (partition has %d blocks)", id, meta.HeadBlock, meta.NumBlocks)
+	}
+	return nil
 }
 
 // Close closes the partition files.
