@@ -2203,6 +2203,9 @@ components:
         topic:
           type: string
           example: sensors/data
+        qos:
+          type: integer
+          description: Effective publish QoS (1 or 2).
         from:
           type: integer
           format: int64
@@ -2249,6 +2252,13 @@ components:
           type: string
         password:
           type: string
+        qos:
+          type: integer
+          enum: [1, 2]
+          default: 1
+          description: >-
+            Publish QoS. 0/omitted defaults to 1 (at-least-once), matching
+            MQTT alerts.
         from:
           type: integer
           format: int64

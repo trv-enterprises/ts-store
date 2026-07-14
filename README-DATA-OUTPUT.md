@@ -224,6 +224,7 @@ Content-Type: application/json
 - `cursor_persist_interval` - Cursor persistence in seconds (see below)
 - `client_id` - Custom MQTT client ID (default: tsstore-<store>-<id>)
 - `username` / `password` - MQTT authentication
+- `qos` - Publish QoS: `1` or `2` (`0`/omitted defaults to `1`, same convention as MQTT alerts)
 
 **Cursor persistence options (`cursor_persist_interval`):**
 - `> 0` - Persist cursor every N seconds (resume from cursor on restart)
@@ -231,10 +232,12 @@ Content-Type: application/json
 - `-1` - No persistence, no auto-reconnect (one-shot mode, stays dead on failure)
 
 **Behavior:**
-- Uses QoS 1 (at least once delivery)
+- Publishes at the configured QoS (default 1, at least once delivery)
 - Blocks on each publish until broker ACKs
 - Auto-reconnects with exponential backoff (1s to 60s) unless `cursor_persist_interval: -1`
 - Schema stores are automatically expanded to JSON
+
+**Liveness (`<topic>/status`):** the sink registers a retained Last Will of `offline` on `<topic>/status` and publishes a retained `online` there on every connect. A graceful stop publishes `offline` explicitly (the LWT only fires on abnormal drops), so subscribers can always tell a dead sink from a quiet one.
 
 ## Connection Management
 
