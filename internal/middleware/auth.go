@@ -6,6 +6,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"log"
 	"net/http"
 	"net/url"
@@ -143,16 +144,12 @@ func AdminAuth(adminKey string) gin.HandlerFunc {
 	}
 }
 
-// secureCompare performs a constant-time string comparison to prevent timing attacks.
+// secureCompare performs a constant-time string comparison to prevent
+// timing attacks. crypto/subtle does the comparison; the length check is
+// unavoidable (ConstantTimeCompare requires equal lengths) but a length
+// oracle on a random ≥20-char admin key is not exploitable.
 func secureCompare(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var result byte
-	for i := 0; i < len(a); i++ {
-		result |= a[i] ^ b[i]
-	}
-	return result == 0
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // CORS creates CORS middleware. The API is deliberately open to any origin:
@@ -167,6 +164,15 @@ func CORS() gin.HandlerFunc {
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, X-API-Key, X-Admin-Key, Authorization")
 		c.Header("Access-Control-Max-Age", "86400")
+
+		// Security headers on every API response: the API serves only
+		// JSON/binary it generated (never user-uploaded pages), but
+		// nosniff is free insurance against a response being interpreted
+		// as HTML, and no-store keeps data and error bodies out of
+		// shared/proxy caches — responses here are authenticated,
+		// per-request, and never cacheable.
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Cache-Control", "no-store")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
