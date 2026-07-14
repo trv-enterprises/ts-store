@@ -5,10 +5,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/tviviano/ts-store/internal/config"
 )
 
 func printRollupsUsage() {
@@ -24,9 +27,12 @@ Usage:
 Subcommands:
   add  <store> --window <d> [options]   Create a rollup on <store>
   list <store>                          List rollups for a store
-  get  <store> <rollup-id>              Show one rollup's status
-  rm   <store> <rollup-id>              Delete a rollup (target store kept
+  get  <store> <rollup>                 Show one rollup's status
+  rm   <store> <rollup>                 Delete a rollup (target store kept
                                         unless --delete-target is passed)
+
+<rollup> may be the rollup's ID, its target store name, or its window
+(e.g. "1h") when that's unambiguous.
 
 Create options:
   --window <duration>      Aggregation window, e.g. 1m, 1h, 1d (required)
@@ -52,8 +58,8 @@ Examples:
   tsstore rollups add sensors --window 1m --fields "temp:avg+max,humidity:avg" --retention 90d
 
   tsstore rollups list system-stats
-  tsstore rollups get  system-stats a1b2c3d4
-  tsstore rollups rm   system-stats a1b2c3d4
+  tsstore rollups get  system-stats 1h
+  tsstore rollups rm   system-stats system-stats-1h
   tsstore rollups rm   system-stats a1b2c3d4 --delete-target`)
 }
 
@@ -202,13 +208,14 @@ func runRollupsList(args []string) {
 }
 
 func runRollupsGet(args []string) {
-	storeName, rollupID, apiKey := parseRollupStoreAndID(args, "get")
+	storeName, selector, apiKey := parseRollupStoreAndID(args, "get")
 	key := resolveAPIKey(apiKey)
 	if key == "" {
 		fmt.Println("Error: API key required")
 		os.Exit(1)
 	}
 	cfg := loadStreamConfig()
+	rollupID := resolveRollupID(cfg, key, storeName, selector)
 	apiGet(cfg, key, fmt.Sprintf("/api/stores/%s/rollups/%s", storeName, rollupID))
 }
 
@@ -222,13 +229,14 @@ func runRollupsRm(args []string) {
 		}
 		rest = append(rest, a)
 	}
-	storeName, rollupID, apiKey := parseRollupStoreAndID(rest, "rm")
+	storeName, selector, apiKey := parseRollupStoreAndID(rest, "rm")
 	key := resolveAPIKey(apiKey)
 	if key == "" {
 		fmt.Println("Error: API key required")
 		os.Exit(1)
 	}
 	cfg := loadStreamConfig()
+	rollupID := resolveRollupID(cfg, key, storeName, selector)
 	path := fmt.Sprintf("/api/stores/%s/rollups/%s", storeName, rollupID)
 	if deleteTarget {
 		path += "?delete_target=true"
@@ -236,7 +244,61 @@ func runRollupsRm(args []string) {
 	apiDelete(cfg, key, path)
 }
 
-// parseRollupStoreAndID parses "<store> <rollup-id> [--api-key k]" for get/rm.
+// resolveRollupID turns a get/rm selector into a rollup ID. The selector
+// may be the rollup's ID, its target store name, or its window (e.g.
+// "1h") — with the common one-rollup-per-window pattern, demanding the
+// random 8-char ID forced a list-then-copy-paste round trip (issue #66).
+// Ambiguity (a window shared by two rollups) and no-match are errors
+// that show what IS addressable.
+func resolveRollupID(cfg *config.Config, key, storeName, selector string) string {
+	body := apiGetBody(cfg, key, fmt.Sprintf("/api/stores/%s/rollups", storeName))
+	var list struct {
+		Rollups []struct {
+			ID          string `json:"id"`
+			TargetStore string `json:"target_store"`
+			Window      string `json:"window"`
+		} `json:"rollups"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		fmt.Printf("Error: could not parse rollups list: %v\n", err)
+		os.Exit(1)
+	}
+
+	var matches []string
+	for _, r := range list.Rollups {
+		if r.ID == selector {
+			return r.ID // exact ID always wins
+		}
+		if r.TargetStore == selector || r.Window == selector {
+			matches = append(matches, r.ID)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0]
+	case 0:
+		fmt.Printf("Error: no rollup on %q matches %q\n", storeName, selector)
+		if len(list.Rollups) > 0 {
+			fmt.Println("Available rollups:")
+			for _, r := range list.Rollups {
+				fmt.Printf("  %s  window=%s  target=%s\n", r.ID, r.Window, r.TargetStore)
+			}
+		}
+		os.Exit(1)
+	default:
+		fmt.Printf("Error: %q matches %d rollups on %q; use the ID or target store name:\n", selector, len(matches), storeName)
+		for _, r := range list.Rollups {
+			if r.TargetStore == selector || r.Window == selector {
+				fmt.Printf("  %s  window=%s  target=%s\n", r.ID, r.Window, r.TargetStore)
+			}
+		}
+		os.Exit(1)
+	}
+	return "" // unreachable
+}
+
+// parseRollupStoreAndID parses "<store> <selector> [--api-key k]" for
+// get/rm, where selector is an ID, target store name, or window.
 func parseRollupStoreAndID(args []string, verb string) (storeName, rollupID, apiKey string) {
 	positional := 0
 	for i := 0; i < len(args); i++ {
@@ -244,7 +306,7 @@ func parseRollupStoreAndID(args []string, verb string) (storeName, rollupID, api
 		case "--api-key":
 			i, _ = consumeFlag(args, i, &apiKey)
 		case "-h", "--help":
-			fmt.Printf("Usage: tsstore rollups %s <store> <rollup-id> [--api-key <k>]\n", verb)
+			fmt.Printf("Usage: tsstore rollups %s <store> <id|target|window> [--api-key <k>]\n", verb)
 			os.Exit(0)
 		default:
 			if strings.HasPrefix(args[i], "-") {
@@ -264,7 +326,7 @@ func parseRollupStoreAndID(args []string, verb string) (storeName, rollupID, api
 		}
 	}
 	if storeName == "" || rollupID == "" {
-		fmt.Printf("Usage: tsstore rollups %s <store> <rollup-id>\n", verb)
+		fmt.Printf("Usage: tsstore rollups %s <store> <id|target|window>\n", verb)
 		os.Exit(1)
 	}
 	return storeName, rollupID, apiKey

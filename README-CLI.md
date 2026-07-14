@@ -178,10 +178,11 @@ Starts a local file server on port 21090, serves `swagger.yaml` with CORS header
 ./tsstore rollups add sensors --window 1m \
   --fields "temp:avg+max,humidity:avg" --retention 90d
 
-# List / inspect / delete
+# List / inspect / delete. get/rm accept the rollup's ID, its target store
+# name, or its window (when unambiguous) — no need to copy-paste the ID:
 ./tsstore rollups list system-stats
-./tsstore rollups get  system-stats <rollup-id>
-./tsstore rollups rm   system-stats <rollup-id>
+./tsstore rollups get  system-stats 1h
+./tsstore rollups rm   system-stats system-stats-1h
 
 # Delete a rollup AND its target store (removes the target's linked API keys
 # too, so the source store can later be deleted without a dependents error):
