@@ -45,3 +45,45 @@ func TestCORSNoCredentialedOriginReflection(t *testing.T) {
 		t.Errorf("OPTIONS preflight status = %d, want 204", w.Code)
 	}
 }
+
+// TestSecurityHeadersOnEveryResponse (issue #62): API responses carry
+// nosniff and no-store so bodies are never content-sniffed or cached.
+func TestSecurityHeadersOnEveryResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(CORS())
+	r.GET("/x", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+
+	for _, method := range []string{http.MethodGet, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/x", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", method, got)
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", method, got)
+		}
+	}
+}
+
+// TestSecureCompare pins the constant-time comparison behavior after the
+// crypto/subtle swap.
+func TestSecureCompare(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"same-key-value", "same-key-value", true},
+		{"same-key-value", "same-key-valuX", false},
+		{"short", "longer-than-a", false},
+		{"", "", true},
+		{"", "x", false},
+	}
+	for _, c := range cases {
+		if got := secureCompare(c.a, c.b); got != c.want {
+			t.Errorf("secureCompare(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
