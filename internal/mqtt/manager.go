@@ -33,6 +33,7 @@ type MQTTConnection struct {
 	ClientID              string    `json:"client_id,omitempty"`
 	Username              string    `json:"username,omitempty"`
 	Password              string    `json:"password,omitempty"`
+	QoS                   byte      `json:"qos,omitempty"`           // Publish QoS (1 or 2, default 1); 0 in configs persisted before this field means 1
 	From                  int64     `json:"from"`                    // Start timestamp (0=oldest, -1=now)
 	IncludeTimestamp      bool      `json:"include_timestamp"`       // Wrap data with timestamp
 	CursorPersistInterval int       `json:"cursor_persist_interval"` // Seconds: >0=persist, 0=memory only, -1=no auto-reconnect
@@ -52,6 +53,7 @@ type ConnectionStatus struct {
 	ID            string    `json:"id"`
 	BrokerURL     string    `json:"broker_url"`
 	Topic         string    `json:"topic"`
+	QoS           byte      `json:"qos"`
 	From          int64     `json:"from,omitempty"`
 	Status        string    `json:"status"` // connecting, connected, disconnected, error
 	CreatedAt     time.Time `json:"created_at"`
@@ -179,6 +181,7 @@ type CreateConnectionRequest struct {
 	ClientID              string `json:"client_id,omitempty"`
 	Username              string `json:"username,omitempty"`
 	Password              string `json:"password,omitempty"`
+	QoS                   byte   `json:"qos,omitempty"`           // Publish QoS (1 or 2; 0/omitted defaults to 1, matching MQTT alerts)
 	From                  int64  `json:"from"`                    // Start timestamp (0=oldest, -1=now)
 	IncludeTimestamp      bool   `json:"include_timestamp"`       // Wrap data with timestamp
 	CursorPersistInterval *int   `json:"cursor_persist_interval"` // Seconds: >0=persist, 0=memory only, -1=no auto-reconnect (default: 0)
@@ -205,6 +208,17 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 		}
 	}
 
+	// QoS: 0/omitted defaults to 1 (at-least-once — the documented
+	// behavior, and the same convention MQTT alerts use, so explicit
+	// QoS 0 is not supported for the data sink either).
+	if req.QoS > 2 {
+		return nil, fmt.Errorf("invalid qos %d: must be 1 or 2 (0/omitted defaults to 1)", req.QoS)
+	}
+	qos := req.QoS
+	if qos == 0 {
+		qos = 1
+	}
+
 	// Generate ID
 	id := uuid.New().String()[:8]
 
@@ -221,6 +235,7 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 		ClientID:              req.ClientID,
 		Username:              req.Username,
 		Password:              req.Password,
+		QoS:                   qos,
 		From:                  req.From,
 		IncludeTimestamp:      req.IncludeTimestamp,
 		CursorPersistInterval: cursorInterval,

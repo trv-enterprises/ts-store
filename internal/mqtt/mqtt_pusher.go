@@ -46,6 +46,12 @@ type Pusher struct {
 
 // NewPusher creates a new MQTT pusher.
 func NewPusher(st *store.Store, storeName string, config MQTTConnection) *Pusher {
+	// Configs persisted before the qos field decode as 0, whose behavior
+	// was always QoS 1 — normalize so publish sites can use it directly.
+	if config.QoS == 0 {
+		config.QoS = 1
+	}
+
 	// Resolve from: -1 means "now"
 	startFrom := config.From
 	if startFrom == -1 {
@@ -114,6 +120,7 @@ func (p *Pusher) Status() ConnectionStatus {
 		ID:            p.config.ID,
 		BrokerURL:     p.config.BrokerURL,
 		Topic:         p.config.Topic,
+		QoS:           p.config.QoS,
 		From:          p.config.From,
 		Status:        p.status,
 		CreatedAt:     p.config.CreatedAt,
@@ -122,6 +129,26 @@ func (p *Pusher) Status() ConnectionStatus {
 		Errors:        p.errors,
 		LastError:     p.lastError,
 		CursorMode:    cursorModeLabel(p.config.CursorPersistInterval),
+	}
+}
+
+// Retained payloads for the <topic>/status liveness topic (issue #63).
+const (
+	statusOnline  = "online"
+	statusOffline = "offline"
+)
+
+// statusTopic is the liveness topic the LWT and explicit status
+// publishes use.
+func (p *Pusher) statusTopic() string {
+	return p.config.Topic + "/status"
+}
+
+// publishStatusLocked publishes a retained liveness payload. Caller holds
+// p.mu with a connected client. Best-effort — errors are logged only.
+func (p *Pusher) publishStatusLocked(payload string) {
+	if t := p.client.Publish(p.statusTopic(), p.config.QoS, true, payload); t.Wait() && t.Error() != nil {
+		log.Printf("MQTT status publish for %s: %v", p.storeName, t.Error())
 	}
 }
 
@@ -158,6 +185,9 @@ func (p *Pusher) Stop() error {
 		}
 	}
 	if p.client != nil && p.client.IsConnected() {
+		// The LWT only fires on abnormal drops; say goodbye explicitly so
+		// the retained status doesn't stay "online" after a clean stop.
+		p.publishStatusLocked(statusOffline)
 		p.client.Disconnect(1000)
 		p.client = nil
 	}
@@ -221,6 +251,7 @@ func (p *Pusher) runLoop() {
 		// Clean up connection
 		p.mu.Lock()
 		if p.client != nil && p.client.IsConnected() {
+			p.publishStatusLocked(statusOffline)
 			p.client.Disconnect(1000)
 		}
 		p.client = nil
@@ -262,6 +293,12 @@ func (p *Pusher) connect() error {
 	opts.SetConnectTimeout(10 * time.Second)
 	opts.SetWriteTimeout(10 * time.Second)
 
+	// Retained Last Will on <topic>/status: without it, downstream
+	// consumers can only infer a dead sink from silence. The broker
+	// publishes "offline" if this client drops abnormally; connect/stop
+	// publish "online"/"offline" explicitly for the graceful cases.
+	opts.SetWill(p.statusTopic(), statusOffline, p.config.QoS, true)
+
 	if p.config.Username != "" {
 		opts.SetUsername(p.config.Username)
 	}
@@ -286,6 +323,12 @@ func (p *Pusher) connect() error {
 	p.status = "connected"
 	p.lastError = ""
 	p.mu.Unlock()
+
+	// Overwrite any retained "offline" from a previous death. Best-effort:
+	// a failed status publish shouldn't tear down a healthy data path.
+	if t := client.Publish(p.statusTopic(), p.config.QoS, true, statusOnline); t.Wait() && t.Error() != nil {
+		log.Printf("MQTT status publish for %s: %v", p.storeName, t.Error())
+	}
 
 	log.Printf("MQTT connected to %s for store %s", p.config.BrokerURL, p.storeName)
 
@@ -414,8 +457,8 @@ func (p *Pusher) sendNewData() error {
 			payload, _ = json.Marshal(msg)
 		}
 
-		// Publish with QoS 1 (at least once) and wait for ACK
-		token := client.Publish(p.config.Topic, 1, false, payload)
+		// Publish at the configured QoS (default 1) and wait for ACK
+		token := client.Publish(p.config.Topic, p.config.QoS, false, payload)
 		token.Wait()
 		if token.Error() != nil {
 			return token.Error()
@@ -493,7 +536,7 @@ func (p *Pusher) publishAggResult(result *aggregation.AggResult) error {
 		payload, _ = json.Marshal(result.Data)
 	}
 
-	token := p.client.Publish(p.config.Topic, 1, false, payload)
+	token := p.client.Publish(p.config.Topic, p.config.QoS, false, payload)
 	token.Wait()
 	if token.Error() != nil {
 		return token.Error()
