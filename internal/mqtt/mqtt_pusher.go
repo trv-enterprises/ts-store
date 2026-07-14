@@ -172,6 +172,20 @@ func (p *Pusher) Stop() error {
 	return nil
 }
 
+// nextRetryDelay implements the reconnect backoff policy (issue #65):
+// the delay resets only after a connection actually made progress
+// (sent data); otherwise it keeps growing — including for remotes that
+// accept the dial but fail every write.
+func nextRetryDelay(current, max time.Duration, madeProgress bool) time.Duration {
+	if madeProgress {
+		return time.Second
+	}
+	if next := current * 2; next < max {
+		return next
+	}
+	return max
+}
+
 // runLoop is the main connection loop with auto-reconnect.
 func (p *Pusher) runLoop() {
 	defer p.wg.Done()
@@ -209,14 +223,17 @@ func (p *Pusher) runLoop() {
 			}
 		}
 
-		// Reset retry delay on successful connection
-		retryDelay = time.Second
-
-		// Run the push loop
+		// Run the push loop. The retry delay only resets once data has
+		// actually been sent on this connection — a broker that accepts
+		// the dial but fails every publish must not produce a steady
+		// 1-second connect/fail loop with no backoff (issue #65).
+		sentBefore := atomic.LoadInt64(&p.messagesSent)
 		err = p.pushLoop()
 		if err != nil {
 			p.setError(err.Error())
 		}
+		retryDelay = nextRetryDelay(retryDelay, maxRetryDelay,
+			atomic.LoadInt64(&p.messagesSent) > sentBefore)
 
 		// Clean up connection
 		p.mu.Lock()
