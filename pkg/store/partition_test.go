@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -614,5 +615,63 @@ func TestV2DiskUsage(t *testing.T) {
 	// that was the original CLI bug (only the root file got counted).
 	if got <= 128 {
 		t.Errorf("DiskUsage (%d) suspiciously small — partition files likely missed", got)
+	}
+}
+
+// TestOpenRejectsCorruptPartitionMeta (issue #60): partition metadata was
+// trusted as-is on open, so garbage PartitionID/NumBlocks/HeadBlock values
+// surfaced later as confusing EOF errors instead of a clear diagnosis.
+func TestOpenRejectsCorruptPartitionMeta(t *testing.T) {
+	corruptions := []struct {
+		name   string
+		offset int64  // byte offset in partition meta.tsdb
+		value  uint32 // little-endian value to write there
+		want   string // substring expected in the open error
+	}{
+		{"partition_id mismatch", 0, 99, "partition_id"},
+		{"num_blocks mismatch", 4, 12345, "num_blocks"},
+		{"head_block out of range", 8, 1 << 30, "head_block"},
+	}
+
+	for _, tc := range corruptions {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			cfg := DefaultConfig()
+			cfg.Name = "corrupt-meta"
+			cfg.Path = tmpDir
+			cfg.NumBlocks = 100
+			cfg.NumPartitions = 3
+
+			s, err := Create(cfg)
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if _, err := s.PutObject(1000, []byte(`{"v":1}`)); err != nil {
+				t.Fatalf("PutObject: %v", err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			metaPath := filepath.Join(tmpDir, "corrupt-meta", partitionDirName(0), metaFileName)
+			f, err := os.OpenFile(metaPath, os.O_RDWR, 0644)
+			if err != nil {
+				t.Fatalf("open partition meta: %v", err)
+			}
+			var b [4]byte
+			binary.LittleEndian.PutUint32(b[:], tc.value)
+			if _, err := f.WriteAt(b[:], tc.offset); err != nil {
+				t.Fatalf("corrupt meta: %v", err)
+			}
+			f.Close()
+
+			_, err = Open(tmpDir, "corrupt-meta")
+			if err == nil {
+				t.Fatal("Open succeeded on corrupt partition metadata")
+			}
+			if !strings.Contains(err.Error(), "metadata corrupt") || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should diagnose %q corruption, got: %v", tc.want, err)
+			}
+		})
 	}
 }
