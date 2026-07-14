@@ -85,6 +85,14 @@ By default, the socket is created at `/var/run/tsstore/tsstore.sock`. Override w
 5. Receive per-line response: `OK <timestamp>\n` or `ERROR <message>\n`
 6. Send `QUIT\n` to disconnect
 
+**Client timestamps (optional):** a data line may carry a timestamp envelope, matching the HTTP and WS write paths — useful for backfilling buffered records with their original timestamps after an outage:
+
+```
+{"timestamp": 1747000000000000000, "data": {"temp": 22.5}}\n
+```
+
+A line is treated as an envelope only when it is a JSON object with **exactly** the two keys `timestamp` (positive nanoseconds) and `data`; any other shape — including records that happen to contain a `timestamp` field among others — is stored as-is with a server-generated timestamp. Backfilled timestamps must still be strictly increasing, like every other write path.
+
 ### Example (using netcat)
 
 ```bash

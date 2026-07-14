@@ -215,8 +215,27 @@ func (l *Listener) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		// For schema stores, validate and compact the data
 		data := []byte(line)
+
+		// Optional client-timestamp envelope (issue #64), matching the
+		// HTTP and WS write paths so buffered edge data can be backfilled
+		// with original timestamps over the lowest-latency transport:
+		//   {"timestamp": <ns>, "data": {...}}
+		// A line is treated as an envelope only when it is an object with
+		// EXACTLY those two keys — a record that merely contains a
+		// "timestamp" field among others is stored as-is, unchanged from
+		// the historical behavior.
+		if ts, inner, isEnv, envErr := parseTimestampEnvelope(data); isEnv {
+			if envErr != nil {
+				writer.WriteString(fmt.Sprintf("ERROR %s\n", envErr.Error()))
+				writer.Flush()
+				continue
+			}
+			timestamp = ts
+			data = inner
+		}
+
+		// For schema stores, validate and compact the data
 		if st.DataType().String() == "schema" {
 			compactData, err := st.ValidateAndCompact(data)
 			if err != nil {
@@ -238,6 +257,40 @@ func (l *Listener) handleConnection(conn net.Conn) {
 		writer.WriteString(fmt.Sprintf("OK %d\n", handle.Timestamp))
 		writer.Flush()
 	}
+}
+
+// parseTimestampEnvelope detects the optional {"timestamp": <ns>,
+// "data": {...}} wrapper on a data line. isEnvelope is true only when the
+// line is a JSON object with exactly those two keys; err is then non-nil
+// if the envelope is malformed (non-positive timestamp, missing data) —
+// silently storing a broken envelope as a record would be worse than
+// rejecting it.
+func parseTimestampEnvelope(line []byte) (ts int64, data json.RawMessage, isEnvelope bool, err error) {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(line, &keys) != nil || len(keys) != 2 {
+		return 0, nil, false, nil
+	}
+	if _, ok := keys["timestamp"]; !ok {
+		return 0, nil, false, nil
+	}
+	if _, ok := keys["data"]; !ok {
+		return 0, nil, false, nil
+	}
+
+	var env struct {
+		Timestamp int64           `json:"timestamp"`
+		Data      json.RawMessage `json:"data"`
+	}
+	if uerr := json.Unmarshal(line, &env); uerr != nil {
+		return 0, nil, true, fmt.Errorf("invalid timestamp envelope: %s", uerr.Error())
+	}
+	if env.Timestamp <= 0 {
+		return 0, nil, true, fmt.Errorf("invalid timestamp envelope: timestamp must be a positive nanosecond value")
+	}
+	if len(env.Data) == 0 || string(env.Data) == "null" {
+		return 0, nil, true, fmt.Errorf("invalid timestamp envelope: data is required")
+	}
+	return env.Timestamp, env.Data, true, nil
 }
 
 // SocketPath returns the path to the Unix socket.

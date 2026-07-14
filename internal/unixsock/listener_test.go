@@ -110,3 +110,71 @@ func TestPartialLineSurvivesReadDeadline(t *testing.T) {
 		t.Fatalf("followup record failed: %q err=%v", strings.TrimSpace(resp), err)
 	}
 }
+
+// TestClientTimestampEnvelope (issue #64): an optional
+// {"timestamp": <ns>, "data": {...}} wrapper on data lines lets edge
+// processes backfill buffered records with original timestamps; bare
+// records keep the historical server-timestamp behavior.
+func TestClientTimestampEnvelope(t *testing.T) {
+	sockPath, storeName, key := startTestListener(t)
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+
+	send := func(line string) string {
+		t.Helper()
+		if _, err := fmt.Fprintf(conn, "%s\n", line); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		resp, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return strings.TrimSpace(resp)
+	}
+
+	if resp := send(fmt.Sprintf("AUTH %s %s", storeName, key)); resp != "OK" {
+		t.Fatalf("auth: %q", resp)
+	}
+
+	// Envelope: the ack must echo the CLIENT timestamp.
+	if resp := send(`{"timestamp": 1000000, "data": {"temp": 22.5}}`); resp != "OK 1000000" {
+		t.Errorf("envelope write ack = %q, want OK 1000000", resp)
+	}
+
+	// Bare record: server timestamp (later than the backfilled one).
+	if resp := send(`{"temp": 22.6}`); !strings.HasPrefix(resp, "OK ") || resp == "OK 1000000" {
+		t.Errorf("bare write ack = %q, want OK <server-ns>", resp)
+	}
+
+	// A record that merely CONTAINS a timestamp field among others is
+	// stored as-is with a server timestamp — not treated as an envelope.
+	if resp := send(`{"timestamp": 5, "temp": 22.7, "data": "x"}`); !strings.HasPrefix(resp, "OK ") || resp == "OK 5" {
+		t.Errorf("3-key record ack = %q, want OK <server-ns>", resp)
+	}
+
+	// Malformed envelopes are rejected, not silently stored.
+	if resp := send(`{"timestamp": -5, "data": {"temp": 1}}`); !strings.HasPrefix(resp, "ERROR") {
+		t.Errorf("negative-timestamp envelope ack = %q, want ERROR", resp)
+	}
+	if resp := send(`{"timestamp": 2000000, "data": null}`); !strings.HasPrefix(resp, "ERROR") {
+		t.Errorf("null-data envelope ack = %q, want ERROR", resp)
+	}
+	if resp := send(`{"timestamp": "notanumber", "data": {"temp": 1}}`); !strings.HasPrefix(resp, "ERROR") {
+		t.Errorf("string-timestamp envelope ack = %q, want ERROR", resp)
+	}
+
+	// Backfill must still respect monotonicity: an envelope older than
+	// the newest record gets the store's out-of-order error with detail.
+	if resp := send(`{"timestamp": 999, "data": {"temp": 1}}`); !strings.HasPrefix(resp, "ERROR") {
+		t.Errorf("stale envelope ack = %q, want ERROR", resp)
+	}
+
+	if resp := send("QUIT"); resp != "OK bye" {
+		t.Errorf("quit ack = %q", resp)
+	}
+}
