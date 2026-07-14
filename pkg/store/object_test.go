@@ -6,6 +6,8 @@ package store
 
 import (
 	"bytes"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -398,13 +400,18 @@ func TestTimestampOutOfOrder(t *testing.T) {
 
 	// Try to insert with earlier timestamp - should fail
 	_, err = s.PutObject(500, []byte("earlier"))
-	if err != ErrTimestampOutOfOrder {
+	if !errors.Is(err, ErrTimestampOutOfOrder) {
 		t.Errorf("Expected ErrTimestampOutOfOrder, got: %v", err)
+	}
+	// The error must carry both timestamps so clients can see the
+	// conflict without a separate stats call (issue #61).
+	if err == nil || !strings.Contains(err.Error(), "got 500") || !strings.Contains(err.Error(), "newest entry is 1000") {
+		t.Errorf("error should name both timestamps, got: %v", err)
 	}
 
 	// Try to insert with same timestamp - should fail
 	_, err = s.PutObject(1000, []byte("same"))
-	if err != ErrTimestampOutOfOrder {
+	if !errors.Is(err, ErrTimestampOutOfOrder) {
 		t.Errorf("Expected ErrTimestampOutOfOrder for same timestamp, got: %v", err)
 	}
 
