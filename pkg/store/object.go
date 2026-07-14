@@ -47,10 +47,13 @@ func (s *Store) PutObject(timestamp int64, data []byte) (*ObjectHandle, error) {
 		return nil, ErrInvalidTimestamp
 	}
 
-	// Validate timestamp is monotonically increasing
+	// Validate timestamp is monotonically increasing. Include both values
+	// in the error — this is the most common client failure (device clock
+	// skew, duplicate timestamps) and a bare sentinel forced a separate
+	// stats call just to see the conflict.
 	newestTs, tsErr := s.getNewestTimestampV2()
 	if tsErr == nil && timestamp <= newestTs {
-		return nil, ErrTimestampOutOfOrder
+		return nil, fmt.Errorf("%w: got %d, newest entry is %d", ErrTimestampOutOfOrder, timestamp, newestTs)
 	}
 	// ErrEmptyStore is OK - first insert
 
