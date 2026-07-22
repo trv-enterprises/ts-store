@@ -19,6 +19,8 @@ examples/journal-logs/journal-logs
 examples/journal-logs/journal-logs-*
 examples/system-stats/system-stats
 examples/system-stats/system-stats-*
+examples/docker-stats/docker-stats
+examples/docker-stats/docker-stats-*
 
 # Test binary, built with `go test -c`
 *.test
