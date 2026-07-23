@@ -79,10 +79,11 @@ type ScanInfo struct {
 
 // DataListResponse represents a list of data objects.
 type DataListResponse struct {
-	Objects []DataResponse `json:"objects"`
-	Count   int            `json:"count"`
-	Rollup  *RollupInfo    `json:"rollup,omitempty"` // present only for rollup target stores
-	Scan    *ScanInfo      `json:"scan,omitempty"`   // present only for filtered /newest scans bounded by a window
+	Objects  []DataResponse `json:"objects"`
+	Count    int            `json:"count"`
+	DataType string         `json:"data_type"`        // store data type ("schema", "json", "text", "binary") so consumers needn't a second store-info call
+	Rollup   *RollupInfo    `json:"rollup,omitempty"` // present only for rollup target stores
+	Scan     *ScanInfo      `json:"scan,omitempty"`   // present only for filtered /newest scans bounded by a window
 }
 
 // rollupInfoFor returns a RollupInfo for a store if it is a rollup target, else
@@ -311,9 +312,10 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, DataListResponse{
-		Objects: objects,
-		Count:   len(objects),
-		Rollup:  rollupInfoFor(st),
+		Objects:  objects,
+		Count:    len(objects),
+		DataType: st.DataType().String(),
+		Rollup:   rollupInfoFor(st),
 	})
 }
 
@@ -479,10 +481,11 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, DataListResponse{
-		Objects: objects,
-		Count:   len(objects),
-		Rollup:  rollupInfoFor(st),
-		Scan:    scan,
+		Objects:  objects,
+		Count:    len(objects),
+		DataType: st.DataType().String(),
+		Rollup:   rollupInfoFor(st),
+		Scan:     scan,
 	})
 }
 
@@ -628,9 +631,10 @@ func (h *UnifiedHandler) ListRange(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, DataListResponse{
-		Objects: objects,
-		Count:   len(objects),
-		Rollup:  rollupInfoFor(st),
+		Objects:  objects,
+		Count:    len(objects),
+		DataType: st.DataType().String(),
+		Rollup:   rollupInfoFor(st),
 	})
 }
 
@@ -908,9 +912,10 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 	// Aggregated output: the response window is agg_window, not the store's
 	// rollup window, so we don't echo the store's rollup descriptor here.
 	c.JSON(http.StatusOK, DataListResponse{
-		Objects: objects,
-		Count:   len(objects),
-		Scan:    scan,
+		Objects:  objects,
+		Count:    len(objects),
+		DataType: st.DataType().String(),
+		Scan:     scan,
 	})
 }
 

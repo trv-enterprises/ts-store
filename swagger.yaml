@@ -1648,6 +1648,11 @@ components:
         count:
           type: integer
           example: 10
+        data_type:
+          type: string
+          description: The store's data type, so a consumer needn't make a separate store-info call to interpret the records.
+          enum: [binary, text, json, schema]
+          example: schema
         rollup:
           type: object
           description: Present only when the store is a rollup target. Lets a consumer learn the window in the same call as the data.
