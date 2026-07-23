@@ -24,6 +24,11 @@ import (
 
 const maxRawRecordsForAgg = 100000
 
+// maxGroupsForAgg caps how many distinct series a group_by query may produce,
+// so grouping on an accidentally high-cardinality field can't balloon the
+// response. Container/host counts are far below this.
+const maxGroupsForAgg = 1000
+
 // UnifiedHandler handles the unified /data endpoint.
 // Content-Type header determines encoding:
 //   - application/octet-stream: binary data
@@ -796,6 +801,12 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 		aggDefault = aggregation.AggAvg
 	}
 
+	// group_by partitions the aggregation by a field's value, yielding one
+	// downsampled series per distinct value (e.g. step=5m&group_by=container
+	// gives one series per container instead of squashing all containers into
+	// each time bucket).
+	groupBy := c.Query("group_by")
+
 	numericMap := aggregation.BuildNumericMap(st.GetSchemaSet())
 
 	aggConfig, err := aggregation.NewConfig(aggWindow, aggFields, aggDefault, numericMap)
@@ -848,12 +859,41 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 		})
 	}
 
-	// Run batch aggregation
-	results := aggregation.AggregateBatch(records, aggConfig)
-
-	// Apply user limit to aggregated windows
-	if len(results) > limit {
-		results = results[:limit]
+	// Run batch aggregation. With group_by, partition into one series per
+	// distinct group value; limit then applies per series so no series is
+	// dropped. Without it, the original single-series path is unchanged.
+	var results []aggregation.AggResult
+	if groupBy != "" {
+		grouped := aggregation.AggregateBatchGrouped(records, groupBy, aggConfig)
+		if len(grouped) > maxGroupsForAgg {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "group_by=" + groupBy + " produced " + strconv.Itoa(len(grouped)) +
+					" series, exceeding the limit of " + strconv.Itoa(maxGroupsForAgg) +
+					"; narrow the query (filter/time bound) or group by a lower-cardinality field",
+			})
+			return
+		}
+		for _, g := range grouped {
+			series := g.Results
+			if len(series) > limit {
+				series = series[:limit]
+			}
+			for i := range series {
+				// Inject the series identity so a charting client can tell
+				// series apart. The remainder series (GroupValue == nil, from
+				// records lacking the field) emits no key.
+				if g.GroupValue != nil {
+					series[i].Data[groupBy] = g.GroupValue
+				}
+				results = append(results, series[i])
+			}
+		}
+	} else {
+		results = aggregation.AggregateBatch(records, aggConfig)
+		// Apply user limit to aggregated windows
+		if len(results) > limit {
+			results = results[:limit]
+		}
 	}
 
 	// Build response — check for compact format

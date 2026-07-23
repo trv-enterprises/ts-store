@@ -125,6 +125,7 @@ GET /api/stores/:store/data/newest
 | `step`               | query | string | --      | Prometheus-style resolution; like `agg_window` but numeric fields default to `avg`. Mutually exclusive with `agg_window` |
 | `agg_fields`         | query | string | --      | Per-field aggregation (e.g., `temperature:avg,humidity:avg`) |
 | `agg_default`        | query | string | --      | Default aggregation function (e.g., `avg` or `avg,sum,min,max`) |
+| `group_by`           | query | string | --      | Partition aggregation by a field's value: one downsampled series per distinct value (see [Aggregation](#aggregation)). With `group_by`, `limit` applies per series. |
 
 **Response** (200): Same `DataListResponse` format as [List Oldest Data](#list-oldest-data). When aggregation parameters are provided, each object in the response contains aggregated values instead of raw data (see [Aggregation](#aggregation)).
 
@@ -177,6 +178,7 @@ GET /api/stores/:store/data/range
 | `step`               | query | string | --      | Prometheus-style resolution; like `agg_window` but numeric fields default to `avg`. Mutually exclusive with `agg_window` |
 | `agg_fields`         | query | string | --      | Per-field aggregation |
 | `agg_default`        | query | string | --      | Default aggregation function |
+| `group_by`           | query | string | --      | Partition aggregation by a field's value: one downsampled series per distinct value (see [Aggregation](#aggregation)). With `group_by`, `limit` applies per series. |
 
 **Response** (200): Same `DataListResponse` format.
 
@@ -386,6 +388,33 @@ GET /api/stores/sensors/data/range?start_time=<t0>&end_time=<t1>&step=1h
 - `step` and `agg_window` are mutually exclusive (both set the window); passing both is a `400`.
 
 `step` aggregates the raw store on the fly. To read pre-computed history at native resolution from a rollup store instead, see [Reading Rollup Stores](#reading-rollup-stores) and the raw-vs-rollup split pattern.
+
+#### `group_by` — one series per field value
+
+By default, aggregation buckets by **time only**: every record whose timestamp falls in a window is collapsed into one output row. When a store holds multiple series that share timestamps — e.g. one row per container per tick, distinguished by a `container` field — time-only aggregation blends them all into a single meaningless value per window.
+
+`group_by=<field>` fixes this: it partitions the aggregation by the field's value and downsamples each partition independently, yielding **one series per distinct value** — the same model as PromQL's grouping.
+
+```
+GET /api/stores/docker-containers/data/range?since=6h&step=5m&group_by=container
+```
+
+Each output row carries its series identity (the `group_by` field and value) so a charting client can tell series apart:
+
+```json
+{"objects": [
+  {"timestamp": ..., "data": {"container": "web", "cpu.pct": 12.4}},
+  {"timestamp": ..., "data": {"container": "web", "cpu.pct": 11.9}},
+  {"timestamp": ..., "data": {"container": "db",  "cpu.pct": 3.1}},
+  {"timestamp": ..., "data": {"container": "db",  "cpu.pct": 3.4}}
+]}
+```
+
+- Works with both `step` and `agg_window`, and composes with `filter`, `agg_fields`, and `agg_default`.
+- The `group_by` field is a **partition key**, not an aggregated value — it is carried through verbatim, never averaged.
+- **`limit` applies per series** when `group_by` is set (so a small limit trims each series to the same depth instead of dropping whole series).
+- Records that lack the field entirely collect into a single remainder series that emits no group key.
+- A query that would produce more than 1000 distinct series is rejected with a `400` — narrow the query or group by a lower-cardinality field.
 
 ---
 
