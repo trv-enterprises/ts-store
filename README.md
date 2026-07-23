@@ -10,7 +10,7 @@ ts-store takes a different approach:
 
 - **Fixed storage footprint** - Total size is determined at creation time. No unbounded growth, no retention policies to tune.
 - **Raw data preservation** - No lossy downsampling. Every sensor reading is stored exactly as received.
-- **Circular buffer architecture** - When storage is full, the oldest data is automatically overwritten.
+- **Partitioned rotation** - When storage is full, the oldest partition is dropped in one O(1) operation.
 - **Zero external dependencies** - A single binary and flat files on disk.
 - **O(log n) time lookups** - Binary search on sorted timestamps for fast range queries.
 
@@ -44,25 +44,28 @@ curl "http://localhost:21080/api/stores/my-sensors/data/newest?limit=10" \
 
 ## Architecture
 
-ts-store implements a circular buffer-based storage system optimized for time series data.
+ts-store implements a partitioned storage system optimized for time series data. A store's fixed footprint is divided into N partitions (default 6), each a pre-allocated, append-only file of data blocks.
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│                    Circular Data Blocks                    │
-│  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐      │
-│  │  0  │──│  1  │──│  2  │──│  3  │──│  4  │──│  5  │──... │
-│  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘  └─────┘      │
-│     ↑                                   ↑                  │
-│    tail                               head                 │
-│  (oldest)                           (newest)               │
-└────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                     Partition Rotation                       │
+│                                                              │
+│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐     │
+│  │partition-0│ │partition-1│ │partition-2│ │partition-3│ ... │
+│  │  (full)   │ │  (full)   │ │  (full)   │ │ (writing) │     │
+│  └───────────┘ └───────────┘ └───────────┘ └───────────┘     │
+│       ↑                                          ↑           │
+│     oldest                                     newest        │
+│  (deleted next)                            (inserts append)  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-- **Data blocks** form a fixed-size circular buffer ordered by time
-- **Index** enables binary search by timestamp for O(log n) lookups
-- **Head/Tail pointers** track newest and oldest data
+- **Inserts** append to the current partition's data blocks; large records span multiple blocks (but never partitions)
+- **Rotation** - when the current partition fills, writes roll over to a new one; when all partition slots are in use, the oldest partition is deleted wholesale - a single O(1) directory unlink, with no per-record reclaim
+- **Per-partition index** enables binary search by timestamp for O(log n) lookups
+- **Crash-safe rollover** - partition swaps are two-phase, so recovery can always finish or discard a partial rotation
 
-When the buffer is full, the oldest block is automatically reclaimed.
+Retention is therefore granular to a partition: capacity oscillates between (N-1)/N and N/N of the configured total, and dropped data always ends on a whole-record boundary.
 
 ## Features
 
@@ -86,10 +89,10 @@ When the buffer is full, the oldest block is automatically reclaimed.
 
 | Operation | Complexity | Notes |
 |-----------|------------|-------|
-| Insert | O(1) | Appends to head of circle |
+| Insert | O(1) | Appends to current partition |
 | Find by time | O(log n) | Binary search, ~20 reads max for 1M entries |
 | Range query | O(log n + k) | k = number of results |
-| Reclaim | O(1) | Just updates metadata |
+| Reclaim | O(1) | Deletes the oldest partition (one unlink, amortized over a full partition of inserts) |
 
 ## Important: Timestamp Ordering
 
@@ -102,15 +105,23 @@ Recommendations:
 
 ## File Format
 
-Each store creates a directory:
+Each store creates a directory containing global metadata plus one subdirectory per partition:
 
 ```
 sensor-data/
-├── data.tsdb    # Data blocks
-├── index.tsdb   # Time index entries
-├── meta.tsdb    # Store metadata (64 bytes)
-└── keys.json    # API key hashes
+├── meta.tsdb          # Global store metadata
+├── keys.json          # API key hashes
+├── schema.json        # Field schema (schema stores only)
+├── partition-0/
+│   ├── data.tsdb      # Data blocks
+│   ├── index.tsdb     # Time index entries
+│   └── meta.tsdb      # Partition metadata
+├── partition-1/
+│   └── ...
+└── ...
 ```
+
+Partition directories are created and deleted as the store rotates.
 
 Block sizes must be powers of 2 (64, 128, 256, 512, 1024, 2048, 4096, 8192, etc.)
 
