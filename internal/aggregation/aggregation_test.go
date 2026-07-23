@@ -707,3 +707,107 @@ func TestFirst_MixedNonNumericLeading(t *testing.T) {
 		t.Errorf("first: got %v, want \"boot\"", v)
 	}
 }
+
+// --- Grouped batch aggregation (group_by) ---
+
+// TestAggregateBatchGrouped_TwoSeries is the core group_by case: two series
+// sharing timestamps downsample independently instead of being blended.
+func TestAggregateBatchGrouped_TwoSeries(t *testing.T) {
+	cfg := makeConfig(t, time.Minute, nil, AggAvg, map[string]bool{"cpu": true})
+
+	ns := int64(time.Minute)
+	// web always 10, db always 90, interleaved on shared timestamps.
+	records := []TimestampedRecord{
+		{Timestamp: 0*ns + 1, Data: map[string]interface{}{"cpu": 10.0, "c": "web"}},
+		{Timestamp: 0*ns + 2, Data: map[string]interface{}{"cpu": 90.0, "c": "db"}},
+		{Timestamp: 0*ns + 3, Data: map[string]interface{}{"cpu": 10.0, "c": "web"}},
+		{Timestamp: 0*ns + 4, Data: map[string]interface{}{"cpu": 90.0, "c": "db"}},
+	}
+
+	grouped := AggregateBatchGrouped(records, "c", cfg)
+	if len(grouped) != 2 {
+		t.Fatalf("expected 2 series, got %d", len(grouped))
+	}
+	// First-seen order: web then db.
+	if grouped[0].GroupValue != "web" || grouped[1].GroupValue != "db" {
+		t.Fatalf("group order: got %v, %v; want web, db", grouped[0].GroupValue, grouped[1].GroupValue)
+	}
+	if v := grouped[0].Results[0].Data["cpu"].(float64); math.Abs(v-10.0) > 0.001 {
+		t.Errorf("web avg: got %f, want 10 (not blended)", v)
+	}
+	if v := grouped[1].Results[0].Data["cpu"].(float64); math.Abs(v-90.0) > 0.001 {
+		t.Errorf("db avg: got %f, want 90 (not blended)", v)
+	}
+}
+
+// TestAggregateBatchGrouped_MissingField: records lacking the group field form
+// a single remainder series keyed nil; a group field absent from ALL records
+// degrades to one nil series equivalent to the ungrouped result.
+func TestAggregateBatchGrouped_MissingField(t *testing.T) {
+	cfg := makeConfig(t, time.Minute, nil, AggAvg, map[string]bool{"cpu": true})
+	ns := int64(time.Minute)
+
+	// Mixed: one record has the field, two don't.
+	records := []TimestampedRecord{
+		{Timestamp: 0*ns + 1, Data: map[string]interface{}{"cpu": 10.0, "c": "web"}},
+		{Timestamp: 0*ns + 2, Data: map[string]interface{}{"cpu": 20.0}},
+		{Timestamp: 0*ns + 3, Data: map[string]interface{}{"cpu": 30.0}},
+	}
+	grouped := AggregateBatchGrouped(records, "c", cfg)
+	if len(grouped) != 2 {
+		t.Fatalf("expected 2 series (web + nil remainder), got %d", len(grouped))
+	}
+	// web first, then the nil remainder.
+	if grouped[0].GroupValue != "web" {
+		t.Errorf("series 0: got %v, want web", grouped[0].GroupValue)
+	}
+	if grouped[1].GroupValue != nil {
+		t.Errorf("remainder series GroupValue: got %v, want nil", grouped[1].GroupValue)
+	}
+	if v := grouped[1].Results[0].Data["cpu"].(float64); math.Abs(v-25.0) > 0.001 {
+		t.Errorf("remainder avg (20,30): got %f, want 25", v)
+	}
+
+	// Field absent everywhere → single nil series, same values as ungrouped.
+	noField := []TimestampedRecord{
+		{Timestamp: 0*ns + 1, Data: map[string]interface{}{"cpu": 40.0}},
+		{Timestamp: 0*ns + 2, Data: map[string]interface{}{"cpu": 60.0}},
+	}
+	g2 := AggregateBatchGrouped(noField, "c", cfg)
+	if len(g2) != 1 || g2[0].GroupValue != nil {
+		t.Fatalf("all-missing: expected 1 nil series, got %d", len(g2))
+	}
+	if v := g2[0].Results[0].Data["cpu"].(float64); math.Abs(v-50.0) > 0.001 {
+		t.Errorf("all-missing avg: got %f, want 50", v)
+	}
+}
+
+// TestAggregateBatchGrouped_PreservesOrder: ascending mixed-group input yields
+// ascending windows within each partition.
+func TestAggregateBatchGrouped_PreservesOrder(t *testing.T) {
+	cfg := makeConfig(t, time.Minute, nil, AggAvg, map[string]bool{"cpu": true})
+	ns := int64(time.Minute)
+	records := []TimestampedRecord{
+		{Timestamp: 0*ns + 1, Data: map[string]interface{}{"cpu": 1.0, "c": "a"}},
+		{Timestamp: 1*ns + 1, Data: map[string]interface{}{"cpu": 2.0, "c": "a"}},
+		{Timestamp: 2*ns + 1, Data: map[string]interface{}{"cpu": 3.0, "c": "a"}},
+	}
+	grouped := AggregateBatchGrouped(records, "c", cfg)
+	if len(grouped) != 1 {
+		t.Fatalf("expected 1 series, got %d", len(grouped))
+	}
+	res := grouped[0].Results
+	for i := 1; i < len(res); i++ {
+		if res[i].Timestamp <= res[i-1].Timestamp {
+			t.Errorf("windows not ascending: %d <= %d", res[i].Timestamp, res[i-1].Timestamp)
+		}
+	}
+}
+
+// TestAggregateBatchGrouped_Empty: nil input yields nil.
+func TestAggregateBatchGrouped_Empty(t *testing.T) {
+	cfg := makeConfig(t, time.Minute, nil, AggAvg, nil)
+	if g := AggregateBatchGrouped(nil, "c", cfg); g != nil {
+		t.Errorf("empty input: got %v, want nil", g)
+	}
+}

@@ -466,6 +466,7 @@ paths:
         - $ref: '#/components/parameters/Step'
         - $ref: '#/components/parameters/AggFields'
         - $ref: '#/components/parameters/AggDefault'
+        - $ref: '#/components/parameters/GroupBy'
       responses:
         '200':
           description: Data in range
@@ -544,6 +545,7 @@ paths:
         - $ref: '#/components/parameters/Step'
         - $ref: '#/components/parameters/AggFields'
         - $ref: '#/components/parameters/AggDefault'
+        - $ref: '#/components/parameters/GroupBy'
       responses:
         '200':
           description: List of data objects
@@ -1406,6 +1408,23 @@ components:
         enum: [sum, avg, max, min, count, last, first, stddev]
       description: Default aggregation function for numeric fields not listed in agg_fields. Non-numeric fields always use 'last'.
       example: avg
+
+    GroupBy:
+      name: group_by
+      in: query
+      schema:
+        type: string
+      description: |
+        Partition the aggregation by this field's value, producing one
+        downsampled series per distinct value (PromQL-style grouping) instead of
+        blending records that share timestamps into one time bucket. Each output
+        row carries the group field and value so a client can tell series apart.
+        The group field is a partition key, carried verbatim, never aggregated.
+        With group_by, `limit` applies per series. Records missing the field
+        collect into a single remainder series that emits no group key. A query
+        producing more than 1000 series is rejected with 400. Requires an
+        aggregation window (step or agg_window).
+      example: container
 
   schemas:
     Error:
