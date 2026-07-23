@@ -38,11 +38,22 @@ So the model is **one central ts-store, many collectors** — run ts-store once
 on whatever host you like (a Pi, a VM, an existing homelab service), and point
 every collector at it over HTTP.
 
-The **collector must run wherever the Docker daemon is** — it reads that host's
-`/var/run/docker.sock`, which is local to the Docker LXC/host. Only the
-collector needs to sit next to Docker; the store lives elsewhere. Keeping the
-store off the Docker host also means its history survives the LXC being rebuilt
-or OOM'd — you don't lose the metrics right when you'd want them.
+There are **two sockets in play, with opposite locality rules** — this is the
+key thing to get right:
+
+- **The ts-store side is remote-capable.** With `-http` the collector reaches
+  ts-store over the network, so the store can live anywhere reachable. (The
+  `-socket` path is a local-only fast lane for when they share a host.)
+- **The Docker side must be local.** The collector reads
+  `/var/run/docker.sock`, which is local to the Docker LXC/host — so **the
+  collector runs in (or on) the Docker host**. Don't try to attach to a remote
+  Docker over TCP (`tcp://`): an exposed daemon socket is root-equivalent access
+  to that host and a well-known security footgun. Keep it local socket, remote
+  store.
+
+Only the collector needs to sit next to Docker; the store lives elsewhere.
+Keeping the store off the Docker host also means its history survives the LXC
+being rebuilt or OOM'd — you don't lose the metrics right when you'd want them.
 
 **Separate hosts by store name.** Each collector deployment writes to its own
 pair of uniquely-named stores; the store name *is* the separator. For a Docker
@@ -276,17 +287,64 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now docker-stats
 ```
 
+## Overhead
+
+Deliberately light. There are two costs — what the collector burns at runtime,
+and what it stores.
+
+### Runtime (CPU / daemon load)
+
+- **Container tick.** N calls to `/containers/{id}/stats?stream=false`. The
+  daemon takes two ~1s-apart CPU samples per call, so the collector goroutine
+  **waits ~1s per container** — that's wall-clock, not CPU. Actual CPU is a few
+  ms of JSON decode per container. Equivalent to running
+  `docker stats --no-stream` once per interval.
+- **Daemon tick.** One trivial `/info` plus one `/system/df`. `/system/df` is
+  the only non-cheap call — it walks image layers, container writable layers,
+  and volumes on disk (a few hundred ms to ~2s on image/volume-heavy hosts).
+  It runs on the slow 120s tick precisely to keep this rare (30× less often
+  than the container tick).
+- **Footprint.** One small static binary, a few goroutines, RSS in single-digit
+  MB. Connections are opened and closed per tick — nothing is held open. No
+  background threads, no persistent daemon connections.
+
+The one thing to size around: keep `N × ~1s` comfortably under the container
+interval. At 20s that's fine up to ~13+ containers; past that, raise
+`-container-interval`. (For **sub-second** monitoring you'd want a different,
+streaming-based design — `stats` without `stream=false` pushes ~1 frame/sec on
+a held-open connection. This collector samples instead, which is the right
+shape for 20s+ intervals and avoids one held connection per container.)
+
+On ts-store itself the write load — N rows per 20s — is a rounding error for a
+store built for 100Hz+ ingestion.
+
+### Storage
+
+Schema-encoded container rows are **~100 bytes each** (~12 fields, two short
+strings). Storage is dominated entirely by **container count × sample rate**:
+
+| Containers | Rows/day (20s) | ~Bytes/day | ~Per month |
+|---|---|---|---|
+| 3  | ~13,000  | ~1.3 MB | ~39 MB  |
+| 10 | ~43,000  | ~4.3 MB | ~130 MB |
+| 25 | ~108,000 | ~11 MB  | ~325 MB |
+
+The daemon store is trivial: 1 row / 120s = 720 rows/day ≈ ~90 KB/day
+(~2.7 MB/month).
+
 ## Storage Calculations
 
-Container store scales with **container count × tick rate**:
+`num_blocks` is a **fixed pre-allocation**, not growth — it caps how much
+history a store holds, and the store overwrites oldest-first once full.
 
-- N containers × (86400 / 20) ticks/day = N × 4,320 rows/day
-- e.g. 10 containers ≈ 43,200 rows/day
-- At ~80 bytes/row (schema) and ~12 rows per 4KB block, `num_blocks: 20000`
-  holds roughly 240,000 rows ≈ ~5–6 days for 10 containers
+- Container store: N containers × (86400 / 20) = **N × 4,320 rows/day**.
+  At ~100 bytes/row and ~30 rows per 4KB data block, `num_blocks: 20000`
+  ≈ ~80 MB on disk, holding ~600,000 rows ≈ **~5–6 days for 10 containers**.
+  Scale `num_blocks` linearly with your retention target and container count.
+- Daemon store: one row per 120s = 720 rows/day; `num_blocks: 2000` holds
+  weeks.
 
-Daemon store is one row per 120s = 720 rows/day; `num_blocks: 2000` holds
-weeks. Bump `num_blocks` to match your retention needs.
+Bump `num_blocks` to match your retention needs.
 
 ## Querying
 
@@ -309,3 +367,61 @@ curl 'http://localhost:21080/api/stores/docker-containers/data/range?since=6h&fi
 > a `1h` lookback window — pass `since=`/`window=0` to widen it. See
 > [README-DATA_RETRIEVAL.md](../../README-DATA_RETRIEVAL.md) for the full
 > filter, windowing, and aggregation syntax.
+
+## Design Decisions
+
+The choices behind how this collector is built, and the reasoning:
+
+- **Two stores, not one.** Per-container metrics and daemon-wide totals have
+  genuinely different shapes (one has a `container` field and many rows per
+  tick; the other is a single host-wide row). Splitting them keeps each schema
+  clean and lets them tick at different rates. Separating multiple Docker
+  *hosts* is done by store **name** (`<host>-docker-containers`), not a field —
+  clean blast-radius isolation and independent keys/retention per host.
+
+- **One store per stream + a `container` field, not one column per container.**
+  A ts-store schema is a fixed, positional field list. Encoding containers as
+  columns (`web.cpu.pct`, `db.cpu.pct`, …) would force a schema change every
+  time a container is added or removed. Instead each container is a **row**
+  tagged with `container`, so new containers just appear as new rows — no schema
+  change ever. This is the standard "one series per label value" time-series
+  shape.
+
+- **Server-assigned timestamps.** ts-store enforces strictly-increasing
+  timestamps per store. A container tick writes N rows "at the same time"; by
+  letting the server stamp them, the N rows get monotonic timestamps in write
+  order and never trip the ordering check. (The collector therefore does **not**
+  send a timestamp envelope.)
+
+- **Raw cumulative counters for `net.*` / `blkio.*`, not per-second rates.**
+  Storing the raw counters means a missed or delayed tick never corrupts a
+  rate — you compute `Δbytes / Δt` at query time from whatever rows exist, and
+  the underlying signal is never lost. (Contrast `system-stats`, which stores
+  pre-computed rates; for per-container I/O the raw-counter approach is more
+  robust.)
+
+- **Polling `stats?stream=false`, not the streaming endpoint.** Docker's
+  `stats` can hold a connection open and push ~1 frame/sec per container. That
+  suits *sub-second* monitoring but is the wrong shape for periodic sampling:
+  it means one held-open connection per container plus lifecycle bookkeeping as
+  containers come and go, to then discard ~19 of every 20 frames at a 20s
+  interval. Polling re-lists containers each tick (new ones appear, gone ones
+  vanish, no bookkeeping) and matches the sampling model. The tradeoff is the
+  ~1s-per-container wait; fine at 20s+ intervals (see [Overhead](#overhead)).
+
+- **Daemon store on a slow 120s tick.** Host-wide counts and disk usage barely
+  move, and `/system/df` is the one comparatively expensive call (it walks the
+  filesystem). Running it 30× less often than the container tick keeps that cost
+  rare.
+
+- **Raw HTTP over the Docker socket, no Docker SDK.** Keeps the collector a
+  single static binary with zero dependencies, matching `system-stats` and
+  `journal-logs`. Only a handful of endpoints are needed
+  (`/containers/json`, `/containers/{id}/stats`, `/info`, `/system/df`).
+
+- **Local Docker socket, remote ts-store.** The collector must sit next to the
+  Docker daemon (it reads the local `/var/run/docker.sock`), but writes to
+  ts-store over HTTP so the store can be central and remote. Attaching to a
+  remote Docker over TCP is deliberately **not** supported — an exposed daemon
+  socket is root-equivalent access to the host. See
+  [Deployment Topology](#deployment-topology).
