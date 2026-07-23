@@ -90,9 +90,15 @@ GET /api/stores/:store/data/oldest
       "data": {"temperature": 72.5, "humidity": 45}
     }
   ],
-  "count": 1
+  "count": 1,
+  "data_type": "schema"
 }
 ```
+
+`data_type` (`"binary"`, `"text"`, `"json"`, or `"schema"`) is echoed on every
+data-read response — `/data/oldest`, `/data/newest`, `/data/range`, including
+aggregated output — so a consumer can interpret records without a separate
+store-info call.
 
 When `include_data=false`, the `data` field is omitted from each object.
 

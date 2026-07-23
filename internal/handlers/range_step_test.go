@@ -184,3 +184,159 @@ func TestRangeStepInvalidDuration(t *testing.T) {
 		t.Errorf("error should name step, got: %s", w.Body.String())
 	}
 }
+
+// seedNumericStoreSpaced is like seedNumericStore but spaces samples by a real
+// duration ending "now", so relative (since=) queries and multi-bucket step
+// downsampling are meaningful. Returns the API key.
+func seedNumericStoreSpaced(t *testing.T, router http.Handler, name string, spacing time.Duration, values []float64) (apiKey string) {
+	t.Helper()
+
+	body := fmt.Sprintf(`{"name": %q}`, name)
+	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create %s: %d: %s", name, w.Code, w.Body.String())
+	}
+	var createResp service.CreateStoreResponse
+	json.Unmarshal(w.Body.Bytes(), &createResp)
+
+	n := int64(len(values))
+	start := time.Now().Add(-time.Duration(n-1) * spacing).UnixNano()
+	for i, v := range values {
+		ts := start + int64(i)*spacing.Nanoseconds()
+		insertBody, _ := json.Marshal(map[string]any{
+			"timestamp": ts,
+			"data":      map[string]any{"v": v, "tag": fmt.Sprintf("t%d", i)},
+		})
+		req, _ = http.NewRequest("POST", "/api/stores/"+name+"/data", bytes.NewBuffer(insertBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-API-Key", createResp.APIKey)
+		w = httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("insert %d: %d: %s", i, w.Code, w.Body.String())
+		}
+	}
+	return createResp.APIKey
+}
+
+// TestRangeSinceStepDownsamples covers the exact real-world query shape a
+// dashboard sends — a relative window plus step — which previously had no test
+// (all step coverage used absolute start_time/end_time). A stale deploy that
+// dropped the param would return raw rows here; this pins that since+step
+// actually downsamples and averages.
+func TestRangeSinceStepDownsamples(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	// 12 samples 1min apart span ~11min; step=5m yields ~3 buckets, each far
+	// fewer rows than the 12 raw samples. v alternates 0/10 → bucket avg ~5,
+	// distinguishable from any single (last) value.
+	vals := []float64{0, 10, 0, 10, 0, 10, 0, 10, 0, 10, 0, 10}
+	apiKey := seedNumericStoreSpaced(t, router, "since-step", time.Minute, vals)
+
+	raw, code := queryRange(t, router, "since-step", apiKey, "since=1h&limit=1000")
+	if code != http.StatusOK {
+		t.Fatalf("raw since query: %d", code)
+	}
+	if raw.Count != len(vals) {
+		t.Fatalf("raw since=1h: expected %d rows, got %d", len(vals), raw.Count)
+	}
+
+	agg, code := queryRange(t, router, "since-step", apiKey, "since=1h&step=5m&limit=1000")
+	if code != http.StatusOK {
+		t.Fatalf("since+step query: %d", code)
+	}
+	if agg.Count >= raw.Count {
+		t.Fatalf("since+step should downsample: got %d rows, raw was %d (step ignored?)", agg.Count, raw.Count)
+	}
+	// At least one bucket must show an averaged value (not a raw 0 or 10).
+	averaged := false
+	for _, o := range agg.Objects {
+		m, _ := o.Data.(map[string]any)
+		if v, ok := m["v"].(float64); ok && v != 0 && v != 10 {
+			averaged = true
+			break
+		}
+	}
+	if !averaged {
+		t.Errorf("since+step: no bucket shows an averaged v (step defaulted to last, not avg)")
+	}
+}
+
+// TestNewestStepDownsamples pins that step works on /data/newest too — the
+// other endpoint that shares the aggregation path but had zero step coverage.
+func TestNewestStepDownsamples(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	vals := []float64{0, 10, 0, 10, 0, 10, 0, 10, 0, 10, 0, 10}
+	apiKey := seedNumericStoreSpaced(t, router, "newest-step", time.Minute, vals)
+
+	agg := queryNewest(t, router, "newest-step", apiKey, "since=1h&step=5m&limit=1000")
+	if agg.Count == 0 || agg.Count >= len(vals) {
+		t.Fatalf("newest since+step should downsample to <%d buckets, got %d", len(vals), agg.Count)
+	}
+	averaged := false
+	for _, o := range agg.Objects {
+		m, _ := o.Data.(map[string]any)
+		if v, ok := m["v"].(float64); ok && v != 0 && v != 10 {
+			averaged = true
+			break
+		}
+	}
+	if !averaged {
+		t.Errorf("newest since+step: no averaged bucket (step avg not applied)")
+	}
+}
+
+// TestNewestStepAndAggWindowConflict pins the mutual-exclusion 400 on /newest,
+// mirroring the /range coverage — resolveAggWindow is shared, but the guard
+// was only ever asserted through /range.
+func TestNewestStepAndAggWindowConflict(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedNumericStoreSpaced(t, router, "newest-conflict", time.Minute, []float64{1, 2})
+	req, _ := http.NewRequest("GET", "/api/stores/newest-conflict/data/newest?since=1h&step=5m&agg_window=1m", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("newest step+agg_window: expected 400, got %d", w.Code)
+	}
+}
+
+// TestDataResponseIncludesDataType pins that read responses carry the store's
+// data_type so consumers needn't a separate store-info call. Regression guard
+// for the empty-string data_type a downstream consumer observed.
+func TestDataResponseIncludesDataType(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedNumericStoreSpaced(t, router, "dtype", time.Minute, []float64{1, 2, 3})
+
+	// Raw path.
+	raw, code := queryRange(t, router, "dtype", apiKey, "since=1h")
+	if code != http.StatusOK {
+		t.Fatalf("raw range: %d", code)
+	}
+	if raw.DataType != "json" {
+		t.Errorf("raw range data_type = %q, want json", raw.DataType)
+	}
+	// Aggregation path.
+	agg, code := queryRange(t, router, "dtype", apiKey, "since=1h&step=5m")
+	if code != http.StatusOK {
+		t.Fatalf("agg range: %d", code)
+	}
+	if agg.DataType != "json" {
+		t.Errorf("agg range data_type = %q, want json", agg.DataType)
+	}
+	// Newest.
+	nw := queryNewest(t, router, "dtype", apiKey, "limit=1")
+	if nw.DataType != "json" {
+		t.Errorf("newest data_type = %q, want json", nw.DataType)
+	}
+}
