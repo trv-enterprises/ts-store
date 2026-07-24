@@ -546,6 +546,7 @@ paths:
         - $ref: '#/components/parameters/AggFields'
         - $ref: '#/components/parameters/AggDefault'
         - $ref: '#/components/parameters/GroupBy'
+        - $ref: '#/components/parameters/LatestBy'
       responses:
         '200':
           description: List of data objects
@@ -1424,6 +1425,22 @@ components:
         collect into a single remainder series that emits no group key. A query
         producing more than 1000 series is rejected with 400. Requires an
         aggregation window (step or agg_window).
+      example: container
+
+    LatestBy:
+      name: latest_by
+      in: query
+      schema:
+        type: string
+      description: |
+        Return the single newest record for each distinct value of this field —
+        "current state per series" (e.g. one row per container, its latest
+        reading). Newest-per-group lookup, not aggregation: no window required,
+        and a series is never dropped for being stale. /data/newest only.
+        Composes with filter and since; limit caps the number of distinct groups
+        (default up to 1000); rows are ordered newest series first. Records
+        missing the field collapse into one remainder row. Mutually exclusive
+        with step/agg_window (400 if both are set).
       example: container
 
   schemas:

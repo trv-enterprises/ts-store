@@ -126,6 +126,7 @@ GET /api/stores/:store/data/newest
 | `agg_fields`         | query | string | --      | Per-field aggregation (e.g., `temperature:avg,humidity:avg`) |
 | `agg_default`        | query | string | --      | Default aggregation function (e.g., `avg` or `avg,sum,min,max`) |
 | `group_by`           | query | string | --      | Partition aggregation by a field's value: one downsampled series per distinct value (see [Aggregation](#aggregation)). With `group_by`, `limit` applies per series. |
+| `latest_by`          | query | string | --      | Return the single newest record for each distinct value of a field — "current state per series." No window, no aggregation; `limit` caps distinct groups. Mutually exclusive with `step`/`agg_window`. See [`latest_by`](#latest_by--newest-record-per-series). |
 
 **Response** (200): Same `DataListResponse` format as [List Oldest Data](#list-oldest-data). When aggregation parameters are provided, each object in the response contains aggregated values instead of raw data (see [Aggregation](#aggregation)).
 
@@ -415,6 +416,23 @@ Each output row carries its series identity (the `group_by` field and value) so 
 - **`limit` applies per series** when `group_by` is set (so a small limit trims each series to the same depth instead of dropping whole series).
 - Records that lack the field entirely collect into a single remainder series that emits no group key.
 - A query that would produce more than 1000 distinct series is rejected with a `400` — narrow the query or group by a lower-cardinality field.
+
+#### `latest_by` — newest record per series
+
+`group_by` gives you a *series over time* (for a chart). `latest_by` gives you the *current value per series* (for a table or stat tiles): the single **newest record for each distinct value** of a field.
+
+```
+GET /api/stores/docker-containers/data/newest?latest_by=container
+```
+
+Returns one row per container — its most recent reading — so a "current state" table (each container's latest CPU, memory, uptime) is one request.
+
+- **`/data/newest` only.** It is a newest-per-group lookup, not a time window.
+- **No aggregation and no window required** — unlike the `step&group_by&agg_default=last&limit=1` workaround, `latest_by` needs no window and never drops a series just because it hasn't reported recently. It returns each group's newest record regardless of how old that is.
+- Mutually exclusive with `step`/`agg_window` (that's the time-series question — use `group_by`); passing both is a `400`.
+- Composes with `filter` (narrow the set first) and `since` (bound the scan).
+- `limit` caps the number of distinct groups (default: up to 1000). Rows are ordered newest series first.
+- Records missing the field collapse into one remainder row.
 
 ---
 
