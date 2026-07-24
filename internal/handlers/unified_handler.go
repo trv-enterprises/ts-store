@@ -8,8 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -386,9 +388,27 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 		return
 	}
 
-	// When filtering or aggregating, fetch all records
+	// latest_by returns the single newest record for each distinct value of a
+	// field — "current state per series" (e.g. latest_by=container). It is a
+	// newest-first dedup scan, NOT aggregation: no window, no per-field funcs.
+	// group_by (with step/agg_window) is the time-series counterpart; the two
+	// are different questions, so combining latest_by with aggregation is a 400.
+	latestBy := c.Query("latest_by")
+	if latestBy != "" && hasAgg {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "set either latest_by or step/agg_window, not both — latest_by is a newest-per-group lookup, aggregation is a time-windowed rollup"})
+		return
+	}
+	// latest_by returns one row per group; the default newest limit of 10 would
+	// silently cap distinct groups. Raise the default when the caller didn't set
+	// one explicitly (an explicit limit still caps groups intentionally).
+	if latestBy != "" && c.Query("limit") == "" {
+		limit = maxGroupsForAgg
+	}
+
+	// When filtering, aggregating, or deduping by group, fetch all records so the
+	// scan can see every candidate (limit is applied after, per group for latest_by).
 	fetchLimit := limit
-	if filter != "" || hasAgg {
+	if filter != "" || hasAgg || latestBy != "" {
 		fetchLimit = 0
 	}
 
@@ -450,6 +470,18 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	includeData := c.Query("include_data") != "false"
 	spec := parseExpandSpec(c)
 
+	if latestBy != "" {
+		objects := h.latestByResponse(st, handles, filter, filterIgnoreCase, latestBy, limit, includeData, spec)
+		c.JSON(http.StatusOK, DataListResponse{
+			Objects:  objects,
+			Count:    len(objects),
+			DataType: st.DataType().String(),
+			Rollup:   rollupInfoFor(st),
+			Scan:     scan,
+		})
+		return
+	}
+
 	objects := make([]DataResponse, 0, limit)
 	for _, handle := range handles {
 		if len(objects) >= limit {
@@ -492,6 +524,67 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 		Rollup:   rollupInfoFor(st),
 		Scan:     scan,
 	})
+}
+
+// latestByResponse returns one DataResponse per distinct value of the group
+// field — the record with the maximum timestamp for that value. It scans all
+// handles keeping the newest-per-group, so it is correct regardless of whether
+// handles arrive ascending (since/window paths) or descending (plain newest).
+// Output is ordered by descending timestamp (newest series first) for stable,
+// intuitive results; limit caps the number of distinct groups returned.
+func (h *UnifiedHandler) latestByResponse(st *store.Store, handles []*store.ObjectHandle, filter string, filterIgnoreCase bool, groupField string, limit int, includeData bool, spec expandSpec) []DataResponse {
+	type winner struct {
+		handle *store.ObjectHandle
+		data   []byte
+	}
+	best := make(map[string]winner)
+	order := make([]string, 0)
+
+	for _, handle := range handles {
+		data, err := st.GetObject(handle)
+		if err != nil {
+			continue
+		}
+		if !store.MatchesFilter(data, filter, filterIgnoreCase) {
+			continue
+		}
+		key := h.groupKey(st, handle, data, groupField)
+		cur, seen := best[key]
+		if !seen {
+			order = append(order, key)
+			best[key] = winner{handle: handle, data: data}
+			continue
+		}
+		if handle.Timestamp > cur.handle.Timestamp {
+			best[key] = winner{handle: handle, data: data}
+		}
+	}
+
+	// Emit newest series first, capped at limit distinct groups.
+	sort.SliceStable(order, func(i, j int) bool {
+		return best[order[i]].handle.Timestamp > best[order[j]].handle.Timestamp
+	})
+	if len(order) > limit {
+		order = order[:limit]
+	}
+
+	objects := make([]DataResponse, 0, len(order))
+	for _, key := range order {
+		wn := best[key]
+		obj := DataResponse{
+			Timestamp: wn.handle.Timestamp,
+			BlockNum:  wn.handle.BlockNum,
+			Size:      wn.handle.Size,
+		}
+		if st.DataType() == store.DataTypeSchema {
+			obj.SchemaVersion = recordSchemaVersion(wn.handle)
+		}
+		if includeData {
+			obj.Data = h.formatData(wn.data, st.DataType(), st, wn.handle, spec)
+		}
+		objects = append(objects, obj)
+	}
+	return objects
 }
 
 // ListRange handles GET /api/stores/:store/data/range
@@ -705,6 +798,30 @@ func recordSchemaVersion(handle *store.ObjectHandle) uint32 {
 		return 1
 	}
 	return handle.SchemaVersion
+}
+
+// groupKey extracts the value of field from a record as a canonical string,
+// used by latest_by to dedup newest-first. Schema records are expanded first.
+// A record missing the field (or that can't be parsed) maps to a single empty
+// key, so all such records collapse into one remainder group.
+func (h *UnifiedHandler) groupKey(st *store.Store, handle *store.ObjectHandle, raw []byte, field string) string {
+	jsonData := raw
+	if st.DataType() == store.DataTypeSchema {
+		expanded, err := st.ExpandData(raw, int(recordSchemaVersion(handle)))
+		if err != nil {
+			return ""
+		}
+		jsonData = expanded
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(jsonData, &parsed); err != nil {
+		return ""
+	}
+	v, ok := parsed[field]
+	if !ok || v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
 }
 
 // formatData formats data based on store type. For schema stores the expansion

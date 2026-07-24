@@ -199,3 +199,137 @@ func TestGroupByMissingFieldRemainder(t *testing.T) {
 		}
 	}
 }
+
+// seedIncrementingSeriesStore writes `ticks` rows per series where "v" starts
+// at seriesStart[label] and increments by 1 each tick — so the newest row of
+// each series has a distinct, known value. Strictly-increasing timestamps.
+func seedIncrementingSeriesStore(t *testing.T, router http.Handler, name string, ticks int, seriesStart map[string]int) (apiKey string) {
+	t.Helper()
+
+	body := fmt.Sprintf(`{"name": %q}`, name)
+	req, _ := http.NewRequest("POST", "/api/stores", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create %s: %d: %s", name, w.Code, w.Body.String())
+	}
+	var createResp service.CreateStoreResponse
+	json.Unmarshal(w.Body.Bytes(), &createResp)
+
+	labels := make([]string, 0, len(seriesStart))
+	for l := range seriesStart {
+		labels = append(labels, l)
+	}
+	tick := time.Minute.Nanoseconds()
+	start := time.Now().Add(-time.Duration(ticks) * time.Minute).UnixNano()
+	var seq int64
+	for i := 0; i < ticks; i++ {
+		for _, label := range labels {
+			ts := start + int64(i)*tick + seq
+			seq++
+			insertBody, _ := json.Marshal(map[string]any{
+				"timestamp": ts,
+				"data":      map[string]any{"v": float64(seriesStart[label] + i), "c": label},
+			})
+			req, _ = http.NewRequest("POST", "/api/stores/"+name+"/data", bytes.NewBuffer(insertBody))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-API-Key", createResp.APIKey)
+			w = httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("insert %d/%s: %d: %s", i, label, w.Code, w.Body.String())
+			}
+		}
+	}
+	return createResp.APIKey
+}
+
+// TestLatestByReturnsNewestPerGroup: latest_by=c returns exactly one row per
+// distinct value — the newest — with no time window or aggregation.
+func TestLatestByReturnsNewestPerGroup(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	// web v: 1..5 (latest 5), db v: 101..105 (latest 105).
+	apiKey := seedIncrementingSeriesStore(t, router, "lb-basic", 5, map[string]int{"web": 1, "db": 101})
+
+	resp := queryNewest(t, router, "lb-basic", apiKey, "latest_by=c")
+	if resp.Count != 2 {
+		t.Fatalf("latest_by: expected 2 rows (one per series), got %d", resp.Count)
+	}
+	got := map[string]float64{}
+	for _, o := range resp.Objects {
+		m, _ := o.Data.(map[string]any)
+		label, _ := m["c"].(string)
+		v, _ := m["v"].(float64)
+		got[label] = v
+	}
+	if got["web"] != 5 {
+		t.Errorf("web latest v = %v, want 5", got["web"])
+	}
+	if got["db"] != 105 {
+		t.Errorf("db latest v = %v, want 105", got["db"])
+	}
+}
+
+// TestLatestByConflictsWithAggregation: latest_by + step is a 400 (they answer
+// different questions — newest-per-group vs time-windowed rollup).
+func TestLatestByConflictsWithAggregation(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedIncrementingSeriesStore(t, router, "lb-conflict", 3, map[string]int{"web": 1})
+	req, _ := http.NewRequest("GET", "/api/stores/lb-conflict/data/newest?latest_by=c&step=5m", nil)
+	req.Header.Set("X-API-Key", apiKey)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("latest_by+step: expected 400, got %d", w.Code)
+	}
+}
+
+// TestLatestByComposesWithFilter: latest_by narrows to the filtered subset,
+// still one newest row per surviving group.
+func TestLatestByComposesWithFilter(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedIncrementingSeriesStore(t, router, "lb-filter", 5, map[string]int{"web": 1, "db": 101})
+
+	// Filter to web only; still latest-per-group → one row.
+	resp := queryNewest(t, router, "lb-filter", apiKey, `latest_by=c&filter=c":"web`)
+	if resp.Count != 1 {
+		t.Fatalf("latest_by+filter: expected 1 row, got %d", resp.Count)
+	}
+	m, _ := resp.Objects[0].Data.(map[string]any)
+	if label, _ := m["c"].(string); label != "web" {
+		t.Errorf("filtered series = %q, want web", label)
+	}
+	if v, _ := m["v"].(float64); v != 5 {
+		t.Errorf("web latest v = %v, want 5", v)
+	}
+}
+
+// TestLatestByWithSinceIsOrderIndependent guards the ordering bug: the since=
+// path returns handles ascending (oldest-first), so a naive first-seen dedup
+// would return the OLDEST per group. latest_by must still return the newest.
+func TestLatestByWithSinceIsOrderIndependent(t *testing.T) {
+	router, storeService, _, _ := setupTestRouter(t)
+	defer storeService.CloseAll()
+
+	apiKey := seedIncrementingSeriesStore(t, router, "lb-since", 5, map[string]int{"web": 1, "db": 101})
+
+	resp := queryNewest(t, router, "lb-since", apiKey, "latest_by=c&since=1h")
+	if resp.Count != 2 {
+		t.Fatalf("latest_by+since: expected 2 rows, got %d", resp.Count)
+	}
+	got := map[string]float64{}
+	for _, o := range resp.Objects {
+		m, _ := o.Data.(map[string]any)
+		got[m["c"].(string)] = m["v"].(float64)
+	}
+	if got["web"] != 5 || got["db"] != 105 {
+		t.Errorf("latest_by+since returned non-newest values: %v (want web=5, db=105)", got)
+	}
+}
