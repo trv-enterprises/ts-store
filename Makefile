@@ -33,7 +33,17 @@ LDFLAGS = -s -w -X main.Version=$(VERSION)
 
 # Collectors built and shipped alongside tsstore. Each name must match a
 # subdirectory under examples/ that builds as `main`.
+#
+# NOTE: these are built from the ROOT module (./examples/$c). A collector
+# that needs its own go.mod cannot go in this list — see MODULE_COLLECTORS.
 COLLECTORS := journal-logs system-stats
+
+# Collectors that are SEPARATE Go modules, built from inside their own
+# directory so their dependencies stay out of the root go.mod. synology-snmp
+# needs gosnmp for SNMPv3/USM (key derivation, engine discovery, AES-CFB128)
+# — protocol crypto that should not be hand-rolled, but also should not be
+# imposed on the server module or the stdlib-only collectors.
+MODULE_COLLECTORS := synology-snmp
 
 all: build
 
@@ -55,13 +65,22 @@ build-local: ## Build for local architecture
 	@echo "Building $(BINARY_NAME) for local system..."
 	$(GO) build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/tsstore
 
-build-collectors: ## Build all collectors for both architectures
+build-collectors: build-module-collectors ## Build all collectors for both architectures
 	@mkdir -p $(BUILD_DIR)
 	@for c in $(COLLECTORS); do \
 		echo "Building $$c for Linux ARM64..."; \
 		GOOS=linux GOARCH=arm64 $(GO) build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(BUILD_DIR)/$$c-linux-arm64 ./examples/$$c; \
 		echo "Building $$c for Linux AMD64..."; \
 		GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(BUILD_DIR)/$$c-linux-amd64 ./examples/$$c; \
+	done
+
+build-module-collectors: ## Build collectors that are separate Go modules
+	@mkdir -p $(BUILD_DIR)
+	@for c in $(MODULE_COLLECTORS); do \
+		echo "Building $$c (separate module) for Linux ARM64..."; \
+		(cd examples/$$c && GOOS=linux GOARCH=arm64 $(GO) build -ldflags="-s -w -X main.Version=$(VERSION)" -o ../../$(BUILD_DIR)/$$c-linux-arm64 .); \
+		echo "Building $$c (separate module) for Linux AMD64..."; \
+		(cd examples/$$c && GOOS=linux GOARCH=amd64 $(GO) build -ldflags="-s -w -X main.Version=$(VERSION)" -o ../../$(BUILD_DIR)/$$c-linux-amd64 .); \
 	done
 
 ## Test targets
@@ -90,7 +109,7 @@ release-binaries: build ## Create release binaries (server + collectors) in dist
 		echo "  Copying $(BINARY_NAME)-$(VERSION)-$$arch..."; \
 		cp $(BUILD_DIR)/$(BINARY_NAME)-$$arch $(DIST_DIR)/$(BINARY_NAME)-$(VERSION)-$$arch; \
 	done
-	@for c in $(COLLECTORS); do \
+	@for c in $(COLLECTORS) $(MODULE_COLLECTORS); do \
 		for arch in $(ARCHS); do \
 			echo "  Copying $$c-$(VERSION)-$$arch..."; \
 			cp $(BUILD_DIR)/$$c-$$arch $(DIST_DIR)/$$c-$(VERSION)-$$arch; \
