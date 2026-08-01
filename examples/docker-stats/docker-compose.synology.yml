@@ -1,0 +1,67 @@
+# Copyright (c) 2026 TRV Enterprises LLC
+# SPDX-License-Identifier: Apache-2.0
+#
+# docker-stats on Synology DSM, via Container Manager.
+#
+# Why a container rather than the native binary used on ordinary Linux hosts:
+# /var/run/docker.sock is root:root 0660 and DSM has NO `docker` group, so the
+# SupplementaryGroups=docker pattern the systemd unit relies on has nothing to
+# attach to — no non-root service can read the socket. DSM also has no systemd
+# convention to hook and wipes unmanaged files on upgrade. Running as a
+# container sidesteps both: root inside its own namespace (no root grant on the
+# host), Container Manager supervises restarts, and it survives DSM upgrades.
+#
+# Deploy on the NAS:
+#   1. Put this file in a folder under /volume1 (e.g. /volume1/docker/docker-stats).
+#   2. Create a .env alongside it (see below). Keep it 0600 — it holds API keys.
+#   3. Container Manager → Project → Create, point it at that folder.
+#
+# .env contents:
+#   TSSTORE_URL=http://192.168.1.12:21080
+#   TSSTORE_CONTAINER_KEY=tsstore_...
+#   TSSTORE_DAEMON_KEY=tsstore_...
+#   CONTAINER_STORE=nas-syn-002-docker-containers
+#   DAEMON_STORE=nas-syn-002-docker-daemon
+#
+# The target stores must already exist on the ts-store server — the collector
+# does not create them.
+
+services:
+  docker-stats:
+    image: ghcr.io/trv-enterprises/docker-stats:latest
+    container_name: docker-stats
+    restart: unless-stopped
+    volumes:
+      # READ-ONLY. The collector only ever GETs from the Docker API — it never
+      # creates, starts or stops anything. This is still a privileged mount:
+      # read access to the socket discloses everything about every container on
+      # the host, so treat this container as trusted even though it cannot
+      # mutate. :ro removes the ability to control Docker, not the ability to
+      # observe it.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Secrets come from .env so they never appear in this file or in
+      # `docker inspect` output as literals.
+      - TSSTORE_URL=${TSSTORE_URL}
+      - TSSTORE_CONTAINER_KEY=${TSSTORE_CONTAINER_KEY}
+      - TSSTORE_DAEMON_KEY=${TSSTORE_DAEMON_KEY}
+    command:
+      - -http
+      - ${TSSTORE_URL}
+      - -container-store
+      - ${CONTAINER_STORE}
+      - -daemon-store
+      - ${DAEMON_STORE}
+      # DSM boxes are usually low-container-count; 20s is ample. The collector
+      # uses Docker's non-streaming stats endpoint (~1-2s per RUNNING
+      # container), so keep this comfortably above N_running x ~1.5s.
+      - -container-interval
+      - "20"
+      - -daemon-interval
+      - "120"
+    # No ports published: the collector only makes outbound connections.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

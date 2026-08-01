@@ -195,10 +195,16 @@ type apiVolume struct {
 	} `json:"UsageData"`
 }
 
-// listContainers returns running containers.
+// listContainers returns ALL containers, not just running ones (?all=1).
+//
+// Without all=1 a stopped or crashed container simply vanishes from the
+// data — you detect an outage as the ABSENCE of rows, which is
+// indistinguishable from the collector dying, the host rebooting, or a
+// network blip. With all=1 it keeps reporting with state="exited", so a
+// dashboard can show "this container is down" rather than showing nothing.
 func (c *dockerClient) listContainers(ctx context.Context) ([]apiContainer, error) {
 	var out []apiContainer
-	err := c.get(ctx, "/containers/json", &out)
+	err := c.get(ctx, "/containers/json?all=1", &out)
 	return out, err
 }
 
@@ -433,6 +439,14 @@ func collectContainers(ctx context.Context, dc *dockerClient) ([]ContainerStats,
 	}
 	rows := make([]ContainerStats, 0, len(containers))
 	for _, c := range containers {
+		// Non-running containers have no live stats — Docker returns an
+		// all-zero payload for them, and the request still costs a round
+		// trip. Emit the row with its state and zeroed metrics instead, so
+		// "exited" is visible without paying for a pointless call.
+		if c.State != "running" {
+			rows = append(rows, toContainerStats(cleanName(c.Names), c.Image, c.State, apiStats{}))
+			continue
+		}
 		s, err := dc.containerStats(ctx, c.ID)
 		if err != nil {
 			log.Printf("Warning: stats for %s: %v", cleanName(c.Names), err)
