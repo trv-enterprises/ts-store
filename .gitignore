@@ -21,6 +21,8 @@ examples/system-stats/system-stats
 examples/system-stats/system-stats-*
 examples/docker-stats/docker-stats
 examples/docker-stats/docker-stats-*
+examples/synology-snmp/synology-snmp
+examples/synology-snmp/synology-snmp-*
 
 # Test binary, built with `go test -c`
 *.test
