@@ -1,0 +1,83 @@
+# Copyright (c) 2026 TRV Enterprises LLC
+# SPDX-License-Identifier: Apache-2.0
+#
+# Publishes the docker-stats COLLECTOR image, separate from the ts-store
+# server image built by docker-publish.yml. That workflow is hardcoded to the
+# root Dockerfile and ${{ github.repository }} as the image name, so it can
+# only ever produce ghcr.io/<org>/ts-store.
+#
+# This image exists for Synology DSM, where the native-binary deployment does
+# not work: /var/run/docker.sock is root:root 0660 and DSM has no `docker`
+# group, so no non-root service can read it. See examples/docker-stats/
+# Dockerfile for the full rationale.
+
+name: Build and Push docker-stats Image
+
+on:
+  push:
+    tags:
+      # Collector images are versioned independently of the server, so they
+      # use their own tag prefix: docker-stats-v1.2.3
+      - 'docker-stats-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag (e.g. 0.1.0; empty = latest only)'
+        required: false
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/docker-stats
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=match,pattern=docker-stats-v(.*),group=1
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          # Context is the REPO ROOT, not the example dir: docker-stats is part
+          # of the root Go module and needs go.mod/go.sum from there.
+          context: .
+          file: examples/docker-stats/Dockerfile
+          # arm64 matters here — Synology ships both Intel and ARM models, and
+          # the whole point of this image is portability to someone else's NAS.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
