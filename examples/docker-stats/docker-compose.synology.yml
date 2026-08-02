@@ -11,17 +11,33 @@
 # container sidesteps both: root inside its own namespace (no root grant on the
 # host), Container Manager supervises restarts, and it survives DSM upgrades.
 #
-# Deploy on the NAS:
-#   1. Put this file in a folder under /volume1 (e.g. /volume1/docker/docker-stats).
-#   2. Create a .env alongside it (see below). Keep it 0600 — it holds API keys.
-#   3. Container Manager → Project → Create, point it at that folder.
+# Deploying via Container Manager (verified on DSM 7.3.2):
 #
-# .env contents:
-#   TSSTORE_URL=http://192.168.1.12:21080
+# Project → Create opens an inline compose EDITOR — it does not browse to an
+# existing folder, and its path picker only sees shared folders, never a user
+# home directory. So the practical flow is:
+#
+#   1. Paste this file into that editor and name the project `docker-stats`.
+#   2. Container Manager prompts for the ${...} variables in its own UI and
+#      stores them in the project config. It does NOT read a .env you placed
+#      on disk yourself — do not bother staging one.
+#   3. Start the project. It pulls the image and begins writing immediately.
+#
+# Variables to supply when prompted:
+#   TSSTORE_URL=http://<ts-store-host>:21080
 #   TSSTORE_CONTAINER_KEY=tsstore_...
 #   TSSTORE_DAEMON_KEY=tsstore_...
-#   CONTAINER_STORE=nas-syn-002-docker-containers
-#   DAEMON_STORE=nas-syn-002-docker-daemon
+#   CONTAINER_STORE=<nas-host>-docker-containers
+#   DAEMON_STORE=<nas-host>-docker-daemon
+#
+# On a plain Docker host (not DSM) the ordinary `docker compose` flow applies
+# and a .env file beside this one works as usual.
+#
+# SECRET HANDLING: the two API keys end up in Container Manager's project
+# config in plaintext on the NAS. That is the same exposure as an env file,
+# just owned by DSM rather than by us — worth knowing, because it means the
+# NAS does hold live ts-store credentials even though the SNMP collector was
+# deliberately kept off the box.
 #
 # The target stores must already exist on the ts-store server — the collector
 # does not create them.
