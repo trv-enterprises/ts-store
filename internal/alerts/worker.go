@@ -28,12 +28,22 @@ const (
 // Status is the runtime status of an alert worker. Exposed via the manager
 // for HTTP status responses and CLI status output.
 type Status struct {
-	ID            string `json:"id"`
-	Type          string `json:"type"` // "webhook" | "ws" | "mqtt"
-	Target        string `json:"target"`
-	RuleName      string `json:"rule_name"`
-	AlertsFired   int64  `json:"alerts_fired"`
-	LastTimestamp int64  `json:"last_timestamp,omitempty"`
+	ID       string `json:"id"`
+	Type     string `json:"type"` // "webhook" | "ws" | "mqtt"
+	Target   string `json:"target"`
+	RuleName string `json:"rule_name"`
+
+	// RuleType is "condition" or "staleness". Always populated, so the
+	// alerts table can render both kinds in one list without inferring
+	// the type from which other fields happen to be set.
+	RuleType string `json:"rule_type"`
+
+	// MaxAge echoes the staleness threshold as configured (e.g. "5m").
+	// Empty for condition rules.
+	MaxAge string `json:"max_age,omitempty"`
+
+	AlertsFired   int64 `json:"alerts_fired"`
+	LastTimestamp int64 `json:"last_timestamp,omitempty"`
 
 	// LagMs is how far the worker's cursor trails the newest record in
 	// the store, in milliseconds — 0 when caught up or the store is
@@ -78,6 +88,23 @@ type Worker struct {
 	evaluator *rules.Evaluator
 	ruleName  string
 	sink      Sink
+
+	// ruleType is store.RuleTypeCondition or store.RuleTypeStaleness.
+	// A staleness worker never receives records: deliverBatch is a no-op
+	// for it and checkStaleness drives it from the poll tick instead.
+	ruleType string
+	// maxAge is the staleness threshold. Only set when ruleType is
+	// staleness; there is deliberately no default (see AlertCommon.MaxAge).
+	maxAge time.Duration
+	// maxAgeRaw is the threshold as the user wrote it ("5m"), echoed in
+	// status so the display matches the config rather than Go's
+	// normalized duration rendering ("5m0s").
+	maxAgeRaw string
+	// startedAt is when this worker last Start()ed. A staleness worker
+	// only fires on a store that has data and stopped, so this is used
+	// solely to avoid reporting a store as stale based on a gap that
+	// predates the alert's own existence.
+	startedAt time.Time
 	// pollInterval is a hint to the shared poller: the store's loop
 	// ticks at the minimum across its registered workers.
 	pollInterval time.Duration
@@ -154,9 +181,29 @@ func NewWorker(opts Options) (*Worker, error) {
 		poll = d
 	}
 
-	parsedRule, err := rules.Parse(opts.Rule.Name, opts.Rule.Condition)
-	if err != nil {
-		return nil, fmt.Errorf("rule %q: %w", opts.Rule.Name, err)
+	// A staleness rule has no condition to parse — it is a function of
+	// the clock, not of a record's fields. It still gets an Evaluator,
+	// for the cooldown tracking and dispatch path that every alert
+	// shares; the Rule it carries is never Evaluate()d against data.
+	ruleType := opts.Rule.EffectiveRuleType()
+	var parsedRule *rules.Rule
+	var maxAge time.Duration
+	if ruleType == store.RuleTypeStaleness {
+		d, err := duration.ParseDuration(opts.Rule.MaxAge)
+		if err != nil {
+			return nil, fmt.Errorf("rule %q max_age %q: %w", opts.Rule.Name, opts.Rule.MaxAge, err)
+		}
+		if d <= 0 {
+			return nil, fmt.Errorf("rule %q max_age %q: must be positive", opts.Rule.Name, opts.Rule.MaxAge)
+		}
+		maxAge = d
+		parsedRule = &rules.Rule{Name: opts.Rule.Name}
+	} else {
+		var err error
+		parsedRule, err = rules.Parse(opts.Rule.Name, opts.Rule.Condition)
+		if err != nil {
+			return nil, fmt.Errorf("rule %q: %w", opts.Rule.Name, err)
+		}
 	}
 
 	var cooldown time.Duration
@@ -192,6 +239,9 @@ func NewWorker(opts Options) (*Worker, error) {
 		state:         "stopped",
 		createdAt:     opts.CreatedAt,
 		ruleName:      opts.Rule.Name,
+		ruleType:      ruleType,
+		maxAge:        maxAge,
+		maxAgeRaw:     opts.Rule.MaxAge,
 	}
 
 	w.evaluator = rules.NewEvaluator(opts.StoreName, parsedRule, cooldown, opts.Rule.ExternalRef, w.dispatch)
@@ -212,6 +262,7 @@ func NewWorker(opts Options) (*Worker, error) {
 func (w *Worker) Start() {
 	w.mu.Lock()
 	now := time.Now().UnixNano()
+	w.startedAt = time.Unix(0, now)
 	switch w.restartPolicy {
 	case "resume":
 		ts := readCursor(w.cursorPath)
@@ -276,8 +327,15 @@ func (w *Worker) deliverBatch(recs []pollRecord) {
 	w.mu.RLock()
 	lastTs := w.lastTs
 	stopped := w.state == "stopped"
+	staleness := w.isStaleness()
 	w.mu.RUnlock()
 	if stopped {
+		return
+	}
+	// A staleness rule is driven by checkStaleness on the tick, not by
+	// record contents. It keeps no cursor, so there is nothing to
+	// advance here either.
+	if staleness {
 		return
 	}
 
@@ -304,6 +362,56 @@ func (w *Worker) deliverBatch(recs []pollRecord) {
 	}
 	w.mu.Unlock()
 	w.writeCursor(lastTs)
+}
+
+// isStaleness reports whether this worker fires on absent data.
+func (w *Worker) isStaleness() bool { return w.ruleType == store.RuleTypeStaleness }
+
+// checkStaleness is the staleness rule's whole evaluation, driven by the
+// poll tick rather than by an arriving record. The poller calls it on
+// EVERY tick — including the idle and empty-store early-outs, which is
+// precisely when a staleness rule must still work (issue #134).
+//
+// newestTs is the store's newest record timestamp as the poller already
+// computed it; empty is true when the store holds no records at all.
+// Passing them in keeps this free: GetNewestTimestamp is O(partitions)
+// of metadata and the poller reads it once per tick regardless.
+//
+// Semantics:
+//   - An empty store never fires. A store that has never received data
+//     is "not yet started", not stale — otherwise every newly created
+//     store alerts before its collector's first write.
+//   - Otherwise fire when now - newestTs > max_age, subject to the same
+//     cooldown as any other alert.
+//   - The age is floored at the worker's own start time. Without this,
+//     an alert created against a store that went quiet last week fires
+//     immediately on a gap that predates the alert.
+//
+// There is no resolve event: when data returns, the rule simply stops
+// firing. Cooldown governs repeat fires while the store stays quiet.
+func (w *Worker) checkStaleness(newestTs int64, empty bool) {
+	w.mu.RLock()
+	stopped := w.state == "stopped"
+	maxAge := w.maxAge
+	startedAt := w.startedAt
+	w.mu.RUnlock()
+	if stopped || empty || maxAge <= 0 {
+		return
+	}
+
+	last := time.Unix(0, newestTs)
+	if last.Before(startedAt) {
+		last = startedAt
+	}
+	now := time.Now()
+	age := now.Sub(last)
+	if age <= maxAge {
+		return
+	}
+
+	// Report the real newest-record timestamp, not the start-time floor:
+	// the receiver wants to know when data actually stopped.
+	w.evaluator.FireStaleness(newestTs, age, maxAge)
 }
 
 // dispatch is the evaluator's onAlert callback. It hands the alert to the
@@ -459,15 +567,23 @@ func readCursor(path string) int64 {
 func (w *Worker) Status() Status {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
+	// Lag measures how far a worker's cursor trails the store. A
+	// staleness worker keeps no cursor and consumes no records, so its
+	// lag is always 0 rather than "the whole store" — reporting the
+	// latter would make an idle staleness alert look permanently behind.
 	var lagMs int64
-	if newest, err := w.store.GetNewestTimestamp(); err == nil && newest > w.lastTs {
-		lagMs = (newest - w.lastTs) / int64(time.Millisecond)
+	if !w.isStaleness() {
+		if newest, err := w.store.GetNewestTimestamp(); err == nil && newest > w.lastTs {
+			lagMs = (newest - w.lastTs) / int64(time.Millisecond)
+		}
 	}
 	return Status{
 		ID:               w.id,
 		Type:             w.alertType,
 		Target:           w.target,
 		RuleName:         w.ruleName,
+		RuleType:         w.ruleType,
+		MaxAge:           w.maxAgeRaw,
 		AlertsFired:      atomic.LoadInt64(&w.alertsFired),
 		LastTimestamp:    w.lastTs,
 		LagMs:            lagMs,

@@ -148,12 +148,36 @@ Starts a local file server on port 21090, serves `swagger.yaml` with CORS header
   --broker tcp://mqtt:1883 --topic alerts/heat \
   --name high-temp --condition "temperature > 80" --qos 1
 
+# Staleness alert — fire when the store STOPS receiving data
+./tsstore alerts webhook add nas-syn-002-disks \
+  --url https://hooks.slack.com/services/... \
+  --name "collector went quiet" \
+  --rule-type staleness --max-age 5m --cooldown 30m
+
 # List / delete
 ./tsstore alerts list my-store
 ./tsstore alerts rm   my-store <alert-id>
 ```
 
-**Required for every create:** `--name <label>` and `--condition <expr>`.
+**Required for every create:** `--name <label>`, plus the rule fields for the chosen `--rule-type`.
+
+### Rule types
+
+`--rule-type` selects what makes the alert fire. It defaults to `condition`, so existing commands are unchanged.
+
+| Rule type | Fires on | Rule flag |
+|---|---|---|
+| `condition` (default) | A record arrived whose fields match the expression | `--condition <expr>` |
+| `staleness` | Nothing has arrived for longer than the threshold | `--max-age <duration>` |
+
+A condition rule only ever runs against records that arrived, so a collector that is OOM-killed or loses its network produces zero records and therefore zero alerts. A staleness rule is checked on every poll tick — including ticks where nothing arrived — so it fires precisely when the collector cannot report for itself.
+
+Notes on `--max-age`:
+- **No default, by design.** A collector polling every 60s should alert after a few missed polls; an event-driven source can be legitimately silent for days. Set it per alert.
+- A store that has **never** received data never fires — it is treated as not-yet-started, not stale.
+- When data returns the alert simply stops firing; there is no separate "resolved" event. Use `--cooldown` to bound repeats while a store stays quiet.
+- `--condition`, `--restart resume`, and `--max-replay` are rejected for staleness rules (a staleness rule has no cursor and no triggering record).
+- This is **per-store**: it catches a dead collector, not one series going quiet while others keep reporting. That case is issue #135.
 
 **Common create flags** (any transport):
 - `--cooldown <duration>` — minimum interval between fires (e.g., `5m`)

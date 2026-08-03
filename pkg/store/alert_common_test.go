@@ -70,6 +70,74 @@ func TestAlertCommon_Validate(t *testing.T) {
 			c:       AlertCommon{Name: "hot", Condition: "t > 80", RestartPolicy: "now", MaxReplay: "1h"},
 			wantErr: "max_replay only valid",
 		},
+
+		// --- staleness rules (issue #134) ---
+		{
+			name: "staleness ok",
+			c:    AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "5m"},
+		},
+		{
+			name: "staleness with cooldown and external_ref",
+			c: AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "5m",
+				Cooldown: "30m", ExternalRef: "dash:tile:7"},
+		},
+		{
+			name: "staleness with explicit now policy",
+			c:    AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "5m", RestartPolicy: "now"},
+		},
+		{
+			name: "explicit condition rule_type behaves as before",
+			c:    AlertCommon{Name: "hot", RuleType: RuleTypeCondition, Condition: "t > 80"},
+		},
+		{
+			name:    "staleness without max_age",
+			c:       AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness},
+			wantErr: "max_age is required",
+		},
+		{
+			name:    "staleness rejects condition",
+			c:       AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "5m", Condition: "t > 80"},
+			wantErr: "condition is not valid",
+		},
+		{
+			name:    "staleness rejects restart_policy resume",
+			c:       AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "5m", RestartPolicy: "resume"},
+			wantErr: "has no cursor to resume from",
+		},
+		{
+			// resume is rejected first, which transitively bars max_replay
+			// (it is only legal alongside resume).
+			name:    "staleness rejects max_replay",
+			c:       AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "5m", MaxReplay: "1h"},
+			wantErr: "max_replay only valid",
+		},
+		{
+			name:    "staleness with unparseable max_age",
+			c:       AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "soon"},
+			wantErr: "invalid max_age",
+		},
+		{
+			name:    "staleness with zero max_age",
+			c:       AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "0s"},
+			wantErr: "must be positive",
+		},
+		{
+			// ParseDuration rejects negatives itself, so this surfaces as
+			// an invalid-value error rather than the positivity check.
+			name:    "staleness with negative max_age",
+			c:       AlertCommon{Name: "quiet", RuleType: RuleTypeStaleness, MaxAge: "-5m"},
+			wantErr: "invalid max_age",
+		},
+		{
+			name:    "condition rule rejects max_age",
+			c:       AlertCommon{Name: "hot", Condition: "t > 80", MaxAge: "5m"},
+			wantErr: "max_age is only valid",
+		},
+		{
+			name:    "unknown rule_type",
+			c:       AlertCommon{Name: "hot", RuleType: "sliding_window", Condition: "t > 80"},
+			wantErr: "rule_type must be",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

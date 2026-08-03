@@ -69,8 +69,14 @@ func (p *poller) register(w *Worker) {
 	if p.stopped {
 		return
 	}
-	if len(p.workers) == 0 || floor < p.lastTs {
-		p.lastTs = floor
+	// A staleness worker consumes no records, so it must not move the
+	// shared scan position — pulling the scan back to its start time
+	// would make other workers replay a range they already handled.
+	// It still counts toward the tick interval: it needs the ticks.
+	if !w.isStaleness() {
+		if !p.hasRecordWorkersLocked() || floor < p.lastTs {
+			p.lastTs = floor
+		}
 	}
 	p.workers[w.id] = w
 	p.recomputeIntervalLocked()
@@ -79,6 +85,19 @@ func (p *poller) register(w *Worker) {
 		p.wg.Add(1)
 		go p.run()
 	}
+}
+
+// hasRecordWorkersLocked reports whether any registered worker actually
+// consumes records. Staleness workers don't, so they must not make the
+// first real worker's cursor look like a "lower it or keep it" case —
+// that first cursor has to be adopted outright. Caller holds p.mu.
+func (p *poller) hasRecordWorkersLocked() bool {
+	for _, w := range p.workers {
+		if !w.isStaleness() {
+			return true
+		}
+	}
+	return false
 }
 
 // unregister removes a worker from the fan-out set. The loop keeps
@@ -144,6 +163,7 @@ func (p *poller) pollOnce() {
 	for _, w := range p.workers {
 		workers = append(workers, w)
 	}
+	needScan := p.hasRecordWorkersLocked()
 	p.mu.Unlock()
 	if len(workers) == 0 {
 		return
@@ -153,18 +173,42 @@ func (p *poller) pollOnce() {
 	// of metadata, while the range read block-scans under RLock. Skip
 	// the scan when nothing was written since the shared cursor. Any
 	// error falls through to the range read to be surfaced.
-	if newestTs, err := p.store.GetNewestTimestamp(); err == store.ErrEmptyStore {
+	//
+	// Staleness rules (issue #134) are evaluated on BOTH early-out paths
+	// as well as the scan path below. An idle tick is exactly the tick
+	// on which a staleness rule must fire, so returning here without
+	// checking would make the rule type useless in the only case it
+	// exists for.
+	newestTs, err := p.store.GetNewestTimestamp()
+	if err == store.ErrEmptyStore {
+		p.checkStalenessAll(workers, 0, true)
 		p.noteSuccessAll(workers)
 		return
-	} else if err == nil && newestTs <= lastTs {
+	} else if err == nil && (newestTs <= lastTs || !needScan) {
+		// !needScan: a store whose only alerts are staleness rules never
+		// advances the shared cursor (staleness workers consume no
+		// records), so the newestTs <= lastTs test above would never
+		// fire and every tick would block-scan the whole store.
+		p.checkStalenessAll(workers, newestTs, false)
 		p.noteSuccessAll(workers)
 		return
 	}
 
+	// Data arrived (or the newest-timestamp read failed and we fall
+	// through to surface it). Staleness rules still get their tick: a
+	// store can be receiving records that are themselves older than
+	// max_age, e.g. a collector replaying a backlog after an outage.
+	// When the read failed, newestTs is 0 and skipping is correct —
+	// we have no trustworthy age to judge, and the scan error below
+	// marks every worker as errored anyway.
+	if err == nil {
+		p.checkStalenessAll(workers, newestTs, false)
+	}
+
 	endTime := time.Now().UnixNano()
-	handles, err := p.store.GetObjectsInRange(lastTs+1, endTime, maxBatchSize)
-	if err != nil {
-		msg := fmt.Sprintf("range read: %v", err)
+	handles, rangeErr := p.store.GetObjectsInRange(lastTs+1, endTime, maxBatchSize)
+	if rangeErr != nil {
+		msg := fmt.Sprintf("range read: %v", rangeErr)
 		for _, w := range workers {
 			w.setError(msg)
 		}
@@ -210,6 +254,21 @@ func (p *poller) pollOnce() {
 	}
 	p.mu.Unlock()
 	p.noteSuccessAll(workers)
+}
+
+// checkStalenessAll ticks every staleness worker with the newest
+// timestamp the poller already computed (issue #134). Condition workers
+// are skipped — they only ever fire from record contents.
+//
+// This runs on the poll goroutine and does no I/O: the newest timestamp
+// is passed in, so a staleness rule costs one comparison per tick and
+// adds no read to the shared loop.
+func (p *poller) checkStalenessAll(workers []*Worker, newestTs int64, empty bool) {
+	for _, w := range workers {
+		if w.isStaleness() {
+			w.checkStaleness(newestTs, empty)
+		}
+	}
 }
 
 func (p *poller) noteSuccessAll(workers []*Worker) {
