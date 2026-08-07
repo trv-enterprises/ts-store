@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/tviviano/ts-store/internal/apikey"
 	"github.com/tviviano/ts-store/internal/service"
 	"github.com/tviviano/ts-store/pkg/store"
 )
@@ -60,37 +61,71 @@ func insertJSON(t *testing.T, router http.Handler, storeName, apiKey string, tim
 
 // ─── Store management endpoints ───────────────────────────────────────────────
 
+// TestListStores covers the #138 behavior change: GET /api/stores now
+// requires a key and returns only the stores that key may read.
 func TestListStores(t *testing.T) {
-	router, storeService, _, _ := setupTestRouter(t)
+	router, storeService, keyManager, _ := setupTestRouter(t)
 	defer storeService.CloseAll()
 
-	createStore(t, router, "list-a")
+	keyA := createStore(t, router, "list-a")
 	createStore(t, router, "list-b")
 
-	req, _ := http.NewRequest("GET", "/api/stores", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	listWith := func(key string) (int, map[string]bool) {
+		req, _ := http.NewRequest("GET", "/api/stores", nil)
+		if key != "" {
+			req.Header.Set("X-API-Key", key)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+		var resp struct {
+			Stores []struct {
+				Name string `json:"name"`
+			} `json:"stores"`
+		}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		found := map[string]bool{}
+		for _, s := range resp.Stores {
+			found[s.Name] = true
+		}
+		return w.Code, found
 	}
 
-	// Listing returns objects: {name, data_type, role, ...}
-	var resp struct {
-		Stores []struct {
-			Name     string `json:"name"`
-			DataType string `json:"data_type"`
-			Role     string `json:"role"`
-		} `json:"stores"`
+	// No key: rejected. The store inventory is no longer public.
+	if code, _ := listWith(""); code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated list: got %d, want 401", code)
 	}
-	json.Unmarshal(w.Body.Bytes(), &resp)
 
-	found := map[string]bool{}
-	for _, s := range resp.Stores {
-		found[s.Name] = true
+	// A store's own key sees only that store.
+	code, found := listWith(keyA)
+	if code != http.StatusOK {
+		t.Fatalf("list with store key: got %d, want 200", code)
+	}
+	if !found["list-a"] {
+		t.Error("store key cannot see its own store")
+	}
+	if found["list-b"] {
+		t.Error("store key saw a store it has no grant for")
+	}
+
+	// A wildcard read key sees both.
+	wildKey, _, err := keyManager.Create("dashboard", []apikey.Grant{{
+		Stores: "*", Access: []apikey.Access{apikey.AccessRead},
+	}})
+	if err != nil {
+		t.Fatalf("create wildcard key: %v", err)
+	}
+	code, found = listWith(wildKey)
+	if code != http.StatusOK {
+		t.Fatalf("list with wildcard key: got %d, want 200", code)
 	}
 	if !found["list-a"] || !found["list-b"] {
-		t.Errorf("Expected both list-a and list-b in response, got %+v", resp.Stores)
+		t.Errorf("wildcard key should see both stores, got %v", found)
+	}
+
+	// An invalid key is rejected rather than silently unfiltered.
+	if code, _ := listWith("tsstore_00000000-0000-0000-0000-000000000000"); code != http.StatusUnauthorized {
+		t.Errorf("invalid key: got %d, want 401", code)
 	}
 }
 
@@ -122,11 +157,11 @@ func TestStoreStats(t *testing.T) {
 }
 
 func TestResetStore(t *testing.T) {
-	router, storeService, _, _ := setupTestRouter(t)
+	router, storeService, keyManager, _ := setupTestRouter(t)
 	defer storeService.CloseAll()
 
 	// Add the reset route (not in setupTestRouter by default)
-	storeHandler := NewStoreHandler(storeService)
+	storeHandler := NewStoreHandler(storeService, keyManager)
 	router.POST("/api/stores/:store/reset", storeHandler.Reset)
 
 	apiKey := createStore(t, router, "reset-test")

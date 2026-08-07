@@ -58,10 +58,13 @@ The CLI commands run inside the container via `docker exec`:
 docker exec tsstore tsstore create my-store
 # Output shows API key (save it!)
 
-# List API keys for a store
-docker exec tsstore tsstore key list my-store
+# List API keys (IDs and grants, never the keys)
+docker exec tsstore tsstore key list
 
-# Regenerate API key (revokes existing keys)
+# Mint a scoped key
+docker exec tsstore tsstore key create --grant read:* --note "dashboard"
+
+# Regenerate the key for one store
 docker exec tsstore tsstore key regenerate my-store
 ```
 
@@ -94,18 +97,63 @@ This design maintains security - key management requires container access, while
 
 ## API Key Management
 
-API keys can only be managed via CLI (requires device access):
+API keys can only be managed via CLI (requires device access) — there is no HTTP endpoint for creating, supplying, or rotating keys.
+
+Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, hashes only) and carry **grants**: what the key may do, and on which stores.
 
 ```bash
-# Regenerate key (revokes all existing keys)
+# Read-only across every store (e.g. a dashboard)
+./tsstore key create --grant read:* --note "dashboard"
+
+# Ingest into a namespace, full control of one store
+./tsstore key create \
+  --grant read,write:sensors-* \
+  --grant read,write,manage:home-env \
+  --note "collector"
+
+# List keys (IDs and grants — never the keys themselves)
+./tsstore key list
+./tsstore key list my-store       # only keys that can reach my-store
+
+# Revoke by ID (IDs are globally unique)
+./tsstore key revoke a1b2c3d4
+
+# Replace the keys granting a store by name, minting a fresh one
 ./tsstore key regenerate my-store
-
-# List keys (shows IDs only, not actual keys)
-./tsstore key list my-store
-
-# Revoke a specific key
-./tsstore key revoke my-store a1b2c3d4
 ```
+
+### Access classes
+
+`read`, `write`, and `manage` are independent flags, **not a hierarchy** — `manage` does not imply `read`.
+
+| Class | Covers |
+|---|---|
+| `read` | Query, range, oldest/newest, schema read, stream out |
+| `write` | Ingest (REST, WebSocket, Unix socket) |
+| `manage` | Alerts, rollups, WS/MQTT connections, schema writes, reset, delete |
+
+Store patterns are an exact name, a prefix glob (`sensors-*`), or `*`.
+
+### Bring your own key
+
+Mint the key yourself — in 1Password, say — and have ts-store adopt it, so the vault is the source rather than a copy of ts-store's output:
+
+```bash
+op read op://HOMELAB/nas-disks/credential \
+  | ./tsstore key create --key-file - --grant read,write:nas-syn-002-disks
+
+# Also works at store-creation time
+op read op://HOMELAB/nas-disks/credential \
+  | ./tsstore create nas-syn-002-disks --type json --key-file -
+```
+
+`--key-file <path|->` is the documented path. `--api-key <key>` also works but puts the secret in the process table (`/proc/<pid>/cmdline` is world-readable) for as long as the command runs. Supplied keys must use the same format as generated ones: `tsstore_` prefix, ≥44 characters. An adopted key is never echoed back.
+
+### Upgrading from per-store keys
+
+Existing per-store keys are imported into the registry automatically on first boot, each granted `read,write,manage` on its own store — the exact authority it had before. **No reconfiguration, no rotation.** The old `<store>/keys.json` files are left in place so a downgrade still works.
+
+Note `key regenerate` now replaces keys whose grants name the store **by name**; wildcard grants (`read:*`) describe a namespace and are deliberately left alone.
 
 ## Server Commands
 

@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tviviano/ts-store/internal/apikey"
+	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/service"
 	"github.com/tviviano/ts-store/pkg/store"
 )
@@ -18,12 +21,17 @@ import (
 // StoreHandler handles store management endpoints.
 type StoreHandler struct {
 	storeService *service.StoreService
+	// keyManager is optional. When set, GET /api/stores filters the
+	// listing to what a supplied key may read; when nil, the listing is
+	// unfiltered (the pre-#138 behavior).
+	keyManager *apikey.Manager
 }
 
 // NewStoreHandler creates a new store handler.
-func NewStoreHandler(storeService *service.StoreService) *StoreHandler {
+func NewStoreHandler(storeService *service.StoreService, keyManager *apikey.Manager) *StoreHandler {
 	return &StoreHandler{
 		storeService: storeService,
+		keyManager:   keyManager,
 	}
 }
 
@@ -118,8 +126,56 @@ func (h *StoreHandler) ResetMetrics(c *gin.Context) {
 // Returns all stores on disk as objects with name, data_type, and rollup role.
 // NOTE: the response shape is an array of objects (each {name, data_type, role,
 // ...}); earlier versions returned a flat array of name strings.
+//
+// BREAKING (issue #138): this endpoint now REQUIRES an API key and
+// returns only the stores that key may read. It was previously public
+// and unfiltered.
+//
+// The filtering is the point: it makes this a connection test that needs
+// no store name (endpoint + key is enough), gives clients store
+// discovery, and scopes that discovery to the caller's own authority —
+// a read-only dashboard key sees exactly the stores it can chart. An
+// unauthenticated listing would leak the full store inventory of the
+// deployment, which is the one thing this endpoint should not do once
+// keys are scoped.
+//
+// The admin key is deliberately NOT accepted here: it is the server
+// tier (store lifecycle, key management) and holds no read grants, so
+// "which stores can I read?" has no meaningful answer for it.
 func (h *StoreHandler) List(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"stores": h.storeService.ListAllInfo()})
+	provided := c.GetHeader("X-API-Key")
+	if provided == "" {
+		if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			provided = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+	}
+	if provided == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "API key required"})
+		return
+	}
+	if h.keyManager == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "key manager unavailable"})
+		return
+	}
+
+	key, err := h.keyManager.Resolve(provided)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
+		return
+	}
+	// Reset this IP's auth-failure counter, same as the Auth middleware
+	// does — without it a client that mistypes a key once keeps that
+	// strike against it forever.
+	c.Set(middleware.AuthPassedKey, true)
+
+	all := h.storeService.ListAllInfo()
+	filtered := make([]service.StoreInfo, 0, len(all))
+	for _, info := range all {
+		if key.Permits(info.Name, apikey.AccessRead) {
+			filtered = append(filtered, info)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"stores": filtered})
 }
 
 // Reset handles POST /api/stores/:store/reset

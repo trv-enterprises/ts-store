@@ -1,0 +1,171 @@
+name: PR Checks
+
+# Validation gates that run on every pull request into main (and on
+# pushes to main as a backstop). Mirrors trv-outpost's pr-checks, minus
+# the client job (no frontend here) and the swagger-generation job
+# (swagger.yaml is hand-maintained in this repo, not generated from code
+# annotations, so there is nothing to diff it against).
+#
+# Three jobs:
+#   build       — go build + go vet + gofmt on changed files
+#   tests       — go test ./...
+#   collectors  — build the separate collector modules
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A newer commit on the same PR/branch cancels the older in-flight run.
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (go build + vet)
+    runs-on: ubuntu-latest
+    steps:
+      # Need the merge-base to diff against, so fetch history rather than
+      # the default shallow clone.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      # gofmt, scoped to the Go files THIS PR touches.
+      #
+      # Deliberately not `gofmt -l ./...`: ~22 files predate this check and
+      # differ only in whitespace (gofmt column-aligns struct fields and
+      # trailing comments, and hand-edits drift the padding). Failing the
+      # whole repo would either block every PR or force a codebase-wide
+      # reformat that destroys git blame. Scoping to changed files means new
+      # and edited code is formatted from here on, and the backlog gets
+      # cleaned up incidentally as files are touched.
+      #
+      # Skipped on push-to-main (no PR to diff against); the PR run is the
+      # gate. Deleted files are excluded via --diff-filter=d.
+      - name: gofmt (changed files)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          # xargs -0 passes each filename as its own argument, so this can't
+          # depend on shell word-splitting. An unquoted "$files" string works
+          # in bash but silently collapses to ONE bogus filename in zsh, and
+          # gofmt then reports nothing — the check would pass everything.
+          # Don't "simplify" this.
+          files="$(git diff --name-only --diff-filter=d "$base"...HEAD -- '*.go')"
+          if [ -z "$files" ]; then
+            echo "No Go files changed."
+            exit 0
+          fi
+          printf 'Checking:\n'; printf '%s\n' "$files" | sed 's/^/  /'
+          unformatted="$(
+            git diff -z --name-only --diff-filter=d "$base"...HEAD -- '*.go' \
+              | xargs -0 gofmt -l
+          )"
+          if [ -n "$unformatted" ]; then
+            echo
+            echo "::error::Changed Go files are not gofmt-formatted (see diff below)"
+            printf '%s\n' "$unformatted" | sed 's/^/  /'
+            echo
+            echo "Fix with:  gofmt -w $(printf '%s ' $unformatted)"
+            echo
+            echo "--- diff ---"
+            printf '%s\n' "$unformatted" | tr '\n' '\0' | xargs -0 gofmt -d
+            exit 1
+          fi
+          echo "All changed Go files are formatted."
+
+  tests:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # -race, not a plain `go test`. This server is concurrent by
+      # nature — a shared poll loop fanning out to alert workers, a key
+      # cache read under RLock while another process rewrites the file,
+      # per-store managers with their own goroutines — and several tests
+      # exist specifically to be run under the race detector (see
+      # internal/apikey/cache_test.go). Without -race those tests pass
+      # while proving nothing.
+      #
+      # Costs roughly 2-3x the wall time of a plain run, which is still
+      # under a minute here.
+      - name: go test -race
+        run: go test -race ./...
+
+  vulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # govulncheck is reachability-based: it reports a CVE only when
+      # this code actually calls the affected function, rather than
+      # flagging every advisory that touches the dependency graph. That
+      # keeps it quiet enough to gate every PR (~30s) instead of being
+      # the check everyone learns to ignore.
+      #
+      # It also covers the Go toolchain itself, so a stdlib CVE surfaces
+      # here rather than at the next dependency bump.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  collectors:
+    name: Collector modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The collectors under examples/ are SEPARATE Go modules, so
+      # `go build ./...` at the repo root does not touch them and a
+      # breaking change to a shared type would merge unnoticed. Each is
+      # built and vetted in its own module context.
+      - name: Build collector modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Every go.mod except the root one. Not named `modules`: that
+          # is read-only in zsh, so anyone reproducing this locally in a
+          # zsh shell would hit a confusing error the CI run never shows.
+          mods="$(find . -name go.mod -not -path './go.mod' -not -path './node_modules/*' | sort)"
+          if [ -z "$mods" ]; then
+            echo "No separate collector modules found."
+            exit 0
+          fi
+          for mod in $mods; do
+            dir="$(dirname "$mod")"
+            echo "::group::$dir"
+            (cd "$dir" && go build ./... && go vet ./...)
+            echo "::endgroup::"
+          done

@@ -44,7 +44,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.
 	router := gin.New()
 	router.Use(gin.Recovery())
 
-	storeHandler := NewStoreHandler(storeService)
+	storeHandler := NewStoreHandler(storeService, keyManager)
 	unifiedHandler := NewUnifiedHandler(storeService)
 
 	api := router.Group("/api")
@@ -53,7 +53,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.
 	stores.GET("", storeHandler.List)
 
 	storeRoutes := stores.Group("/:store")
-	storeRoutes.Use(middleware.Auth(keyManager))
+	storeRoutes.Use(middleware.Auth(keyManager, apikey.AccessWrite))
 	storeRoutes.DELETE("", storeHandler.Delete)
 	storeRoutes.GET("/stats", storeHandler.Stats)
 

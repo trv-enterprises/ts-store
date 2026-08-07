@@ -93,16 +93,35 @@ paths:
     get:
       tags:
         - Stores
-      summary: List stores
+      summary: List stores the caller's key can read
       description: |
-        Returns all stores with their data type and rollup role.
+        Returns the stores the supplied API key may `read`, with their
+        data type and rollup role.
+
+        Doubles as a connection test that needs no store name (endpoint
+        plus key is enough) and as store discovery for clients building
+        a store picker — scoped to the caller's own authority.
+
+        **Breaking change (issue #138):** this endpoint now REQUIRES an
+        API key and filters the result to that key's read grants. It was
+        previously unauthenticated and returned every store. An
+        unauthenticated listing discloses the full store inventory of a
+        deployment, which is what scoped keys exist to prevent.
+
+        The admin key is not accepted here: it is the server tier and
+        holds no read grants.
 
         **Breaking change (v0.8.0):** `stores` is now an array of objects
         (`{name, data_type, role, ...}`); earlier versions returned an array of
         name strings.
+      security:
+        - ApiKeyHeader: []
+        - BearerAuth: []
       responses:
+        '401':
+          description: Missing or invalid API key
         '200':
-          description: List of stores
+          description: Stores the key can read
           content:
             application/json:
               schema:
@@ -1244,16 +1263,41 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: API key in X-API-Key header
+      description: |
+        Scoped API key in the X-API-Key header.
+
+        Keys carry **grants** — (store pattern, access classes) pairs —
+        rather than being bound to one store (issue #138). Each endpoint
+        requires one of three access classes, which are independent
+        flags rather than a hierarchy (`manage` does not imply `read`):
+
+        - `read` — query, range, oldest/newest, schema read, stream out
+        - `write` — ingest (POST /data, GET /ws/write, the Unix socket)
+        - `manage` — store-scoped admin: alert CRUD, rollups, WS/MQTT
+          connections, schema writes, reset, store delete
+
+        Store patterns are an exact name, a prefix glob (`sensors-*`),
+        or `*`.
+
+        Responses distinguish the two failure modes: **401** for a
+        missing, malformed, or unknown key; **403** for a valid key that
+        lacks the required class on that store (retrying will not help).
+
+        Pre-#138 per-store keys are migrated automatically on first boot
+        with `read,write,manage` on their own store, so existing clients
+        need no reconfiguration.
     BearerAuth:
       type: http
       scheme: bearer
-      description: API key in Authorization Bearer header
+      description: Scoped API key in the Authorization Bearer header (see ApiKeyHeader)
     AdminKeyHeader:
       type: apiKey
       in: header
       name: X-Admin-Key
-      description: Admin key for store management operations
+      description: |
+        Admin key for the server tier: store create/delete and key
+        registry management. Distinct from scoped API keys — it holds no
+        grants and cannot read or write store data.
 
   parameters:
     StoreName:
@@ -1478,6 +1522,21 @@ components:
           type: integer
           default: 4096
           description: Index block size in bytes (must be power of 2)
+        api_key:
+          type: string
+          description: |
+            Adopt an operator-minted key for this store instead of
+            generating one, so the key can originate in a secrets vault
+            rather than being captured from this response (issue #138).
+
+            Must use the same format as a generated key: the `tsstore_`
+            prefix and at least 44 characters total. Rejected with 400
+            otherwise, and the store is not created.
+
+            When set, the response omits `api_key` — echoing back a
+            secret the caller already holds serves no purpose and puts
+            it in another log.
+          example: tsstore_a1b2c3d4-e5f6-7890-abcd-ef1234567890
 
     CreateStoreResponse:
       type: object
@@ -1487,7 +1546,11 @@ components:
           example: my-store
         api_key:
           type: string
-          description: API key (shown only once)
+          description: |
+            Generated API key, shown only once. Granted `read`, `write`
+            and `manage` on this store.
+
+            Omitted when the request supplied its own `api_key`.
           example: tsstore_a1b2c3d4-e5f6-7890-abcd-ef1234567890
         key_id:
           type: string

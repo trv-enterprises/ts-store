@@ -25,9 +25,20 @@ const (
 	KeyEntryKey = "key_entry"
 )
 
-// Auth creates authentication middleware that validates API keys.
-// The store name is extracted from the URL path parameter.
-func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
+// RouteAccessTable exposes the route→access classification for tests,
+// which cross-check it against the router's actual registered routes so
+// a new route can't silently inherit the wrong class.
+func RouteAccessTable() map[string]apikey.Access { return routeAccess }
+
+// Auth creates authentication middleware that validates API keys and
+// checks the key's grant for the route's store (issue #138).
+//
+// access is the group's default class. Individual routes are classified
+// in routeAccess below and override it. The class is a property of the
+// route, not the request, and is never inferred from the HTTP method —
+// several read-shaped GETs (connection and alert listings) are
+// administrative, and inferring would hand them to read-only keys.
+func Auth(keyManager *apikey.Manager, access apikey.Access) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Get store name from URL parameter
 		storeName := c.Param("store")
@@ -75,12 +86,25 @@ func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
 			return
 		}
 
-		// Validate key against store
-		keyEntry, err := keyManager.Validate(storeName, apiKeyValue)
+		// The class is resolved from the matched route rather than the
+		// request, so a read-shaped GET that is really an administrative
+		// listing still requires "manage".
+		required := accessFor(c.Request.Method, c.FullPath(), access)
+
+		// Resolve the key and check its grant for this store + class.
+		keyEntry, err := keyManager.Authorize(storeName, apiKeyValue, required)
 		if err != nil {
-			if err == apikey.ErrInvalidKey {
+			switch err {
+			case apikey.ErrForbidden:
+				// The key is real but not granted here. 403, not 401:
+				// retrying with the same credential will never work, and
+				// a client that conflates the two will loop.
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": "API key lacks " + string(required) + " access to store " + storeName,
+				})
+			case apikey.ErrInvalidKey:
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
-			} else {
+			default:
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication failed"})
 			}
 			c.Abort()
@@ -94,6 +118,70 @@ func Auth(keyManager *apikey.Manager) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// routeAccess maps "METHOD /full/route/pattern" to the access class that
+// route requires, for every route whose class differs from its group's
+// default.
+//
+// This is a table rather than per-route middleware because gin runs
+// group middleware before route handlers: a RequireAccess registered on
+// the route would execute after Auth and never be seen. Keying off
+// c.FullPath() (the matched route pattern, not the request path) keeps
+// the lookup exact and free of parameter-substitution guesswork.
+//
+// The default for the store group is AccessWrite, so anything absent
+// here requires write. That default is deliberate: forgetting to
+// classify a new route fails closed for read-only keys rather than
+// silently exposing it.
+var routeAccess = map[string]apikey.Access{
+	// --- read: data queries and schema inspection ---
+	"GET /api/stores/:store/data/time/:timestamp": apikey.AccessRead,
+	"GET /api/stores/:store/data/oldest":          apikey.AccessRead,
+	"GET /api/stores/:store/data/newest":          apikey.AccessRead,
+	"GET /api/stores/:store/data/range":           apikey.AccessRead,
+	"GET /api/stores/:store/schema":               apikey.AccessRead,
+	"GET /api/stores/:store/schema/versions":      apikey.AccessRead,
+
+	// --- write: ingest ---
+	"POST /api/stores/:store/data":    apikey.AccessWrite,
+	"GET /api/stores/:store/ws/write": apikey.AccessWrite,
+
+	// --- manage: store-scoped administration ---
+	// Alerts belong to the store, so alert CRUD is a per-store grant
+	// rather than a server-admin operation.
+	"GET /api/stores/:store/alerts":                  apikey.AccessManage,
+	"POST /api/stores/:store/alerts":                 apikey.AccessManage,
+	"POST /api/stores/:store/alerts/test":            apikey.AccessManage,
+	"GET /api/stores/:store/alerts/:id":              apikey.AccessManage,
+	"DELETE /api/stores/:store/alerts/:id":           apikey.AccessManage,
+	"GET /api/stores/:store/rollups":                 apikey.AccessManage,
+	"POST /api/stores/:store/rollups":                apikey.AccessManage,
+	"GET /api/stores/:store/rollups/:id":             apikey.AccessManage,
+	"DELETE /api/stores/:store/rollups/:id":          apikey.AccessManage,
+	"GET /api/stores/:store/connections":             apikey.AccessManage,
+	"GET /api/stores/:store/ws/connections":          apikey.AccessManage,
+	"POST /api/stores/:store/ws/connections":         apikey.AccessManage,
+	"GET /api/stores/:store/ws/connections/:id":      apikey.AccessManage,
+	"DELETE /api/stores/:store/ws/connections/:id":   apikey.AccessManage,
+	"GET /api/stores/:store/mqtt/connections":        apikey.AccessManage,
+	"POST /api/stores/:store/mqtt/connections":       apikey.AccessManage,
+	"GET /api/stores/:store/mqtt/connections/:id":    apikey.AccessManage,
+	"DELETE /api/stores/:store/mqtt/connections/:id": apikey.AccessManage,
+	// Schema mutation, reset, and store deletion are destructive.
+	"PUT /api/stores/:store/schema":         apikey.AccessManage,
+	"POST /api/stores/:store/reset":         apikey.AccessManage,
+	"POST /api/stores/:store/metrics/reset": apikey.AccessManage,
+	"DELETE /api/stores/:store":             apikey.AccessManage,
+}
+
+// accessFor resolves the class for a matched route, falling back to the
+// group default when the route is not classified.
+func accessFor(method, fullPath string, fallback apikey.Access) apikey.Access {
+	if a, ok := routeAccess[method+" "+fullPath]; ok {
+		return a
+	}
+	return fallback
 }
 
 // GetStoreName retrieves the authenticated store name from context.
