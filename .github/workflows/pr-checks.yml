@@ -100,8 +100,42 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: go test
-        run: go test ./...
+      # -race, not a plain `go test`. This server is concurrent by
+      # nature — a shared poll loop fanning out to alert workers, a key
+      # cache read under RLock while another process rewrites the file,
+      # per-store managers with their own goroutines — and several tests
+      # exist specifically to be run under the race detector (see
+      # internal/apikey/cache_test.go). Without -race those tests pass
+      # while proving nothing.
+      #
+      # Costs roughly 2-3x the wall time of a plain run, which is still
+      # under a minute here.
+      - name: go test -race
+        run: go test -race ./...
+
+  vulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # govulncheck is reachability-based: it reports a CVE only when
+      # this code actually calls the affected function, rather than
+      # flagging every advisory that touches the dependency graph. That
+      # keeps it quiet enough to gate every PR (~30s) instead of being
+      # the check everyone learns to ignore.
+      #
+      # It also covers the Go toolchain itself, so a stdlib CVE surfaces
+      # here rather than at the next dependency bump.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
   collectors:
     name: Collector modules
