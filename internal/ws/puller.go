@@ -30,8 +30,9 @@ type Puller struct {
 	errors        int64
 	lastError     string
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // NewPuller creates a new outbound pull connection.
@@ -76,9 +77,11 @@ func (p *Puller) Start() error {
 	return nil
 }
 
-// Stop stops the pull connection.
+// Stop stops the pull connection. Idempotent: a bare close(p.stopCh)
+// panics on the second call, and a connection can be stopped both
+// individually (DeleteConnection) and en masse (Manager.Stop).
 func (p *Puller) Stop() error {
-	close(p.stopCh)
+	p.stopOnce.Do(func() { close(p.stopCh) })
 	p.wg.Wait()
 
 	p.mu.Lock()

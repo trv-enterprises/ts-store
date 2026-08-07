@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -110,7 +111,13 @@ func (m *Manager) LoadAndStart() error {
 	for _, connConfig := range config.Connections {
 		conn := NewPusher(m.store, m.storeName, connConfig)
 		m.connections[conn.ID()] = conn
-		go conn.Start()
+		// Synchronous: Start only registers with the WaitGroup and spawns
+		// its own loop, so the Add is ordered before any later Wait.
+		// See the note in CreateConnection.
+		if err := conn.Start(); err != nil {
+			log.Printf("mqtt %s: start connection %s: %v", m.storeName, conn.ID(), err)
+			delete(m.connections, conn.ID())
+		}
 	}
 
 	return nil
@@ -255,10 +262,23 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 		return nil, err
 	}
 
-	// Create and start connection
+	// Create and start connection.
+	//
+	// Start() is called SYNCHRONOUSLY, not as `go conn.Start()`. It only
+	// does wg.Add(1) plus its own `go runLoop()`, so it never blocks —
+	// and doing the Add on this goroutine is what orders it before any
+	// later Stop()'s wg.Wait(). With `go conn.Start()`, a Stop arriving
+	// promptly (as in tests, and on a fast shutdown) could Wait on a
+	// WaitGroup whose Add had not run yet: a data race, and a Wait that
+	// returns while runLoop is still starting up.
 	conn := NewPusher(m.store, m.storeName, mqttConn)
 	m.connections[id] = conn
-	go conn.Start()
+	if err := conn.Start(); err != nil {
+		// Roll back the registration so a failed connection isn't left
+		// in the map looking live.
+		delete(m.connections, id)
+		return nil, err
+	}
 
 	status := conn.Status()
 	return &status, nil
