@@ -4,92 +4,167 @@
 
 package apikey
 
-import (
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
-func TestLinkedKeyFileValidation(t *testing.T) {
-	base := t.TempDir()
-	// Source and target store dirs must exist for key files to land in them.
-	if err := os.MkdirAll(filepath.Join(base, "source"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(base, "target"), 0755); err != nil {
-		t.Fatal(err)
-	}
+// The linked-key-file mechanism retired in #138: a rollup target no
+// longer defers validation to its source, it gets an explicit grant on
+// the source's key instead. These tests pin the BEHAVIOR that mechanism
+// provided — a client holding the source key can reach the derived
+// target — which must survive the change even though the implementation
+// did not.
 
-	m := NewManager(base)
+func TestExtendGrantsReachesRollupTarget(t *testing.T) {
+	m := NewManager(t.TempDir())
 
-	// Generate a key on the source.
-	srcKey, _, err := m.Generate("source", "initial")
+	srcKey, _, err := m.Create("initial", fullGrant("source"))
 	if err != nil {
-		t.Fatalf("Generate: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
 
-	// Link the target to the source (no keys of its own).
-	if err := m.CreateLinkedKeyFile("target", "source"); err != nil {
-		t.Fatalf("CreateLinkedKeyFile: %v", err)
+	// Before the target exists, the source key has no business there.
+	if _, err := m.Authorize("target", srcKey, AccessRead); err != ErrForbidden {
+		t.Errorf("source key reached target before it was granted: %v", err)
 	}
 
-	// The source key validates against the linked target.
-	if _, err := m.Validate("target", srcKey); err != nil {
-		t.Errorf("source key should validate against linked target: %v", err)
+	// Auto-creating a rollup target extends the source's keys to it.
+	if err := m.ExtendGrants("source", "target"); err != nil {
+		t.Fatalf("ExtendGrants: %v", err)
 	}
 
-	// A bogus key does not.
-	if _, err := m.Validate("target", "tsstore_bogus"); err == nil {
-		t.Error("bogus key validated against linked target")
+	for _, access := range AllAccess {
+		if _, err := m.Authorize("target", srcKey, access); err != nil {
+			t.Errorf("source key should have %s on the target: %v", access, err)
+		}
 	}
 
-	// Rotation on the source propagates: a NEW source key validates on target,
-	// and the old one stops (single source of truth, no drift).
-	newKey, _, err := m.Regenerate("source", "rotated")
-	if err != nil {
-		t.Fatalf("Regenerate: %v", err)
-	}
-	if _, err := m.Validate("target", newKey); err != nil {
-		t.Errorf("rotated source key should validate against target: %v", err)
-	}
-	if _, err := m.Validate("target", srcKey); err == nil {
-		t.Error("old source key should no longer validate after rotation")
+	// A bogus key still does not.
+	if _, err := m.Authorize("target", "tsstore_00000000-0000-0000-0000-000000000000", AccessRead); err != ErrInvalidKey {
+		t.Errorf("bogus key: want ErrInvalidKey, got %v", err)
 	}
 }
 
-func TestLinkedDependents(t *testing.T) {
-	base := t.TempDir()
-	for _, d := range []string{"source", "t1", "t2", "unrelated"} {
-		if err := os.MkdirAll(filepath.Join(base, d), 0755); err != nil {
-			t.Fatal(err)
-		}
+// TestExtendGrantsPreservesAccessClasses: a read-only key on the source
+// must not gain write on the target. The old linked-file mechanism
+// couldn't express this — it shared the whole key file — so this is
+// strictly tighter than the behavior it replaced.
+func TestExtendGrantsPreservesAccessClasses(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	roKey, _, err := m.Create("read-only", []Grant{{Stores: "source", Access: []Access{AccessRead}}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
 	}
-	m := NewManager(base)
-	if _, _, err := m.Generate("source", ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := m.Generate("unrelated", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.CreateLinkedKeyFile("t1", "source"); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.CreateLinkedKeyFile("t2", "source"); err != nil {
-		t.Fatal(err)
+	if err := m.ExtendGrants("source", "target"); err != nil {
+		t.Fatalf("ExtendGrants: %v", err)
 	}
 
-	deps, err := m.LinkedDependents("source")
+	if _, err := m.Authorize("target", roKey, AccessRead); err != nil {
+		t.Errorf("read-only key should read the target: %v", err)
+	}
+	if _, err := m.Authorize("target", roKey, AccessWrite); err != ErrForbidden {
+		t.Errorf("read-only key gained write on the target: %v", err)
+	}
+}
+
+// TestExtendGrantsSkipsUnrelatedKeys: a key with no access to the source
+// must not be handed the target.
+func TestExtendGrantsSkipsUnrelatedKeys(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	otherKey, _, err := m.Create("elsewhere", fullGrant("unrelated"))
 	if err != nil {
-		t.Fatalf("LinkedDependents: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
-	got := map[string]bool{}
-	for _, d := range deps {
-		got[d] = true
+	if _, _, err := m.Create("source key", fullGrant("source")); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
-	if !got["t1"] || !got["t2"] {
-		t.Errorf("expected t1 and t2 as dependents, got %v", deps)
+	if err := m.ExtendGrants("source", "target"); err != nil {
+		t.Fatalf("ExtendGrants: %v", err)
 	}
-	if got["unrelated"] {
-		t.Error("unrelated store should not be a dependent")
+
+	if _, err := m.Authorize("target", otherKey, AccessRead); err != ErrForbidden {
+		t.Errorf("unrelated key reached the target: %v", err)
+	}
+}
+
+// TestExtendGrantsIsIdempotent: re-running (a rollup target recreated
+// with force_recreate) must not pile up duplicate grants.
+func TestExtendGrantsIsIdempotent(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	_, entry, err := m.Create("k", fullGrant("source"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := m.ExtendGrants("source", "target"); err != nil {
+			t.Fatalf("ExtendGrants: %v", err)
+		}
+	}
+
+	keys, err := m.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, k := range keys {
+		if k.ID != entry.ID {
+			continue
+		}
+		if len(k.Grants) != 2 {
+			t.Errorf("expected 2 grants (source + target), got %d: %v", len(k.Grants), k.Grants)
+		}
+	}
+}
+
+// TestExtendGrantsNoopUnderWildcard: a key already covering the target
+// via a wildcard needs no additional grant.
+func TestExtendGrantsNoopUnderWildcard(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	_, entry, err := m.Create("wild", []Grant{{Stores: "*", Access: append([]Access(nil), AllAccess...)}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.ExtendGrants("source", "target"); err != nil {
+		t.Fatalf("ExtendGrants: %v", err)
+	}
+
+	keys, err := m.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, k := range keys {
+		if k.ID == entry.ID && len(k.Grants) != 1 {
+			t.Errorf("wildcard key gained a redundant grant: %v", k.Grants)
+		}
+	}
+}
+
+// TestRevokeStoreGrantsDropsExactNotWildcard: deleting a store drops
+// grants naming it, but a wildcard describes a namespace and must
+// survive.
+func TestRevokeStoreGrantsDropsExactNotWildcard(t *testing.T) {
+	m := NewManager(t.TempDir())
+
+	exactKey, _, err := m.Create("exact", fullGrant("doomed"))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	wildKey, _, err := m.Create("wild", []Grant{{Stores: "*", Access: []Access{AccessRead}}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := m.RevokeStoreGrants("doomed"); err != nil {
+		t.Fatalf("RevokeStoreGrants: %v", err)
+	}
+
+	// The exact-grant key had only that store, so it is gone entirely.
+	if _, err := m.Resolve(exactKey); err != ErrInvalidKey {
+		t.Errorf("key with only the deleted store's grant survived: %v", err)
+	}
+	// The wildcard key is untouched.
+	if _, err := m.Authorize("something-else", wildKey, AccessRead); err != nil {
+		t.Errorf("wildcard key was damaged by a store deletion: %v", err)
 	}
 }

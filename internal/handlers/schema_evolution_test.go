@@ -43,7 +43,7 @@ func setupSchemaRouter(t *testing.T) (*gin.Engine, *service.StoreService, string
 	schemaHandler := NewSchemaHandler(storeService)
 
 	storeRoutes := router.Group("/api/stores/:store")
-	storeRoutes.Use(middleware.Auth(keyManager))
+	storeRoutes.Use(middleware.Auth(keyManager, apikey.AccessWrite))
 	data := storeRoutes.Group("/data")
 	data.POST("", unifiedHandler.Put)
 	data.GET("/time/:timestamp", unifiedHandler.GetByTime)

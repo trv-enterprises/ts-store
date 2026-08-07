@@ -8,6 +8,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,12 +67,22 @@ type CreateStoreRequest struct {
 	NumPartitions  uint32 `json:"num_partitions,omitempty"` // V2: number of partitions (default: 6)
 	TotalSize      int64  `json:"total_size,omitempty"`     // V2: total size in bytes
 	StorageType    string `json:"storage_type,omitempty"`   // "v2" (default; "v1" is rejected)
+
+	// APIKey adopts an operator-minted key for this store instead of
+	// generating one, so the key can originate in a secrets vault rather
+	// than being captured from the create response (issue #138, folded
+	// from #137). Must satisfy apikey.ValidateSuppliedKey. When set, the
+	// response omits api_key — echoing back a secret the caller already
+	// holds serves no purpose and puts it in another log.
+	APIKey string `json:"api_key,omitempty"`
 }
 
 // CreateStoreResponse contains the result of store creation.
 type CreateStoreResponse struct {
-	Name   string `json:"name"`
-	APIKey string `json:"api_key"` // Only returned once!
+	Name string `json:"name"`
+	// APIKey is the generated key, returned only once. Empty when the
+	// caller supplied their own.
+	APIKey string `json:"api_key,omitempty"`
 	KeyID  string `json:"key_id"`
 }
 
@@ -127,10 +138,24 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 		return nil, err
 	}
 
-	// Generate API key
-	apiKey, keyEntry, err := s.keyManager.Generate(req.Name, "Initial key")
+	// Mint or adopt the store's API key. A new store gets a key granting
+	// full access to exactly itself — the same authority a pre-#138
+	// per-store key carried, now expressed as a grant.
+	grants := []apikey.Grant{{
+		Stores: req.Name,
+		Access: append([]apikey.Access(nil), apikey.AllAccess...),
+	}}
+
+	var apiKey string
+	var keyEntry *apikey.KeyEntry
+	if req.APIKey != "" {
+		keyEntry, err = s.keyManager.Adopt(req.APIKey, "Initial key (adopted)", grants)
+		// The caller already has the plaintext; do not echo it back.
+	} else {
+		apiKey, keyEntry, err = s.keyManager.Create("Initial key", grants)
+	}
 	if err != nil {
-		st.Delete() // Cleanup on failure
+		st.Delete() // Cleanup on failure — a rejected key leaves no orphan
 		return nil, err
 	}
 
@@ -245,14 +270,46 @@ func (s *StoreService) Close(name string) error {
 	return nil
 }
 
-// Delete deletes a store and its API keys. Refuses if other (linked) stores
-// depend on this store's API keys — e.g. rollup targets that link here for auth.
+// Delete deletes a store and drops the grants naming it. Refuses if
+// rollup targets derive from this store.
+//
+// The refusal used to be about key linkage — a target held no keys and
+// deferred auth to its source, so deleting the source stranded it. That
+// mechanism is gone in #138 (targets carry their own grants), but the
+// underlying reason to refuse survives it: a target is derived data
+// that keeps aggregating from a source which no longer exists. Deleting
+// the source silently orphans it, which is what issue #39 was actually
+// protecting against.
 func (s *StoreService) Delete(name string) error {
-	if deps, err := s.keyManager.LinkedDependents(name); err == nil && len(deps) > 0 {
-		return fmt.Errorf("%w: cannot delete %q: store(s) %s link to its API keys; delete those stores first (rollup targets: DELETE the rollup with ?delete_target=true, or DELETE the target store directly)",
+	if deps := s.rollupDependents(name); len(deps) > 0 {
+		return fmt.Errorf("%w: cannot delete %q: store(s) %s are rollup targets derived from it; delete those first (DELETE the rollup with ?delete_target=true, or DELETE the target store directly)",
 			ErrHasDependents, name, strings.Join(deps, ", "))
 	}
 	return s.deleteStoreInternal(name)
+}
+
+// rollupDependents returns the names of stores that are rollup targets
+// of sourceStore, read from each target's rollup metadata sidecar. Uses
+// the same cheap on-disk read as ListAllInfo — no store is opened.
+func (s *StoreService) rollupDependents(sourceStore string) []string {
+	entries, err := os.ReadDir(s.cfg.Store.BasePath)
+	if err != nil {
+		return nil
+	}
+	var deps []string
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == sourceStore {
+			continue
+		}
+		meta, err := store.ReadRollupMetaAt(filepath.Join(s.cfg.Store.BasePath, e.Name()))
+		if err != nil || meta == nil {
+			continue
+		}
+		if meta.RollupOf == sourceStore {
+			deps = append(deps, e.Name())
+		}
+	}
+	return deps
 }
 
 // deleteStoreInternal deletes a store without the linked-dependents guard. Used
@@ -297,8 +354,12 @@ func (s *StoreService) deleteStoreInternal(name string) error {
 		}
 	}
 
-	// Delete API keys
-	s.keyManager.DeleteKeyFile(name)
+	// Drop grants naming this store exactly, and any key left with none.
+	// Wildcard grants are deliberately untouched: they describe a
+	// namespace, not this one store.
+	if err := s.keyManager.RevokeStoreGrants(name); err != nil {
+		log.Printf("store %s: revoke grants: %v", name, err)
+	}
 
 	return nil
 }
@@ -580,11 +641,18 @@ func (s *StoreService) CreateRollupTarget(cfg store.Config, sourceStore string) 
 	s.stores[cfg.Name] = st
 	s.mu.Unlock()
 
-	// Link the target's API keys to the source (shared keys, no drift).
-	if err := s.keyManager.CreateLinkedKeyFile(cfg.Name, sourceStore); err != nil {
-		// Roll back the half-created store on link failure.
+	// Extend every key that can reach the source so it also reaches the
+	// target. Pre-#138 this was a linked key file (the target deferred
+	// validation to the source); now it is an explicit grant, which
+	// keeps the same practical guarantee — a client holding the source
+	// key can read its rollups — without a second lookup mechanism.
+	//
+	// Keys whose source access comes from a wildcard that already covers
+	// the target are left untouched (GrantStore is a no-op for them).
+	if err := s.keyManager.ExtendGrants(sourceStore, cfg.Name); err != nil {
+		// Roll back the half-created store on failure.
 		_ = s.deleteStoreInternal(cfg.Name)
-		return nil, fmt.Errorf("link target keys: %w", err)
+		return nil, fmt.Errorf("grant target keys: %w", err)
 	}
 
 	// Start the auxiliary managers for the target like any opened store, but

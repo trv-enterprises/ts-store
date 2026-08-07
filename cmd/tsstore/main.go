@@ -167,14 +167,42 @@ Usage:
   tsstore key <subcommand> [arguments]
 
 Subcommands:
-  regenerate <store-name>  Regenerate API key for a store (revokes all existing keys)
-  list <store-name>        List API keys for a store (shows IDs, not keys)
-  revoke <store-name> <key-id>  Revoke a specific key by ID
+  create [options]         Mint (or adopt) a key with explicit grants
+  regenerate <store-name>  Replace the keys granting access to a store by name
+  list [store-name]        List keys; with a store name, only those reaching it
+  revoke <key-id>          Revoke a key by ID
+
+Keys carry grants — what they may do, and on which stores:
+  --grant <access>:<pattern>   Repeatable. Access is any comma-separated mix
+                               of read, write, manage. Pattern is an exact
+                               store name, a prefix glob (sensors-*), or *.
+  --note <text>                Free-text label shown by 'key list'
+
+Bring your own key (instead of letting ts-store mint one):
+  --key-file <path|->          Read the key from a file, or - for stdin.
+                               PREFERRED: a key passed as an argument is
+                               visible in the process table while it runs.
+  --api-key <key>              Supply the key directly (see caveat above).
+
+Access classes:
+  read    query, range, stats, schema read, stream out
+  write   ingest
+  manage  store-scoped admin: alerts, rollups, connections, schema writes
 
 Examples:
-  tsstore key regenerate my-store
+  # Read-only key across every store
+  tsstore key create --grant read:* --note "dashboard"
+
+  # Read+write on one namespace, full control of one store
+  tsstore key create --grant read,write:sensors-* --grant read,write,manage:home-env
+
+  # Adopt a key minted in 1Password (never touches argv or shell history)
+  op read op://HOMELAB/nas-disks/credential \
+    | tsstore key create --key-file - --grant read,write:nas-syn-002-disks
+
+  tsstore key list
   tsstore key list my-store
-  tsstore key revoke my-store a1b2c3d4`)
+  tsstore key revoke a1b2c3d4`)
 }
 
 // flagValue returns the value following a flag, exiting with an error when
@@ -273,6 +301,17 @@ func runServer(args []string) {
 
 	// Initialize components
 	keyManager := apikey.NewManager(cfg.Store.BasePath)
+
+	// Import pre-#138 per-store keys.json files into the central
+	// registry. Idempotent, and a no-op once done. This must succeed:
+	// if it fails, every existing key would stop authenticating, so we
+	// refuse to start rather than come up silently locking everyone out.
+	if n, err := keyManager.MigrateLegacyKeys(); err != nil {
+		log.Fatalf("Failed to migrate legacy API keys: %v", err)
+	} else if n > 0 {
+		log.Printf("Migrated %d legacy API key(s) into %s", n, apikey.RegistryFileName)
+	}
+
 	storeService := service.NewStoreService(cfg, keyManager)
 
 	// Setup Gin
@@ -300,7 +339,7 @@ func runServer(args []string) {
 	authLimiter := middleware.NewAuthLimiter(0, 0, 0)
 
 	// Initialize handlers
-	storeHandler := handlers.NewStoreHandler(storeService)
+	storeHandler := handlers.NewStoreHandler(storeService, keyManager)
 	unifiedHandler := handlers.NewUnifiedHandler(storeService)
 	schemaHandler := handlers.NewSchemaHandler(storeService)
 	wsHandler := handlers.NewWSHandler(storeService)
@@ -318,7 +357,11 @@ func runServer(args []string) {
 		stores := api.Group("/stores")
 		{
 			stores.POST("", middleware.AuthFailureLimiter(authLimiter), middleware.AdminAuth(cfg.Server.AdminKey), storeHandler.Create) // Create new store (requires admin key)
-			stores.GET("", storeHandler.List)                                                                                           // List open stores (no auth)
+			// List stores the caller's key can read. Requires an API key
+			// (breaking change, issue #138) and shares the auth-failure
+			// limiter so it can't be used as an unthrottled oracle for
+			// guessing keys.
+			stores.GET("", middleware.AuthFailureLimiter(authLimiter), storeHandler.List)
 			// Operational stats — block counts, time range, partition layout.
 			// Deliberately unauthenticated so dashboards, monitors, and other
 			// observability consumers don't need a per-store API key just to
@@ -331,7 +374,11 @@ func runServer(args []string) {
 		// Store-specific operations (require auth)
 		storeRoutes := stores.Group("/:store")
 		storeRoutes.Use(middleware.AuthFailureLimiter(authLimiter))
-		storeRoutes.Use(middleware.Auth(keyManager))
+		// The group default is "write"; individual routes are classified
+		// in middleware's routeAccess table. An unclassified route falls
+		// back to write, so a newly added endpoint fails closed for a
+		// read-only key rather than being silently exposed.
+		storeRoutes.Use(middleware.Auth(keyManager, apikey.AccessWrite))
 		{
 			storeRoutes.DELETE("", storeHandler.Delete)
 			storeRoutes.POST("/reset", storeHandler.Reset)
@@ -493,6 +540,8 @@ func runCreateCommand(args []string) {
 	indexBlockSize := uint32(4096)
 	basePath := ""
 	dataType := "json"
+	suppliedKey := ""
+	keyFile := ""
 
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
@@ -506,6 +555,10 @@ func runCreateCommand(args []string) {
 			basePath, i = flagValue(args, i, "--path")
 		case "--type":
 			dataType, i = flagValue(args, i, "--type")
+		case "--api-key":
+			suppliedKey, i = flagValue(args, i, "--api-key")
+		case "--key-file":
+			keyFile, i = flagValue(args, i, "--key-file")
 		default:
 			fmt.Printf("Unknown option: %s\n", args[i])
 			printCreateUsage()
@@ -547,7 +600,9 @@ func runCreateCommand(args []string) {
 		DataBlockSize:  dataBlockSize,
 		IndexBlockSize: indexBlockSize,
 		DataType:       dataType,
+		APIKey:         readSuppliedKey(suppliedKey, keyFile),
 	}
+	adopted := req.APIKey != ""
 
 	resp, err := storeService.Create(req)
 	if err != nil {
@@ -566,9 +621,44 @@ func runCreateCommand(args []string) {
 	fmt.Printf("Index Size:  %d bytes\n", indexBlockSize)
 	fmt.Println("")
 	fmt.Printf("Key ID:      %s\n", resp.KeyID)
-	fmt.Printf("API Key:     %s\n", resp.APIKey)
-	fmt.Println("")
-	fmt.Println("WARNING: The API key is shown only once. Save it securely!")
+	if adopted {
+		// The caller minted this key; echoing it back would only add
+		// another copy to their scrollback and any captured output.
+		fmt.Println("API Key:     (adopted — not shown)")
+	} else {
+		fmt.Printf("API Key:     %s\n", resp.APIKey)
+		fmt.Println("")
+		fmt.Println("WARNING: The API key is shown only once. Save it securely!")
+	}
+}
+
+// readSuppliedKey resolves an operator-supplied key from either a direct
+// value or a file/stdin, exiting on a usage error. Returns "" when
+// neither was given, meaning "generate one".
+//
+// --key-file is the documented path: a key passed as a command-line
+// argument is visible in the process table (/proc/<pid>/cmdline is
+// world-readable) for the lifetime of the command.
+func readSuppliedKey(direct, file string) string {
+	if direct != "" && file != "" {
+		fmt.Println("Error: pass --api-key or --key-file, not both")
+		os.Exit(1)
+	}
+	if file == "" {
+		return direct
+	}
+
+	var data []byte
+	var err error
+	if file == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(file)
+	}
+	if err != nil {
+		log.Fatalf("Failed to read key: %v", err)
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func runKeyCommand(args []string) {
@@ -595,6 +685,9 @@ func runKeyCommand(args []string) {
 
 	subCommand := args[0]
 	switch subCommand {
+	case "create":
+		runKeyCreate(keyManager, args[1:])
+
 	case "regenerate":
 		if len(args) < 2 {
 			fmt.Println("Error: store name required")
@@ -603,8 +696,17 @@ func runKeyCommand(args []string) {
 		}
 		storeName := args[1]
 
-		// Regenerate key
-		newKey, entry, err := keyManager.Regenerate(storeName, "Regenerated via CLI")
+		// Revoke every key whose grants name this store exactly, then
+		// mint a fresh full-access key for it. Wildcard grants survive
+		// (they describe a namespace, not this store), which is the one
+		// behavioral difference from the pre-#138 regenerate.
+		if err := keyManager.RevokeStoreGrants(storeName); err != nil {
+			log.Fatalf("Failed to revoke existing keys: %v", err)
+		}
+		newKey, entry, err := keyManager.Create("Regenerated via CLI", []apikey.Grant{{
+			Stores: storeName,
+			Access: append([]apikey.Access(nil), apikey.AllAccess...),
+		}})
 		if err != nil {
 			log.Fatalf("Failed to regenerate key: %v", err)
 		}
@@ -615,56 +717,138 @@ func runKeyCommand(args []string) {
 		fmt.Printf("API Key: %s\n", newKey)
 		fmt.Println("")
 		fmt.Println("WARNING: This key is shown only once. Save it securely!")
-		fmt.Println("All previous keys have been revoked.")
+		fmt.Println("Keys granting access to this store by name have been revoked.")
+		fmt.Println("Wildcard grants (e.g. read:*) still apply and were not touched.")
 
 	case "list":
-		if len(args) < 2 {
-			fmt.Println("Error: store name required")
-			printKeyUsage()
-			os.Exit(1)
+		var keys []apikey.KeyEntry
+		var err error
+		scope := "all stores"
+		if len(args) >= 2 {
+			// Scoped listing: which keys can reach this store?
+			keys, err = keyManager.ListForStore(args[1])
+			scope = "store '" + args[1] + "'"
+		} else {
+			keys, err = keyManager.List()
 		}
-		storeName := args[1]
-
-		keys, err := keyManager.List(storeName)
 		if err != nil {
 			log.Fatalf("Failed to list keys: %v", err)
 		}
 
 		if len(keys) == 0 {
-			fmt.Printf("No API keys found for store '%s'\n", storeName)
+			fmt.Printf("No API keys found for %s\n", scope)
 			return
 		}
 
-		fmt.Printf("API keys for store '%s':\n", storeName)
-		fmt.Println("ID        Created                    Note")
-		fmt.Println("--------  -------------------------  ----")
+		fmt.Printf("API keys for %s:\n", scope)
+		fmt.Println("ID        Created                    Grants                          Note")
+		fmt.Println("--------  -------------------------  ------------------------------  ----")
 		for _, k := range keys {
-			fmt.Printf("%-8s  %-25s  %s\n",
+			grants := make([]string, 0, len(k.Grants))
+			for _, g := range k.Grants {
+				grants = append(grants, g.String())
+			}
+			fmt.Printf("%-8s  %-25s  %-30s  %s\n",
 				k.ID,
 				k.CreatedAt.Format("2006-01-02 15:04:05 MST"),
+				strings.Join(grants, " "),
 				k.Note)
 		}
 
 	case "revoke":
-		if len(args) < 3 {
-			fmt.Println("Error: store name and key ID required")
+		if len(args) < 2 {
+			fmt.Println("Error: key ID required")
 			printKeyUsage()
 			os.Exit(1)
 		}
-		storeName := args[1]
-		keyID := args[2]
+		// Key IDs are globally unique now, so a store name is no longer
+		// needed. Tolerate the old "revoke <store> <key-id>" form by
+		// taking the last argument as the ID.
+		keyID := args[len(args)-1]
 
-		if err := keyManager.Revoke(storeName, keyID); err != nil {
+		if err := keyManager.Revoke(keyID); err != nil {
 			log.Fatalf("Failed to revoke key: %v", err)
 		}
 
-		fmt.Printf("Key '%s' revoked for store '%s'\n", keyID, storeName)
+		fmt.Printf("Key '%s' revoked\n", keyID)
 
 	default:
 		fmt.Printf("Unknown key subcommand: %s\n", subCommand)
 		printKeyUsage()
 		os.Exit(1)
 	}
+}
+
+// runKeyCreate implements `tsstore key create`, minting a key with
+// explicit grants or adopting an operator-supplied one.
+func runKeyCreate(keyManager *apikey.Manager, args []string) {
+	var note, suppliedKey, keyFile string
+	var grantSpecs []string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--grant":
+			i, _ = consumeAppend(args, i, &grantSpecs)
+		case "--note":
+			i, _ = consumeFlag(args, i, &note)
+		case "--api-key":
+			i, _ = consumeFlag(args, i, &suppliedKey)
+		case "--key-file":
+			i, _ = consumeFlag(args, i, &keyFile)
+		case "-h", "--help":
+			printKeyUsage()
+			return
+		default:
+			fmt.Printf("Unknown option: %s\n", args[i])
+			os.Exit(1)
+		}
+	}
+
+	if len(grantSpecs) == 0 {
+		fmt.Println("Error: at least one --grant is required (e.g. --grant read,write:sensors-*)")
+		printKeyUsage()
+		os.Exit(1)
+	}
+	grants := make([]apikey.Grant, 0, len(grantSpecs))
+	for _, spec := range grantSpecs {
+		g, err := apikey.ParseGrant(spec)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		grants = append(grants, g)
+	}
+
+	suppliedKey = readSuppliedKey(suppliedKey, keyFile)
+
+	if suppliedKey != "" {
+		entry, err := keyManager.Adopt(suppliedKey, note, grants)
+		if err != nil {
+			log.Fatalf("Failed to adopt key: %v", err)
+		}
+		fmt.Println("=== API KEY ADOPTED ===")
+		fmt.Printf("Key ID: %s\n", entry.ID)
+		for _, g := range entry.Grants {
+			fmt.Printf("Grant:  %s\n", g.String())
+		}
+		// Deliberately not echoing the key: the caller already has it,
+		// and printing it would put the secret in another terminal
+		// scrollback and any log capturing this output.
+		return
+	}
+
+	newKey, entry, err := keyManager.Create(note, grants)
+	if err != nil {
+		log.Fatalf("Failed to create key: %v", err)
+	}
+	fmt.Println("=== NEW API KEY ===")
+	fmt.Printf("Key ID:  %s\n", entry.ID)
+	for _, g := range entry.Grants {
+		fmt.Printf("Grant:   %s\n", g.String())
+	}
+	fmt.Printf("API Key: %s\n", newKey)
+	fmt.Println("")
+	fmt.Println("WARNING: This key is shown only once. Save it securely!")
 }
 
 func runSwaggerCommand() {

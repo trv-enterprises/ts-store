@@ -149,8 +149,19 @@ func (l *Listener) handleConnection(conn net.Conn) {
 	storeName := parts[1]
 	apiKey := parts[2]
 
-	// Validate API key
-	if _, err := l.keyManager.Validate(storeName, apiKey); err != nil {
+	// Gate on key shape first, exactly as the HTTP middleware does. This
+	// path previously called Validate directly and skipped the format
+	// check, so a malformed key could authenticate here but 401 over
+	// REST; both now run the same checks in the same order (issue #138).
+	if !apikey.ValidateKeyFormat(apiKey) {
+		writer.WriteString("ERROR authentication failed\n")
+		writer.Flush()
+		return
+	}
+
+	// The socket protocol only ingests, so it requires write access.
+	// A read-only key must not be able to write through the back door.
+	if _, err := l.keyManager.Authorize(storeName, apiKey, apikey.AccessWrite); err != nil {
 		writer.WriteString("ERROR authentication failed\n")
 		writer.Flush()
 		return

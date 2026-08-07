@@ -49,7 +49,7 @@ func startTestListener(t *testing.T) (sockPath, storeName, key string) {
 	if _, err := svc.Create(&service.CreateStoreRequest{Name: storeName, DataType: "json"}); err != nil {
 		t.Fatalf("create store: %v", err)
 	}
-	key, _, err = km.Generate(storeName, "test")
+	key, _, err = km.CreateForStore(storeName, "test")
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}

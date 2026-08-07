@@ -432,7 +432,7 @@ sensor-data/
 ├── data.tsdb
 ├── index.tsdb
 ├── meta.tsdb
-├── keys.json
+├── keys.json              <-- legacy (migrated to keys.registry.json)
 ├── schema.json            <-- Schema (schema-type stores only)
 └── ws_connections.json    <-- WebSocket configs (only if configured)
 
@@ -537,7 +537,7 @@ sensor-data/
 ├── data.tsdb
 ├── index.tsdb
 ├── meta.tsdb
-├── keys.json
+├── keys.json              <-- legacy (migrated to keys.registry.json)
 ├── schema.json
 ├── ws_connections.json
 └── mqtt_connections.json    <-- MQTT configs
@@ -652,58 +652,105 @@ Behavior:
 ### API Key Storage
 
 ```
-Store Directory:
-my-store/
-├── data.tsdb
-├── index.tsdb
-├── meta.tsdb
-├── keys.json              <── API key hashes (SHA-256)
-├── schema.json            <── Schema definition (schema-type stores only)
-└── ws_connections.json    <── Outbound WS configs (only if configured)
+Data Directory:
+<data-path>/
+├── keys.registry.json     <── CENTRAL key registry (mode 0600)
+└── my-store/
+    ├── data.tsdb
+    ├── index.tsdb
+    ├── meta.tsdb
+    ├── keys.json          <── LEGACY, pre-#138. Migrated on first boot,
+    │                          then unread. Kept for downgrades.
+    ├── schema.json        <── Schema definition (schema-type stores only)
+    └── ws_connections.json
 
-keys.json structure:
+keys.registry.json structure:
 {
+  "version": 1,
   "keys": [
     {
-      "id": "a1b2c3d4",           // Short ID for reference
-      "hash": "6644572f...",      // SHA-256 hash (not plaintext)
-      "created_at": "2024-01-01T00:00:00Z"
+      "id": "a1b2c3d4",           // Short ID, derived from the hash
+      "hash": "6644572f...",      // SHA-256 (never plaintext)
+      "created_at": "2026-01-01T00:00:00Z",
+      "note": "dashboard",
+      "grants": [
+        { "stores": "*",          "access": ["read"] },
+        { "stores": "sensors-*",  "access": ["read", "write"] },
+        { "stores": "home-env",   "access": ["read", "write", "manage"] }
+      ]
     }
   ]
 }
 
+Grants (issue #138):
+  - stores: exact name, prefix glob ("sensors-*"), or "*"
+  - access: read | write | manage — independent flags, NOT a hierarchy
+    (a "manage" grant does not imply "read")
+  - manage = store-scoped admin: alerts, rollups, connections, schema
+    writes, reset, delete. Alerts belong to the store, so managing them
+    needs a grant on that store, not the server admin key.
+
+Migration:
+  - Legacy <store>/keys.json files are imported automatically on first
+    boot, each key granted read+write+manage on its own store — exactly
+    the authority it had before. No client reconfiguration, no rotation.
+  - Rollup targets that used the retired LinkedSource mechanism become
+    an explicit grant on the source's key.
+
 Security notes:
-  - API keys shown only once at creation
-  - Only SHA-256 hashes stored on disk
+  - Generated keys shown only once; adopted keys never echoed at all
+  - Only SHA-256 hashes stored on disk, mode 0600
+  - Registry written atomically (temp + fsync + rename): a truncating
+    crash would otherwise lock every key out of every store
+  - Re-read per request via an mtime+size check, so `key revoke` takes
+    effect on a running server with no restart (issue #11)
   - Admin key never stored (config/env only)
-  - Constant-time comparison prevents timing attacks
+  - Constant-time comparison for the admin key; store keys compare
+    SHA-256 digests, where a timing leak reveals nothing about the
+    preimage
 ```
 
 ### Endpoint Security Matrix
 
 ```
-Endpoint                                Auth Required    Auth Type
-──────────────────────────────────────────────────────────────────
+Endpoint                                Auth Required    Access Class
+──────────────────────────────────────────────────────────────────────
 GET    /health                          No               -
-GET    /api/stores                      No               -
 GET    /api/stores/:store/stats         No               -
 GET    /api/stores/:store/metrics       No               -
 POST   /api/stores                      Yes              Admin Key
-DELETE /api/stores/:store               Yes              Store API Key
-POST   /api/stores/:store/reset         Yes              Store API Key
-POST   /api/stores/:store/metrics/reset Yes              Store API Key
-POST   /api/stores/:store/data          Yes              Store API Key
-GET    /api/stores/:store/data/*        Yes              Store API Key
-DELETE /api/stores/:store/data/*        Yes              Store API Key
-GET    /api/stores/:store/schema        Yes              Store API Key
-PUT    /api/stores/:store/schema        Yes              Store API Key
-GET    /api/stores/:store/ws/*          Yes              Store API Key
-*      /api/stores/:store/ws/conns/*    Yes              Store API Key
-*      /api/stores/:store/mqtt/conns/*  Yes              Store API Key
-*      /api/stores/:store/alerts        Yes              Store API Key
-*      /api/stores/:store/alerts/:id    Yes              Store API Key
-Unix Socket AUTH                        Yes              Store API Key
+GET    /api/stores                      Yes              read (filtered)
+GET    /api/stores/:store/data/*        Yes              read
+GET    /api/stores/:store/schema        Yes              read
+GET    /api/stores/:store/schema/vers.  Yes              read
+POST   /api/stores/:store/data          Yes              write
+GET    /api/stores/:store/ws/write      Yes              write
+Unix Socket AUTH                        Yes              write
+DELETE /api/stores/:store               Yes              manage
+POST   /api/stores/:store/reset         Yes              manage
+POST   /api/stores/:store/metrics/reset Yes              manage
+PUT    /api/stores/:store/schema        Yes              manage
+GET    /api/stores/:store/connections   Yes              manage
+*      /api/stores/:store/ws/conns/*    Yes              manage
+*      /api/stores/:store/mqtt/conns/*  Yes              manage
+*      /api/stores/:store/alerts*       Yes              manage
+*      /api/stores/:store/rollups*      Yes              manage
 ```
+
+Notes:
+
+- `GET /api/stores` now requires a key and returns only the stores that
+  key can `read` (breaking change, issue #138). `/stats` and `/metrics`
+  stay public — they expose capacity and counters, never store data.
+- Several `manage` routes are GETs (alert and connection listings), so
+  the class is bound per route rather than inferred from the HTTP
+  method — inferring would hand administrative listings to read-only
+  keys. Routes are classified in `internal/middleware.routeAccess`, and
+  an unclassified route falls back to `write` so a newly added endpoint
+  fails closed.
+- The Unix socket ingests only, so it requires `write`. It previously
+  bypassed the key-format check that HTTP applied; both paths now run
+  the same checks in the same order.
 
 ## Summary
 

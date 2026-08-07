@@ -21,7 +21,7 @@ func newLimitedRouter(t *testing.T, l *AuthLimiter) (*gin.Engine, string) {
 	gin.SetMode(gin.TestMode)
 
 	km := apikey.NewManager(t.TempDir())
-	key, _, err := km.Generate("teststore", "test")
+	key, _, err := km.CreateForStore("teststore", "test")
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -31,7 +31,7 @@ func newLimitedRouter(t *testing.T, l *AuthLimiter) (*gin.Engine, string) {
 	r.POST("/api/stores", AuthFailureLimiter(l), AdminAuth("test-admin-key-01234567890"), ok)
 	sr := r.Group("/api/stores/:store")
 	sr.Use(AuthFailureLimiter(l))
-	sr.Use(Auth(km))
+	sr.Use(Auth(km, apikey.AccessWrite))
 	sr.GET("/data/newest", ok)
 	return r, key
 }

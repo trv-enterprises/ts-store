@@ -42,11 +42,11 @@ func setupRollupsRouter(t *testing.T) (*gin.Engine, *service.StoreService, strin
 	unifiedHandler := NewUnifiedHandler(storeService)
 	schemaHandler := NewSchemaHandler(storeService)
 	rollupsHandler := NewRollupsHandler(storeService.GetRollupsManager)
-	storeHandler := NewStoreHandler(storeService)
+	storeHandler := NewStoreHandler(storeService, keyManager)
 
 	router.GET("/api/stores", storeHandler.List)
 	sr := router.Group("/api/stores/:store")
-	sr.Use(middleware.Auth(keyManager))
+	sr.Use(middleware.Auth(keyManager, apikey.AccessWrite))
 	data := sr.Group("/data")
 	data.POST("", unifiedHandler.Put)
 	data.GET("/newest", unifiedHandler.ListNewest)

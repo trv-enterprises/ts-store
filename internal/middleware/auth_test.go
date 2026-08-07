@@ -20,14 +20,14 @@ func newAuthRouter(t *testing.T) (*gin.Engine, string) {
 	gin.SetMode(gin.TestMode)
 
 	km := apikey.NewManager(t.TempDir())
-	key, _, err := km.Generate("teststore", "test")
+	key, _, err := km.CreateForStore("teststore", "test")
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
 
 	r := gin.New()
 	sr := r.Group("/api/stores/:store")
-	sr.Use(Auth(km))
+	sr.Use(Auth(km, apikey.AccessWrite))
 	ok := func(c *gin.Context) { c.String(http.StatusOK, "ok") }
 	sr.GET("/data/newest", ok)
 	sr.GET("/ws/write", ok)

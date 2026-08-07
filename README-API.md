@@ -81,14 +81,60 @@ ts-store uses two types of authentication:
 - Configured at server startup via `TSSTORE_ADMIN_KEY` (min 20 characters)
 - Pass via the `X-Admin-Key` header
 
-### Store API Key (for data operations)
-- Each store has its own API key, generated when the store is created
-- The key is shown only once - store it securely
+### Scoped API Keys (for data operations)
+
+Keys live in a central registry and carry **grants** — what a key may do, and on which stores. Creating a store still mints a key with full access to that store, so the common case is unchanged.
+
 - Pass via either header (checked in order):
   - Header: `X-API-Key: tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
   - Header: `Authorization: Bearer tsstore_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+- A generated key is shown only once — store it securely.
 
 Credentials are header-only — query-string keys would land in proxy and access logs. The one exception is the inbound WebSocket handshake (`/ws/write?api_key=...`), where the browser WebSocket API cannot set headers.
+
+#### Access classes
+
+Every endpoint requires one of three classes. They are **independent flags, not a hierarchy** — `manage` does not imply `read`, so a key lists exactly the classes it needs.
+
+| Class | Covers |
+|---|---|
+| `read` | Query, range, oldest/newest, schema read, stream out |
+| `write` | Ingest (`POST /data`, `GET /ws/write`, the Unix socket) |
+| `manage` | Store-scoped administration: alert CRUD, rollups, WS/MQTT connections, schema writes, reset, store delete |
+
+Alerts are store-scoped rather than server-scoped, so alert management is a `manage` grant on the store — it does not require the admin key.
+
+#### Grants
+
+A grant pairs access classes with a store pattern: an exact name, a prefix glob (`sensors-*`), or `*` for every store.
+
+```
+read:*                        read-only across every store
+read,write:sensors-*          ingest into a namespace
+read,write,manage:home-env    full control of one store
+```
+
+Wildcards matter because an enumerated store list goes stale the moment a collector auto-creates a store.
+
+#### 401 vs 403
+
+- **401** — no key, a malformed key, or a key not in the registry.
+- **403** — the key is valid but lacks the required class for that store. Retrying with the same credential will never succeed.
+
+#### Bring your own key
+
+A key can be minted externally (e.g. in a secrets vault) and adopted, so the vault is the origin rather than a downstream copy of ts-store's output. Supplied keys must use the same format as generated ones: the `tsstore_` prefix, at least 44 characters total.
+
+```bash
+op read op://HOMELAB/nas-disks/credential \
+  | tsstore key create --key-file - --grant read,write:nas-syn-002-disks
+```
+
+When you supply a key, no response or CLI output echoes it back.
+
+#### Upgrading from per-store keys
+
+Pre-existing per-store keys are imported into the registry automatically on first boot, each granted `read,write,manage` on its own store — exactly the authority it had before. **No client reconfiguration and no key rotation is required.** The old `<store>/keys.json` files are left in place (unread) so a downgrade still works.
 
 ### Failed-auth rate limiting
 
@@ -135,8 +181,16 @@ Returns the store API key (shown only once):
 ### List Stores
 ```
 GET /api/stores
+X-API-Key: <api-key>
 ```
-No authentication required. Lists open stores by name.
+
+**Requires an API key**, and returns only the stores that key may `read`. A read-only dashboard key sees exactly the stores it can chart; a store's own key sees just that store.
+
+This doubles as a connection test that needs no store name — endpoint plus key is enough — and as store discovery for clients building a picker.
+
+> **Breaking change.** This endpoint was previously unauthenticated and returned every store. It now returns `401` without a valid key. An unauthenticated listing would disclose the full store inventory of a deployment, which is precisely what scoped keys exist to prevent.
+
+The admin key is deliberately not accepted here: it is the server tier (store lifecycle, key management) and holds no read grants, so "which stores can I read?" has no meaningful answer for it.
 
 ### Delete Store (requires auth)
 ```
