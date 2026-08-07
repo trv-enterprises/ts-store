@@ -40,8 +40,9 @@ type Pusher struct {
 	accumulator *aggregation.Accumulator // nil if no aggregation
 	aggConfig   *aggregation.Config      // nil if no aggregation
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // NewPusher creates a new MQTT pusher.
@@ -172,9 +173,11 @@ func (p *Pusher) Start() error {
 	return nil
 }
 
-// Stop stops the MQTT connection.
+// Stop stops the MQTT connection. Idempotent: a bare close(p.stopCh)
+// panics on the second call, and a connection can be stopped both
+// individually (DeleteConnection) and en masse (Manager.Stop).
 func (p *Pusher) Stop() error {
-	close(p.stopCh)
+	p.stopOnce.Do(func() { close(p.stopCh) })
 	p.wg.Wait()
 
 	p.mu.Lock()

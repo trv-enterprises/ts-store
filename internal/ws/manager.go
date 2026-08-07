@@ -8,6 +8,7 @@ package ws
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -89,7 +90,16 @@ func (m *Manager) LoadAndStart() error {
 			continue // Skip invalid connections
 		}
 		m.connections[conn.ID()] = conn
-		go conn.Start()
+		// Synchronous: Start only does wg.Add(1) plus its own
+		// `go runLoop()`, so it never blocks — and doing the Add on this
+		// goroutine orders it before any later Stop()'s wg.Wait(). With
+		// `go conn.Start()`, a prompt Stop could Wait on a WaitGroup
+		// whose Add had not run yet: a data race, and a Wait that
+		// returns while runLoop is still starting.
+		if err := conn.Start(); err != nil {
+			log.Printf("ws %s: start connection %s: %v", m.storeName, conn.ID(), err)
+			delete(m.connections, conn.ID())
+		}
 	}
 
 	return nil
@@ -167,7 +177,12 @@ func (m *Manager) CreateConnection(req CreateConnectionRequest) (*ConnectionStat
 	}
 
 	m.connections[id] = conn
-	go conn.Start()
+	// Synchronous — see the note in LoadAndStart.
+	if err := conn.Start(); err != nil {
+		delete(m.connections, id)
+		m.store.RemoveWSConnection(id)
+		return nil, err
+	}
 
 	status := conn.Status()
 	return &status, nil
