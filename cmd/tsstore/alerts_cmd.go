@@ -28,6 +28,13 @@ Subcommands:
 Required rule options (every create needs these):
   --name <label>           Human label for this alert
   --condition <expr>       Rule expression, e.g. "temperature > 80"
+                           (condition rules only)
+
+Staleness rules — fire when a store STOPS receiving data:
+  --rule-type staleness    Alert on absent data instead of bad values
+  --max-age <duration>     Fire when nothing has arrived for this long
+                           (required for staleness; no default). Mutually
+                           exclusive with --condition.
 
 Common create options:
   --cooldown <duration>    Min time between alerts (e.g., 5m)
@@ -48,6 +55,12 @@ Examples:
   tsstore alerts mqtt add my-store \
     --broker tcp://mqtt:1883 --topic alerts/heat \
     --name high-temp --condition "temperature > 80"
+
+  # Fire if the collector writing this store goes quiet for 5 minutes
+  tsstore alerts webhook add my-store \
+    --url https://hooks.slack.com/services/... \
+    --name "collector went quiet" \
+    --rule-type staleness --max-age 5m --cooldown 30m
 
   tsstore alerts list my-store
   tsstore alerts rm   my-store a1b2c3d4`)
@@ -83,7 +96,9 @@ type commonAlertFlags struct {
 	storeName     string
 	apiKey        string
 	name          string
+	ruleType      string
 	condition     string
+	maxAge        string
 	cooldown      string
 	externalRef   string
 	restartPolicy string
@@ -128,7 +143,18 @@ func consumeAppend(args []string, i int, dst *[]string) (int, bool) {
 // request body map. Used by all three transport-specific runners.
 func applyCommonRuleFields(body map[string]interface{}, c commonAlertFlags) {
 	body["name"] = c.name
-	body["condition"] = c.condition
+	// Omit both when empty so the server applies its own defaults and
+	// reports its own validation errors — the CLI does not second-guess
+	// which rule fields are required for which rule type.
+	if c.ruleType != "" {
+		body["rule_type"] = c.ruleType
+	}
+	if c.condition != "" {
+		body["condition"] = c.condition
+	}
+	if c.maxAge != "" {
+		body["max_age"] = c.maxAge
+	}
 	if c.cooldown != "" {
 		body["cooldown"] = c.cooldown
 	}
@@ -146,6 +172,24 @@ func applyCommonRuleFields(body map[string]interface{}, c commonAlertFlags) {
 	}
 }
 
+// missingRuleFlag returns the flag the user still has to supply for the
+// chosen rule type, or "" when the rule is fully specified. A staleness
+// alert takes --max-age and no condition; a condition alert the reverse.
+// Conflicting combinations are left to the server so the CLI and the API
+// can't drift apart on which pairings are legal.
+func missingRuleFlag(c commonAlertFlags) string {
+	if c.ruleType == "staleness" {
+		if c.maxAge == "" {
+			return "--max-age"
+		}
+		return ""
+	}
+	if c.condition == "" {
+		return "--condition"
+	}
+	return ""
+}
+
 // addCommonRuleFlags is the per-transport flag parser snippet for the
 // shared rule fields. Returns the (possibly advanced) index and whether
 // the flag was recognized.
@@ -153,8 +197,12 @@ func addCommonRuleFlag(args []string, i int, c *commonAlertFlags, flag string) (
 	switch flag {
 	case "--name":
 		return consumeFlag(args, i, &c.name)
+	case "--rule-type":
+		return consumeFlag(args, i, &c.ruleType)
 	case "--condition":
 		return consumeFlag(args, i, &c.condition)
+	case "--max-age":
+		return consumeFlag(args, i, &c.maxAge)
 	case "--cooldown":
 		return consumeFlag(args, i, &c.cooldown)
 	case "--external-ref":
@@ -189,7 +237,7 @@ func runAlertsWebhook(args []string) {
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
-		case "--api-key", "--name", "--condition", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
 			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
@@ -205,8 +253,12 @@ func runAlertsWebhook(args []string) {
 		}
 	}
 
-	if c.storeName == "" || url == "" || c.name == "" || c.condition == "" {
-		fmt.Println("Error: store name, --url, --name, and --condition are required")
+	if c.storeName == "" || url == "" || c.name == "" {
+		fmt.Println("Error: store name, --url, and --name are required")
+		os.Exit(1)
+	}
+	if missing := missingRuleFlag(c); missing != "" {
+		fmt.Printf("Error: %s is required\n", missing)
 		os.Exit(1)
 	}
 
@@ -257,7 +309,7 @@ func runAlertsWS(args []string) {
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
-		case "--api-key", "--name", "--condition", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
 			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
@@ -271,8 +323,12 @@ func runAlertsWS(args []string) {
 		}
 	}
 
-	if c.storeName == "" || url == "" || c.name == "" || c.condition == "" {
-		fmt.Println("Error: store name, --url, --name, and --condition are required")
+	if c.storeName == "" || url == "" || c.name == "" {
+		fmt.Println("Error: store name, --url, and --name are required")
+		os.Exit(1)
+	}
+	if missing := missingRuleFlag(c); missing != "" {
+		fmt.Printf("Error: %s is required\n", missing)
 		os.Exit(1)
 	}
 
@@ -328,7 +384,7 @@ func runAlertsMQTT(args []string) {
 			i, _ = consumeFlag(args, i, &username)
 		case "--password":
 			i, _ = consumeFlag(args, i, &password)
-		case "--api-key", "--name", "--condition", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
 			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		default:
 			if c.storeName == "" && !strings.HasPrefix(args[i], "-") {
@@ -340,8 +396,12 @@ func runAlertsMQTT(args []string) {
 		}
 	}
 
-	if c.storeName == "" || broker == "" || topic == "" || c.name == "" || c.condition == "" {
-		fmt.Println("Error: store name, --broker, --topic, --name, and --condition are required")
+	if c.storeName == "" || broker == "" || topic == "" || c.name == "" {
+		fmt.Println("Error: store name, --broker, --topic, and --name are required")
+		os.Exit(1)
+	}
+	if missing := missingRuleFlag(c); missing != "" {
+		fmt.Printf("Error: %s is required\n", missing)
 		os.Exit(1)
 	}
 

@@ -135,6 +135,59 @@ func (e *Evaluator) evaluateRecord(rec dataRecord) {
 	}
 }
 
+// FireStaleness fires a staleness alert: the store has gone longer than
+// maxAge without a new record (issue #134). Unlike Evaluate, this does
+// not queue onto dataCh — there is no record to evaluate, and a
+// staleness check is already running on the poll goroutine at tick
+// cadence, so the buffering that protects the shared scan from a slow
+// sink is neither needed nor meaningful here.
+//
+// Cooldown is enforced exactly as it is for a condition match, and
+// lastFired is stamped before the callback so the worker can persist it.
+// newestTs is the store's newest record timestamp; age is how long ago
+// that was.
+func (e *Evaluator) FireStaleness(newestTs int64, age, maxAge time.Duration) {
+	e.recordsMatched.Add(1)
+
+	now := time.Now()
+	if !e.checkCooldown(now) {
+		return
+	}
+
+	alert := notify.Alert{
+		RuleName:  e.rule.Name,
+		Condition: StalenessCondition(maxAge),
+		// The alert is about the moment data stopped, so anchor the
+		// payload timestamp there rather than at "now".
+		Timestamp: newestTs,
+		Data: map[string]interface{}{
+			"last_timestamp":  newestTs,
+			"age_seconds":     age.Seconds(),
+			"max_age_seconds": maxAge.Seconds(),
+			"store":           e.storeName,
+			"rule_type":       "staleness",
+		},
+		StoreName:   e.storeName,
+		ExternalRef: e.externalRef,
+	}
+
+	e.mu.Lock()
+	e.lastFired = now
+	e.mu.Unlock()
+
+	if e.onAlert != nil {
+		e.onAlert(alert)
+	}
+}
+
+// StalenessCondition renders a staleness threshold in the same
+// human-readable shape as a parsed condition, so a receiver (and the
+// dashboard alerts table) can display one `condition` field for every
+// alert regardless of rule type.
+func StalenessCondition(maxAge time.Duration) string {
+	return "no data for " + maxAge.String()
+}
+
 // LastFired returns when the rule last fired, or the zero time if it
 // has not fired since the evaluator was created (or seeded).
 func (e *Evaluator) LastFired() time.Time {

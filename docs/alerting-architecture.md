@@ -76,6 +76,7 @@ All three are persisted per-store as JSON and survive daemon restarts (re-loaded
 ## Data flow
 
 1. **Polling**: the store's shared poller calls `store.GetObjectsInRange(lastTs+1, now, 100)` once per tick, where `lastTs` is the shared scan cursor and the tick is the **minimum `poll_interval` across the store's alerts** (each alert's value is a hint; the fastest wins for the whole store). An idle tick — nothing written since the cursor — early-outs on the store's newest timestamp without scanning (issue #57).
+   - **Staleness rules are evaluated on every tick**, including both early-out paths, using that same newest timestamp. Steps 2–5 below describe the `condition` path only; a staleness rule skips them entirely and goes straight to the cooldown + dispatch of step 5. See [Staleness rules on the shared loop](#staleness-rules-on-the-shared-loop).
 2. **Read + expand + parse, once**: each scanned record is read from storage once; for schema-type stores it is expanded via `store.ExpandData` so condition fields resolve to schema field names, then JSON-parsed. The resulting map is fanned out **read-only** to every worker — rule evaluation and sink payload marshalling never mutate it.
 3. **Fan-out**: each worker filters the batch by its own cursor, so a record is evaluated at most once per alert even when the shared scan re-covers old ranges — e.g. when a `resume`-policy alert registers with a persisted cursor behind the shared position, the scan is pulled back and only that alert replays the backlog.
 4. **Evaluation**: eligible records are handed to `rules.Evaluator.Evaluate(ts, data)`, which buffers into a 1000-element channel; a full channel drops the record and increments the alert's `records_dropped` counter, so one slow sink can't stall the shared loop.
@@ -99,6 +100,20 @@ The decisions locked when #4 landed (Option B — shared poll loop; Option A, a 
 | Corrupt records | Still advance every cursor (delivered with a nil parsed map) | A single bad record must not stall alert evaluation forever |
 
 Cost model (N alerts on one store): scans per tick N → **1**; per-record read + schema-expand + JSON-parse N → **1**; per-alert evaluation and dispatch unchanged. Latency is unchanged (up to the store's effective tick) — sub-second delivery is Option A territory.
+
+### Staleness rules on the shared loop
+
+Staleness (issue #134) is the one rule type that must run on a tick where *nothing arrived*, which is exactly the tick the idle early-out was built to skip. The decisions that follow from that:
+
+| Decision | Choice | Why |
+|---|---|---|
+| Where the check runs | On **every** tick, before both early-out returns and on the scan path | An idle tick is the only tick a staleness rule exists for; returning early without checking would make the rule type inert |
+| Cost | Reuses the `GetNewestTimestamp()` the early-out already computes, passed into the check | O(partitions) of metadata, already read once per tick — a staleness rule adds one comparison and **no** extra read, scan, or per-record state |
+| Shared cursor | Staleness workers are excluded from the scan-position floor on register | They consume no records; letting one pull the scan back would make every other alert replay a range it already handled |
+| Scan suppression | A store whose *only* alerts are staleness rules skips the range read entirely | Such a store never advances the shared cursor, so `newestTs <= lastTs` would never hold and every tick would block-scan the whole store |
+| Tick interval | Staleness workers still count toward `min(poll_interval)` | They need ticks to fire; excluding them would let a slow condition alert delay staleness detection |
+| Fan-out | `deliverBatch` is a no-op for staleness workers | Their evaluator is used only for cooldown + dispatch; it never evaluates record contents |
+| Scan errors | Staleness is skipped when the newest-timestamp read fails | Without a trustworthy timestamp there is no age to judge; the scan error already marks every worker `state="error"` |
 
 ## Configuration
 
@@ -126,7 +141,9 @@ Every alert — webhook, WS, MQTT — carries the same rule + dispatch policy fi
 | Field | Required | Description |
 |---|---|---|
 | `name` | yes | Human label for this alert. |
-| `condition` | yes | Rule expression, e.g. `temperature > 80`. |
+| `rule_type` | no | `"condition"` (default) or `"staleness"`. See [Rule types](#rule-types). |
+| `condition` | for `condition` rules | Rule expression, e.g. `temperature > 80`. Rejected for staleness rules. |
+| `max_age` | for `staleness` rules | Fire when nothing has arrived for this long (duration string, e.g. `5m`). No default. Rejected for condition rules. |
 | `cooldown` | no | Min time between fires (duration string, e.g. `5m`). |
 | `external_ref` | no | Opaque pass-through string (≤512 bytes, no NUL); echoed verbatim on every alert payload. |
 | `restart_policy` | no | `"now"` (default — start from wall-clock now, no cursor) or `"resume"` (replay from cursor on restart). |
@@ -134,6 +151,60 @@ Every alert — webhook, WS, MQTT — carries the same rule + dispatch policy fi
 | `poll_interval` | no | Poll cadence hint (default `1s`). The store's shared loop ticks at the **minimum** across its alerts, so a faster alert speeds up every alert on the store and a slow value only takes effect if it is the minimum. |
 
 `condition` syntax: `field <op> value`, optionally compounded with `AND` / `OR`. Operators: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`. Values: numbers, quoted strings, booleans. Field names may include dots and hyphens (`cpu.percent`, `temp.cpu_c`).
+
+### Rule types
+
+`rule_type` selects **what makes the alert fire**. It defaults to `"condition"`, so every alert created before this field existed keeps working unchanged — no migration.
+
+| Rule type | Fires on | Driven by |
+|---|---|---|
+| `condition` (default) | A record arrived whose fields satisfy `condition` | Record contents |
+| `staleness` | No record has arrived for longer than `max_age` | The poll tick / wall clock |
+
+**Why staleness cannot be a condition.** A condition is a function of a record's fields. Absence has no record and therefore no fields to write an expression against, so no operator can express it. That makes staleness a distinct rule type rather than a new operator (issue #134).
+
+The failure this covers is a collector that is OOM-killed, whose host reboots, or whose network partitions. It produces exactly zero records, so a condition rule — which only ever runs against records that arrived — produces exactly zero alerts, forever. Detection has to live in the store, because a collector reporting its own death only works while it is alive.
+
+```json
+{
+  "type": "webhook",
+  "rule_type": "staleness",
+  "name": "nas-syn-002-disks went quiet",
+  "max_age": "5m",
+  "cooldown": "30m",
+  "webhook": { "url": "https://hooks.example.com/incoming" }
+}
+```
+
+Semantics:
+
+- **`max_age` is per-rule and opt-in, with no implicit default.** A collector polling every 60s should alert after a few missed polls, but an event-driven source (a door contact) can be legitimately silent for days. Any global default would flood one of those two cases, so there isn't one.
+- **An empty store never fires.** A store that has never received a single record is "not yet started", not stale — otherwise every newly created store alerts before its collector's first write. Only a store that *had* data and stopped can go stale.
+- **The age is floored at the worker's start time.** An alert created against a store that went quiet last week does not fire immediately on a gap that predates it.
+- **No resolve event.** When data returns, the rule simply stops firing; `cooldown` bounds repeat fires while the store stays quiet. Adding a resolve signal would mean a new payload field that is meaningless for every condition alert, so it is deliberately left for a future change that can design it across *all* rule types.
+- **`condition`, `restart_policy: "resume"`, and `max_replay` are rejected** (400) for staleness rules rather than silently ignored. A staleness rule has no cursor to resume from and no record to evaluate, so accepting these would misrepresent what the alert does.
+
+The alert payload uses the same shape as any other alert. Because there is no triggering record, `data` describes the absence instead, and `timestamp` is the newest record's timestamp — the moment data stopped, which is what a receiver wants to display:
+
+```json
+{
+  "rule_name": "nas-syn-002-disks went quiet",
+  "condition": "no data for 5m0s",
+  "timestamp": 1747000000000000000,
+  "data": {
+    "last_timestamp": 1747000000000000000,
+    "age_seconds": 612.4,
+    "max_age_seconds": 300,
+    "store": "nas-syn-002-disks",
+    "rule_type": "staleness"
+  },
+  "store_name": "nas-syn-002-disks"
+}
+```
+
+Staleness reuses everything already built — the three sinks, cooldown, `external_ref`, the persisted last-fired mark — so a staleness alert appears in the same `GET /alerts` list and the same dashboard table as threshold alerts, tagged by `rule_type`.
+
+**Scope: per-store, not per-series.** This fires on "the store stopped receiving", which catches a dead collector. It does *not* catch one series going quiet while others keep reporting — on a tall store, four disks still writing keeps the store-level newest timestamp fresh. That case needs `latest_by`-style grouping and is tracked separately in issue #135.
 
 ## HTTP API
 
@@ -207,6 +278,8 @@ The MQTT client connects on first dispatch and stays connected. `qos` defaults t
 
 The server rejects requests where `type` is missing or unknown, where the nested options block for the chosen `type` is absent, or where any of the *other* transport blocks are also set. `max_replay` without `restart_policy="resume"` is rejected. `external_ref` over 512 bytes or containing NUL bytes is rejected.
 
+Rule-type validation: an unknown `rule_type` is rejected. For `rule_type="condition"` (the default), `condition` is required and `max_age` is rejected. For `rule_type="staleness"`, `max_age` is required and must parse to a positive duration, while `condition`, `restart_policy="resume"`, and `max_replay` are all rejected — a staleness rule has no cursor and no record, so accepting those fields would leave the persisted config describing behavior the alert does not have.
+
 Sink URLs are parsed at create time and must carry a host and a scheme matching the transport — `http`/`https` for webhooks, `ws`/`wss` for WebSocket sinks, and one of paho's accepted schemes (`tcp`, `ssl`, `tls`, `ws`, `wss`, `mqtt`, `mqtts`, `unix`) for MQTT broker URLs. A malformed or mis-schemed URL is a 400 at create rather than a runtime `last_error` at first fire.
 
 **SSRF posture.** Loopback, link-local, and private-range sink targets are deliberately *not* blocked: alerts posting to services on the same box or LAN are a core homelab pattern here. The consequence is that anyone holding a store API key can make the daemon POST to any address the daemon can reach. Treat store API keys accordingly on shared or internet-exposed deployments; a deny-list (e.g. blocking `169.254.0.0/16`) can be revisited if that threat model ever applies.
@@ -234,7 +307,7 @@ Each alert may carry an `external_ref` string (≤512 bytes, no NUL bytes, other
 
 ## CLI
 
-The CLI mirrors the HTTP API. Each transport has its own `add` subcommand, but all share the same rule + dispatch flags (`--name`, `--condition`, `--cooldown`, `--external-ref`, `--restart`, `--max-replay`, `--poll`, `--api-key`).
+The CLI mirrors the HTTP API. Each transport has its own `add` subcommand, but all share the same rule + dispatch flags (`--name`, `--rule-type`, `--condition`, `--max-age`, `--cooldown`, `--external-ref`, `--restart`, `--max-replay`, `--poll`, `--api-key`).
 
 ```sh
 # Webhook alert
@@ -255,7 +328,14 @@ tsstore alerts mqtt add <store> --broker <url> --topic <t> \
   [--qos 0|1|2] [--username u --password p] \
   [--restart now|resume] [--max-replay 1h]
 
-# Dry-run a condition against a sample record (no alert created)
+# Staleness alert — fire when the store STOPS receiving data.
+# Works with any transport; takes --max-age instead of --condition.
+tsstore alerts webhook add <store> --url <url> \
+  --name "collector went quiet" \
+  --rule-type staleness --max-age 5m --cooldown 30m
+
+# Dry-run a condition against a sample record (no alert created).
+# Condition rules only — a staleness rule has no record to dry-run against.
 tsstore alerts test <store> --condition "temperature > 80" --data '{"temperature": 95}'
 
 # List / delete
@@ -297,6 +377,8 @@ Store: sensors
 ## Future work
 
 - **Sub-second alerting (event bus)**: issue [#4](https://github.com/trv-enterprises/ts-store/issues/4) landed its Option B — the shared poll loop described above — which removed the N×scan cost. The alternative it weighed (Option A, an in-process pub/sub bus from the write path) remains the path to ~0ms write→evaluate latency if that ever becomes a requirement; polling latency today is up to the store's effective tick.
+- **Per-series staleness**: issue [#135](https://github.com/trv-enterprises/ts-store/issues/135). The per-store rule above misses one series going quiet while others keep reporting — four disks still writing keeps the store's newest timestamp fresh. Needs `latest_by`-style grouping and an authored `series_field`/`series_value`, since the store cannot infer which series *ought* to exist.
+- **Resolve / clear events**: staleness alerts stop firing when data returns but emit no explicit "recovered" signal. Worth designing across all rule types rather than only staleness, since a condition alert has the same gap.
 - **Retry policies for webhook**: today, transient HTTP failures are not retried. A bounded exponential backoff inside `notify.Webhook` would be cheap to add.
 - **TLS / mTLS for MQTT**: `tcp://` brokers only. `ssl://` (TLS) and `wss://` (MQTT-over-WebSocket) need config knobs.
 - **Authentication on MQTT-over-WSS**: combine broker `wss://` URL with header auth for cloud-broker scenarios.

@@ -1028,9 +1028,15 @@ paths:
         `"mqtt"`, and exactly one matching nested options object
         (`webhook`, `ws`, or `mqtt`) must be provided.
 
-        Each alert carries exactly one rule (the `name`, `condition`,
-        `cooldown`, `external_ref`, `restart_policy`, `max_replay`
-        fields at the top level of the request).
+        Each alert carries exactly one rule (the `name`, `rule_type`,
+        `condition`, `max_age`, `cooldown`, `external_ref`,
+        `restart_policy`, `max_replay` fields at the top level of the
+        request).
+
+        `rule_type` selects what makes the alert fire and defaults to
+        `"condition"`. Use `"staleness"` with a `max_age` to alert when
+        the store STOPS receiving data — the failure a condition rule
+        can never catch, since it has no record to evaluate.
       security:
         - ApiKeyHeader: []
         - BearerAuth: []
@@ -1955,24 +1961,62 @@ components:
       type: object
       required:
         - name
-        - condition
       description: |
         The rule + dispatch policy fields shared by every alert transport
         (webhook, ws, mqtt). Embedded at the top level of CreateAlertRequest
         and surfaced on AlertDetail. Field names in the `condition` may
         include dots and hyphens (e.g. `cpu.percent`, `temp.cpu_c`).
+
+        Which rule fields are required depends on `rule_type`:
+        - "condition" (default): `condition` is required; `max_age` is
+          rejected.
+        - "staleness": `max_age` is required; `condition`,
+          `restart_policy="resume"` and `max_replay` are rejected — a
+          staleness rule has no cursor and no triggering record.
       properties:
         name:
           type: string
           description: Human label for this alert, echoed on every fire.
           example: high_temp
+        rule_type:
+          type: string
+          enum: ["", "condition", "staleness"]
+          description: |
+            What makes this alert fire. Defaults to "condition" when
+            empty or omitted, so alerts created before this field
+            existed are unaffected.
+            - "condition": fires when an arriving record satisfies
+              `condition`. Driven by record contents.
+            - "staleness": fires when NO record has arrived for longer
+              than `max_age`. Driven by the poll tick, so it still works
+              on a store that has gone completely silent — which is
+              precisely when a condition rule cannot fire at all.
+              Per-store only; per-series staleness is issue #135.
+          example: staleness
         condition:
           type: string
           description: |
-            Condition expression. Syntax:
+            Condition expression. Required when `rule_type` is
+            "condition" (the default); rejected for staleness rules,
+            which have no record to evaluate. Syntax:
             - Simple: "temperature > 80", "status == \"error\""
             - Compound: "temp > 80 AND humidity < 30", "level == \"warn\" OR level == \"error\""
           example: temperature > 80
+        max_age:
+          type: string
+          description: |
+            How long the store may go without a new record before a
+            staleness alert fires. Required when `rule_type="staleness"`,
+            rejected otherwise. Must parse to a positive duration.
+
+            There is deliberately NO default: a collector polling every
+            60s should alert after a few missed polls, but an
+            event-driven source can be legitimately silent for days, so
+            any global default would flood one of those cases.
+
+            A store that has never received any data never fires — it is
+            treated as not-yet-started rather than stale.
+          example: 5m
         cooldown:
           type: string
           description: Minimum time between fires (e.g., "5m", "1h").
@@ -2024,6 +2068,20 @@ components:
         rule_name:
           type: string
           description: The single rule's name, mirrored here for status output.
+        rule_type:
+          type: string
+          enum: [condition, staleness]
+          description: >-
+            Which rule type this alert uses. Always populated (an alert
+            with no persisted rule_type reports "condition"), so a client
+            can render both kinds in one list without inferring the type
+            from which other fields happen to be set.
+        max_age:
+          type: string
+          description: >-
+            The staleness threshold as configured (e.g. "5m"). Omitted
+            for condition rules.
+          example: 5m
         alerts_fired:
           type: integer
           format: int64
@@ -2037,7 +2095,8 @@ components:
             How far the worker's cursor trails the newest record in the
             store, in milliseconds — 0 when caught up or the store is
             empty. Sustained growth means the worker's drain rate can't
-            keep up with the store's write rate.
+            keep up with the store's write rate. Always 0 for staleness
+            rules, which keep no cursor and consume no records.
         last_fired_at:
           type: string
           format: date-time
