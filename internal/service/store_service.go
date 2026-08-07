@@ -34,21 +34,21 @@ var (
 
 // StoreService manages store lifecycle and operations.
 type StoreService struct {
-	mu           sync.RWMutex
-	cfg          *config.Config
-	keyManager   *apikey.Manager
-	stores          map[string]*store.Store      // storeName -> Store
-	wsManagers      map[string]*ws.Manager       // storeName -> WS Manager
-	mqttManagers    map[string]*mqtt.Manager     // storeName -> MQTT Manager
-	alertsManagers  map[string]*alerts.Manager   // storeName -> Alerts Manager
-	rollupsManagers map[string]*rollups.Manager  // storeName -> Rollups Manager (keyed by SOURCE store)
+	mu              sync.RWMutex
+	cfg             *config.Config
+	keyManager      *apikey.Manager
+	stores          map[string]*store.Store     // storeName -> Store
+	wsManagers      map[string]*ws.Manager      // storeName -> WS Manager
+	mqttManagers    map[string]*mqtt.Manager    // storeName -> MQTT Manager
+	alertsManagers  map[string]*alerts.Manager  // storeName -> Alerts Manager
+	rollupsManagers map[string]*rollups.Manager // storeName -> Rollups Manager (keyed by SOURCE store)
 }
 
 // NewStoreService creates a new store service.
 func NewStoreService(cfg *config.Config, keyManager *apikey.Manager) *StoreService {
 	return &StoreService{
-		cfg:            cfg,
-		keyManager:     keyManager,
+		cfg:             cfg,
+		keyManager:      keyManager,
 		stores:          make(map[string]*store.Store),
 		wsManagers:      make(map[string]*ws.Manager),
 		mqttManagers:    make(map[string]*mqtt.Manager),
@@ -63,7 +63,7 @@ type CreateStoreRequest struct {
 	NumBlocks      uint32 `json:"num_blocks,omitempty"`
 	DataBlockSize  uint32 `json:"data_block_size,omitempty"`
 	IndexBlockSize uint32 `json:"index_block_size,omitempty"`
-	DataType       string `json:"data_type,omitempty"`    // binary, text, json, schema (default: json)
+	DataType       string `json:"data_type,omitempty"`      // binary, text, json, schema (default: json)
 	NumPartitions  uint32 `json:"num_partitions,omitempty"` // V2: number of partitions (default: 6)
 	TotalSize      int64  `json:"total_size,omitempty"`     // V2: total size in bytes
 	StorageType    string `json:"storage_type,omitempty"`   // "v2" (default; "v1" is rejected)
@@ -98,9 +98,9 @@ func (s *StoreService) Create(req *CreateStoreRequest) (*CreateStoreResponse, er
 		NumBlocks:      s.cfg.Store.NumBlocks,
 		DataBlockSize:  s.cfg.Store.DataBlockSize,
 		IndexBlockSize: s.cfg.Store.IndexBlockSize,
-		DataType:       store.DataTypeJSON,            // default
+		DataType:       store.DataTypeJSON,             // default
 		StorageType:    store.StorageTypeV2Partitioned, // default to V2
-		NumPartitions:  6,                             // default partitions
+		NumPartitions:  6,                              // default partitions
 	}
 
 	// Override with request values if provided
@@ -453,9 +453,9 @@ func (s *StoreService) ListAll() []string {
 type StoreInfo struct {
 	Name     string `json:"name"`
 	DataType string `json:"data_type,omitempty"`
-	Role     string `json:"role"`                 // "source" | "rollup" | "store"
-	RollupOf string `json:"rollup_of,omitempty"`  // set when Role == "rollup"
-	Window   string `json:"window,omitempty"`     // set when Role == "rollup"
+	Role     string `json:"role"`                // "source" | "rollup" | "store"
+	RollupOf string `json:"rollup_of,omitempty"` // set when Role == "rollup"
+	Window   string `json:"window,omitempty"`    // set when Role == "rollup"
 }
 
 // ListAllInfo returns enriched info for every store on disk: data type and
