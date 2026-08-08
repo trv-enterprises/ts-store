@@ -1,0 +1,47 @@
+version: 2
+
+# Dependabot opens PRs for outdated and vulnerable dependencies. This
+# costs no CI time of its own — the PRs it opens run the normal checks.
+#
+# It complements govulncheck rather than duplicating it: govulncheck
+# gates on vulnerabilities this code actually REACHES, while Dependabot
+# keeps the graph current so unreachable advisories don't accumulate
+# into a painful catch-up bump later.
+updates:
+  # Root module (server + CLI).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for routine patch/minor bumps instead of one per module —
+      # a stream of individual dependency PRs is what makes people stop
+      # reading them. Majors stay separate: they need real review.
+      go-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps
+
+  # examples/synology-snmp is a SEPARATE Go module and is invisible to
+  # the root entry above.
+  - package-ecosystem: gomod
+    directory: /examples/synology-snmp
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      collector-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: deps(synology-snmp)
+
+  # Keep the workflow actions themselves current — a pinned action with
+  # a known issue is as real a supply-chain exposure as a Go module.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci

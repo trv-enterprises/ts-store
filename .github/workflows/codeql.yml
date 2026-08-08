@@ -1,0 +1,78 @@
+name: CodeQL
+
+# Static analysis for security-relevant defect classes that neither
+# `go vet` nor govulncheck covers: injection, path traversal, unsafe
+# deserialization, auth-bypass shapes. Free for public repositories.
+#
+# Deliberately NOT on every PR. A run is 3-6 minutes and its findings
+# need triage, so gating every change on it would make it the check
+# people learn to click past. Instead it runs:
+#
+#   - weekly, as the baseline sweep
+#   - on PRs that touch the security-sensitive paths (auth, keys,
+#     handlers, the socket listener) — where a regression actually
+#     matters and the wait is worth it
+#   - on demand, via workflow_dispatch
+#
+# Findings land in the repo's Security tab rather than failing the
+# build, so a new advisory doesn't block unrelated work.
+on:
+  schedule:
+    # Mondays 06:00 UTC — before the week starts, after Dependabot's
+    # Monday run so any dep bump is already reflected.
+    - cron: '0 6 * * 1'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/apikey/**'
+      - 'internal/middleware/**'
+      - 'internal/handlers/**'
+      - 'internal/unixsock/**'
+      - 'internal/service/**'
+      - 'cmd/**'
+      - '.github/workflows/codeql.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (Go)
+    runs-on: ubuntu-latest
+    permissions:
+      # Required to upload results to the Security tab.
+      security-events: write
+      actions: read
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          # security-extended adds lower-severity security queries on top
+          # of the default set. Worth it here: this repo carries an auth
+          # layer, path handling driven by user-supplied store names, and
+          # a webhook sink that posts to arbitrary LAN addresses by
+          # design — exactly the surface the extra queries cover.
+          queries: security-extended
+
+      # Build explicitly rather than relying on autobuild: this module
+      # needs no special steps, and being explicit means a build failure
+      # reads as a build failure instead of an opaque CodeQL error.
+      - name: Build
+        run: go build ./...
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:go
