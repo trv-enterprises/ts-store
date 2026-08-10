@@ -73,15 +73,18 @@ type RollupInfo struct {
 	RollupOf string `json:"rollup_of"` // source store name
 }
 
-// ScanInfo describes how a filtered /newest scan was bounded, so a caller can
-// tell a short result set ("only 50 of your limit=100") apart from genuine
-// exhaustion, and learn it was a windowed (not full-store) scan. It is present
-// only on filtered /newest responses where a window was applied; the objects
-// array is untouched by its presence.
+// ScanInfo describes how a scan was bounded, so a caller can tell a short
+// result set ("only 50 of your limit=100", or a missing series) apart from
+// genuine exhaustion. Two kinds of bound exist: a lookback *window* (filtered
+// /newest with no time bound) and a record-count *scan budget* (latest_by with
+// no time bound, and filtered /oldest). It is present only on responses where
+// one of the bounds applied; the objects array is untouched by its presence.
 type ScanInfo struct {
-	Window        string `json:"window"`         // effective lookback window, e.g. "1h" / "48h"
-	WindowApplied bool   `json:"window_applied"` // true when the aggressive/explicit window bounded the scan
-	LimitReached  bool   `json:"limit_reached"`  // true when the scan stopped at limit with records still unexamined
+	Window           string `json:"window,omitempty"`             // effective lookback window, e.g. "1h" / "48h"
+	WindowApplied    bool   `json:"window_applied,omitempty"`     // true when the aggressive/explicit window bounded the scan
+	LimitReached     bool   `json:"limit_reached"`                // true when the scan stopped at limit with records still unexamined
+	ScanLimit        int    `json:"scan_limit,omitempty"`         // record-count budget that bounded the fetch
+	ScanLimitReached bool   `json:"scan_limit_reached,omitempty"` // true when the fetch filled the budget with older records still unexamined
 }
 
 // DataListResponse represents a list of data objects.
@@ -90,7 +93,7 @@ type DataListResponse struct {
 	Count    int            `json:"count"`
 	DataType string         `json:"data_type"`        // store data type ("schema", "json", "text", "binary") so consumers needn't a second store-info call
 	Rollup   *RollupInfo    `json:"rollup,omitempty"` // present only for rollup target stores
-	Scan     *ScanInfo      `json:"scan,omitempty"`   // present only for filtered /newest scans bounded by a window
+	Scan     *ScanInfo      `json:"scan,omitempty"`   // present only when a window or scan budget bounded the scan
 }
 
 // rollupInfoFor returns a RollupInfo for a store if it is a rollup target, else
@@ -108,6 +111,7 @@ func rollupInfoFor(st *store.Store) *RollupInfo {
 //   - application/octet-stream: raw binary body
 //   - text/plain: raw text body
 //   - application/json: JSON body with optional timestamp wrapper
+//
 // maxQueryLimit caps the limit query param. The response slice is
 // pre-allocated at this capacity, so an unbounded value is an OOM lever on
 // small devices (issue #30).
@@ -272,16 +276,34 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	filter := c.Query("filter")
 	filterIgnoreCase := c.Query("filter_ignore_case") == "true"
 
-	// When filtering, we need to fetch more than limit since some may be filtered out
+	// When filtering, fetch more than limit since some may be filtered out — but
+	// not the whole store: a filter matching little or nothing would decode every
+	// record (the same shape as issue #140 on /newest). Bound the fetch with an
+	// oldest-first scan budget; scan_limit overrides, scan_limit=0 for the old
+	// full scan. The loop below still stops early once limit matches are found.
 	fetchLimit := limit
+	var scan *ScanInfo
 	if filter != "" {
-		fetchLimit = 0 // Fetch all, filter in loop
+		scanLimit, err := resolveScanLimit(c, defaultScanLimit)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		fetchLimit = scanLimit // 0 = fetch all, filter in loop
+		if scanLimit > 0 {
+			scan = &ScanInfo{ScanLimit: scanLimit}
+		}
 	}
 
 	handles, err := st.GetOldestObjects(fetchLimit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if scan != nil && len(handles) >= scan.ScanLimit {
+		// Budget filled with newer records unexamined: matches may exist beyond
+		// the scanned range.
+		scan.ScanLimitReached = true
 	}
 
 	// For list operations, include data by default (set include_data=false to exclude)
@@ -291,6 +313,11 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	objects := make([]DataResponse, 0, limit)
 	for _, handle := range handles {
 		if len(objects) >= limit {
+			// Stopped at limit with records still unexamined: report it so a
+			// caller can tell this apart from genuine exhaustion of the budget.
+			if scan != nil {
+				scan.LimitReached = true
+			}
 			break
 		}
 
@@ -323,6 +350,7 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 		Count:    len(objects),
 		DataType: st.DataType().String(),
 		Rollup:   rollupInfoFor(st),
+		Scan:     scan,
 	})
 }
 
@@ -359,6 +387,38 @@ func resolveFilterWindow(c *gin.Context, hasAgg bool) (time.Duration, bool, erro
 	return dur, true, nil
 }
 
+// Scan-budget bounds for the fetch paths that would otherwise read the whole
+// store: latest_by with no time bound, and a filtered /oldest (issue #140).
+// A record count rather than a lookback window because it makes the cost
+// deterministic regardless of store size or write cadence: ~5000 records is a
+// fraction of a second even on a Pi-class host, and gives 5x headroom over
+// maxGroupsForAgg distinct groups. The cap exists because the store layer
+// preallocates the handle slice at this capacity, so an unbounded value is the
+// same OOM lever as an unbounded limit (issue #30).
+const (
+	defaultScanLimit = 5000
+	maxScanLimit     = 100000
+)
+
+// resolveScanLimit reads the optional scan_limit query param bounding how many
+// records an otherwise-unbounded scan may fetch. Absent → def; scan_limit=0 →
+// unbounded (the old full-store scan); otherwise the given count, clamped to
+// maxScanLimit.
+func resolveScanLimit(c *gin.Context, def int) (int, error) {
+	s := c.Query("scan_limit")
+	if s == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("scan_limit must be a non-negative integer")
+	}
+	if n > maxScanLimit {
+		return maxScanLimit, nil
+	}
+	return n, nil
+}
+
 // ListNewest handles GET /api/stores/:store/data/newest
 // Supports optional ?since=<duration> parameter (e.g., since=2h, since=30m, since=7d)
 // Supports aggregation with ?agg_window=<duration> (e.g., agg_window=1m)
@@ -366,6 +426,10 @@ func resolveFilterWindow(c *gin.Context, hasAgg bool) (time.Duration, bool, erro
 // lookback window is applied (1h plain, 48h aggregation) so the filtered scan
 // does not read the whole store; override with ?window=<dur> or window=0 for
 // an unbounded scan. The window param is ignored without a filter.
+// When ?latest_by= is set with no filter and no time bound, a newest-first
+// scan budget is applied instead (default 5000 records) so the dedup scan does
+// not read the whole store; override with ?scan_limit=<n> or scan_limit=0 for
+// an unbounded scan (issue #140).
 func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	storeName := middleware.GetStoreName(c)
 
@@ -454,10 +518,32 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 			return
 		}
 	} else {
+		// latest_by with no time bound used to fetch the ENTIRE store here
+		// (fetchLimit is forced to 0 so a row limit can't cap distinct groups) and
+		// decode every record before the dedup scan — issue #140. Bound the fetch
+		// with a newest-first scan budget instead: "newest per series, over the
+		// last N records" keeps the cost deterministic regardless of store size.
+		// scan_limit overrides the default; scan_limit=0 restores the full scan.
+		if latestBy != "" {
+			scanLimit, serr := resolveScanLimit(c, defaultScanLimit)
+			if serr != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": serr.Error()})
+				return
+			}
+			if scanLimit > 0 {
+				fetchLimit = scanLimit
+				scan = &ScanInfo{ScanLimit: scanLimit}
+			}
+		}
 		handles, err = st.GetNewestObjects(fetchLimit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
+		}
+		if scan != nil && len(handles) >= scan.ScanLimit {
+			// Budget filled with older records unexamined: a series absent from
+			// the response may simply be older than the scanned range.
+			scan.ScanLimitReached = true
 		}
 	}
 

@@ -77,7 +77,10 @@ GET /api/stores/:store/data/oldest
 | `include_data`       | query | bool   | true    | Set `false` to return metadata only (timestamps, sizes) |
 | `filter`             | query | string | --      | Substring match against serialized data |
 | `filter_ignore_case` | query | bool   | false   | Case-insensitive substring matching |
+| `scan_limit`         | query | int    | 5000    | **Only applies when `filter` is set.** Max records the oldest-first scan may examine, so a filter matching little or nothing doesn't decode the whole store. `scan_limit=0` for an unbounded full scan; values above 100000 are clamped. The response's `scan` object reports the budget (see [the `scan` field](#list-newest-data)). |
 | `format`             | query | string | `"full"` | `"full"` or `"compact"` -- schema stores only |
+
+> **Behavior change.** Filtered `/oldest` queries previously examined the entire store when matches were scarce. They now stop after `scan_limit` records (default 5000). Pass `scan_limit=0` to restore the full scan. Unfiltered queries are unchanged.
 
 **Response** (200):
 ```json
@@ -126,7 +129,8 @@ GET /api/stores/:store/data/newest
 | `agg_fields`         | query | string | --      | Per-field aggregation (e.g., `temperature:avg,humidity:avg`) |
 | `agg_default`        | query | string | --      | Default aggregation function (e.g., `avg` or `avg,sum,min,max`) |
 | `group_by`           | query | string | --      | Partition aggregation by a field's value: one downsampled series per distinct value (see [Aggregation](#aggregation)). With `group_by`, `limit` applies per series. |
-| `latest_by`          | query | string | --      | Return the single newest record for each distinct value of a field — "current state per series." No window, no aggregation; `limit` caps distinct groups. Mutually exclusive with `step`/`agg_window`. See [`latest_by`](#latest_by--newest-record-per-series). |
+| `latest_by`          | query | string | --      | Return the single newest record for each distinct value of a field — "current state per series." No aggregation; `limit` caps distinct groups. Mutually exclusive with `step`/`agg_window`. See [`latest_by`](#latest_by--newest-record-per-series). |
+| `scan_limit`         | query | int    | 5000    | **Only applies with `latest_by` and no `filter`/`since`.** Max records the newest-first dedup scan may fetch, so `latest_by` doesn't read the whole store (issue #140). `scan_limit=0` for an unbounded full scan; values above 100000 are clamped. Reported in the `scan` object. |
 
 **Response** (200): Same `DataListResponse` format as [List Oldest Data](#list-oldest-data). When aggregation parameters are provided, each object in the response contains aggregated values instead of raw data (see [Aggregation](#aggregation)).
 
@@ -141,10 +145,23 @@ GET /api/stores/:store/data/newest
 ```
 
 - `window` -- the effective lookback applied.
-- `window_applied` -- `true` when a window bounded the scan; `false` for `window=0` (full scan).
+- `window_applied` -- `true` when a window bounded the scan.
 - `limit_reached` -- `true` when the scan stopped at `limit` with matching records still unexamined *within the window*. It does **not** assert matches exist beyond the window (the scan never looked there). To search the full history, pass `window=0` or an explicit `since`.
 
-> **Behavior change.** Filtered `/newest` queries previously scanned the entire store. They now default to the last `1h` (`48h` with `agg_window`). Pass `window=0` or a time bound to restore a full scan. The `scan` field is additive; unfiltered queries are unchanged and omit it.
+**Scan budgets.** Two other query shapes would also read the whole store, and are bounded by a record count instead of a window: `latest_by` with no `filter`/`since` (newest-first), and a filtered `/oldest` (oldest-first). Their `scan` object reports the budget:
+
+```json
+{
+  "objects": [ ... ],
+  "count": 9,
+  "scan": { "limit_reached": false, "scan_limit": 5000, "scan_limit_reached": true }
+}
+```
+
+- `scan_limit` -- the record-count budget that bounded the fetch (the `scan_limit` param, default 5000).
+- `scan_limit_reached` -- `true` when the fetch filled the budget with records still unexamined. For `latest_by` this means a series absent from the response may simply be older than the scanned range; pass a larger `scan_limit`, `scan_limit=0`, or an explicit `since` to look further back.
+
+> **Behavior change.** Filtered `/newest` queries previously scanned the entire store. They now default to the last `1h` (`48h` with `agg_window`). Pass `window=0` or a time bound to restore a full scan. Likewise, `latest_by` with no time bound previously fetched and decoded every record in the store; it now scans the newest 5000 by default — pass `scan_limit=0` or a time bound for the old behavior. The `scan` field is additive; plain unfiltered queries are unchanged and omit it.
 
 ---
 
@@ -428,9 +445,10 @@ GET /api/stores/docker-containers/data/newest?latest_by=container
 Returns one row per container — its most recent reading — so a "current state" table (each container's latest CPU, memory, uptime) is one request.
 
 - **`/data/newest` only.** It is a newest-per-group lookup, not a time window.
-- **No aggregation and no window required** — unlike the `step&group_by&agg_default=last&limit=1` workaround, `latest_by` needs no window and never drops a series just because it hasn't reported recently. It returns each group's newest record regardless of how old that is.
+- **No aggregation and no window required** — unlike the `step&group_by&agg_default=last&limit=1` workaround, `latest_by` needs no time window: it dedups over the newest records regardless of their age.
+- **Bounded by a scan budget, not a clock.** With no `filter`/`since`, the dedup scan fetches at most `scan_limit` newest records (default 5000) — "newest per series, over the last N records" — so cost stays deterministic on stores of any size (issue #140: the previous full-store scan took >30s on a 24k-record store). A series whose newest record is older than the scanned range drops out, and the response's `scan.scan_limit_reached` says so; pass a larger `scan_limit` or `scan_limit=0` for the all-time scan.
 - Mutually exclusive with `step`/`agg_window` (that's the time-series question — use `group_by`); passing both is a `400`.
-- Composes with `filter` (narrow the set first) and `since` (bound the scan).
+- Composes with `filter` (narrow the set first) and `since` (bound the scan by time instead — an explicit `since` or `filter` window replaces the scan budget).
 - `limit` caps the number of distinct groups (default: up to 1000). Rows are ordered newest series first.
 - Records missing the field collapse into one remainder row.
 
