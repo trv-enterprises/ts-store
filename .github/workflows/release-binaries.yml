@@ -38,14 +38,14 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           # Check out the tag we're building — for workflow_dispatch this
           # means the input tag, not the default branch.
           ref: ${{ steps.tag.outputs.name }}
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
