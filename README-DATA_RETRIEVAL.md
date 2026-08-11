@@ -119,7 +119,7 @@ GET /api/stores/:store/data/newest
 |----------------------|-------|--------|---------|-------------|
 | `limit`              | query | int    | 10      | Max records to return |
 | `since`              | query | string | --      | Relative duration from now (e.g., `2h`, `24h`, `7d`) |
-| `window`             | query | string | *1h / 48h* | **Only applies when `filter` is set.** Aggressive default lookback so a filtered scan doesn't read the whole store: `1h` plain, `48h` when `agg_window` is set. Override with a duration, or `window=0` for an unbounded full scan. An explicit `since` overrides it. Ignored without a filter. |
+| `window`             | query | string | *1h / 48h* | **Applies when `filter` or aggregation (`agg_window`/`step`) is set.** Aggressive default lookback so the scan doesn't read the whole store: `1h` plain filtered, `48h` when aggregating. Override with a duration, or `window=0` for an unbounded full scan. An explicit `since` overrides it. Ignored without a filter or aggregation. |
 | `include_data`       | query | bool   | true    | Set `false` to return metadata only |
 | `filter`             | query | string | --      | Substring match against serialized data |
 | `filter_ignore_case` | query | bool   | false   | Case-insensitive substring matching |
@@ -134,7 +134,7 @@ GET /api/stores/:store/data/newest
 
 **Response** (200): Same `DataListResponse` format as [List Oldest Data](#list-oldest-data). When aggregation parameters are provided, each object in the response contains aggregated values instead of raw data (see [Aggregation](#aggregation)).
 
-**Filtered scans and the `scan` field.** Because `filter` is applied after fetch, a filtered query with no time bound would read the whole store to return a few matches. So a filtered `/newest` with no explicit `since` defaults to an aggressive lookback window (`1h` plain, `48h` for aggregation) and includes a `scan` object describing it:
+**Bounded scans and the `scan` field.** Because `filter` is applied after fetch — and because `agg_window`/`step` set the *bucket size*, not the lookback, with `limit` only trimming the output buckets — a filtered or aggregating query with no time bound would read the whole store. So a filtered or aggregating `/newest` with no explicit `since` defaults to an aggressive lookback window (`1h` plain filtered, `48h` for aggregation) and includes a `scan` object describing it:
 
 ```json
 {
@@ -146,7 +146,7 @@ GET /api/stores/:store/data/newest
 
 - `window` -- the effective lookback applied.
 - `window_applied` -- `true` when a window bounded the scan.
-- `limit_reached` -- `true` when the scan stopped at `limit` with matching records still unexamined *within the window*. It does **not** assert matches exist beyond the window (the scan never looked there). To search the full history, pass `window=0` or an explicit `since`.
+- `limit_reached` -- `true` when the scan stopped at `limit` with matching records still unexamined *within the window*. It does **not** assert matches exist beyond the window (the scan never looked there). To search the full history, pass `window=0` or an explicit `since`. On aggregated responses it instead means the raw-record safety cap (100000) truncated the input, so the buckets were computed from a partial window — narrow the query.
 
 **Scan budgets.** Two other query shapes would also read the whole store, and are bounded by a record count instead of a window: `latest_by` with no `filter`/`since` (newest-first), and a filtered `/oldest` (oldest-first). Their `scan` object reports the budget:
 
@@ -161,7 +161,7 @@ GET /api/stores/:store/data/newest
 - `scan_limit` -- the record-count budget that bounded the fetch (the `scan_limit` param, default 5000).
 - `scan_limit_reached` -- `true` when the fetch filled the budget with records still unexamined. For `latest_by` this means a series absent from the response may simply be older than the scanned range; pass a larger `scan_limit`, `scan_limit=0`, or an explicit `since` to look further back.
 
-> **Behavior change.** Filtered `/newest` queries previously scanned the entire store. They now default to the last `1h` (`48h` with `agg_window`). Pass `window=0` or a time bound to restore a full scan. Likewise, `latest_by` with no time bound previously fetched and decoded every record in the store; it now scans the newest 5000 by default — pass `scan_limit=0` or a time bound for the old behavior. The `scan` field is additive; plain unfiltered queries are unchanged and omit it.
+> **Behavior change.** Filtered `/newest` queries previously scanned the entire store. They now default to the last `1h` (`48h` with `agg_window`). Pass `window=0` or a time bound to restore a full scan. Likewise, `latest_by` with no time bound previously fetched and decoded every record in the store; it now scans the newest 5000 by default — pass `scan_limit=0` or a time bound for the old behavior. *Unfiltered* aggregation with no time bound also previously fetched the whole store (then silently truncated at 100000 records — and, feeding an unsorted input to the accumulator, produced incorrect buckets); it now defaults to the same `48h` window. The `scan` field is additive; plain unfiltered queries are unchanged and omit it.
 
 ---
 
