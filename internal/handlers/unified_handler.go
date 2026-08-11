@@ -354,17 +354,20 @@ func (h *UnifiedHandler) ListOldest(c *gin.Context) {
 	})
 }
 
-// Aggressive default lookback windows for a filtered /newest scan with no
-// explicit time bound. A filtered scan reads the whole store otherwise; these
-// keep "fetch a few recent matches" cheap. The aggregation default is wider so
-// minute/hourly/daily rollups aren't silently truncated.
+// Aggressive default lookback windows for a filtered or aggregating /newest
+// scan with no explicit time bound. Both shapes read the whole store otherwise
+// (limit only trims the output — matches or buckets — not the fetch); these
+// keep "fetch a few recent matches" and "chart my recent data" cheap. The
+// aggregation default is wider so minute/hourly/daily rollups aren't silently
+// truncated.
 const (
 	defaultFilterWindow    = time.Hour      // plain filtered fetch
 	defaultFilterWindowAgg = 48 * time.Hour // filtered aggregation
 )
 
-// resolveFilterWindow determines the lookback window for a filtered /newest
-// query that has no explicit time bound. It reads the optional `window` param:
+// resolveFilterWindow determines the lookback window for a filtered or
+// aggregating /newest query that has no explicit time bound. It reads the
+// optional `window` param:
 // absent → the aggressive default (1h plain, 48h aggregation); `window=0` →
 // unbounded (full-store scan); otherwise the given duration. Returns the window
 // and whether a window should be applied (false only for window=0).
@@ -422,10 +425,11 @@ func resolveScanLimit(c *gin.Context, def int) (int, error) {
 // ListNewest handles GET /api/stores/:store/data/newest
 // Supports optional ?since=<duration> parameter (e.g., since=2h, since=30m, since=7d)
 // Supports aggregation with ?agg_window=<duration> (e.g., agg_window=1m)
-// When ?filter= is set with no explicit time bound, an aggressive default
-// lookback window is applied (1h plain, 48h aggregation) so the filtered scan
-// does not read the whole store; override with ?window=<dur> or window=0 for
-// an unbounded scan. The window param is ignored without a filter.
+// When ?filter= or aggregation (?agg_window=/?step=) is set with no explicit
+// time bound, an aggressive default lookback window is applied (1h plain
+// filtered, 48h aggregation) so the scan does not read the whole store;
+// override with ?window=<dur> or window=0 for an unbounded scan. The window
+// param is ignored without a filter or aggregation.
 // When ?latest_by= is set with no filter and no time bound, a newest-first
 // scan budget is applied instead (default 5000 records) so the dedup scan does
 // not read the whole store; override with ?scan_limit=<n> or scan_limit=0 for
@@ -479,11 +483,13 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 	var handles []*store.ObjectHandle
 
 	// A filtered scan is applied post-fetch, so without a time bound it would read
-	// the whole store to return a handful of matches. When the caller gives no
-	// explicit time bound, apply an aggressive default lookback window: 1h for a
-	// plain fetch, 48h for aggregation (so minute/hourly/daily rollups aren't
-	// silently truncated). The window param overrides the default; window=0 means
-	// unbounded (the old full-store scan). The window only matters when filtering.
+	// the whole store to return a handful of matches — and aggregation fetches
+	// unbounded too, since limit only trims the output buckets (issue #150). When
+	// the caller gives no explicit time bound, apply an aggressive default
+	// lookback window: 1h for a plain filtered fetch, 48h for aggregation (so
+	// minute/hourly/daily rollups aren't silently truncated). The window param
+	// overrides the default; window=0 means unbounded (the old full-store scan).
+	// The window only matters when filtering or aggregating.
 	var scan *ScanInfo
 
 	// Check for since parameter
@@ -499,8 +505,10 @@ func (h *UnifiedHandler) ListNewest(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-	} else if filter != "" {
-		// Filtered, no explicit time bound: resolve the effective window.
+	} else if filter != "" || hasAgg {
+		// Filtered or aggregating, no explicit time bound: resolve the effective
+		// window. (latest_by+agg is rejected above, so hasAgg here never carries
+		// a latest_by query into the window path.)
 		effectiveWindow, windowApplied, err := resolveFilterWindow(c, hasAgg)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid window duration: " + err.Error()})
@@ -1019,11 +1027,25 @@ func (h *UnifiedHandler) aggregateAndRespond(c *gin.Context, st *store.Store, ha
 	}
 
 	// Safety cap on raw records. If the cap truncates the input, the aggregation
-	// did not see every record in the window — surface that via the scan signal.
+	// did not see every record in the window — surface that via the scan signal,
+	// creating the scan object if the fetch path didn't (window=0 / explicit
+	// range), so the truncation is never silent. Truncating before the reversal
+	// below keeps the NEWEST records when the input is newest-first.
 	if len(handles) > maxRawRecordsForAgg {
 		handles = handles[:maxRawRecordsForAgg]
-		if scan != nil {
-			scan.LimitReached = true
+		if scan == nil {
+			scan = &ScanInfo{}
+		}
+		scan.LimitReached = true
+	}
+
+	// The accumulator requires ascending timestamps (see AggregateBatch); the
+	// unbounded plain-newest fetch (window=0) returns newest-first, which would
+	// silently merge records into wrong windows. Both fetch orders are strictly
+	// sorted, so reversing a descending input restores the contract.
+	if len(handles) > 1 && handles[0].Timestamp > handles[len(handles)-1].Timestamp {
+		for i, j := 0, len(handles)-1; i < j; i, j = i+1, j-1 {
+			handles[i], handles[j] = handles[j], handles[i]
 		}
 	}
 
