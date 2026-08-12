@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/tviviano/ts-store/internal/apikey"
@@ -61,8 +62,9 @@ func insertJSON(t *testing.T, router http.Handler, storeName, apiKey string, tim
 
 // ─── Store management endpoints ───────────────────────────────────────────────
 
-// TestListStores covers the #138 behavior change: GET /api/stores now
-// requires a key and returns only the stores that key may read.
+// TestListStores covers the #138 behavior change (GET /api/stores requires a
+// key and returns only the stores that key holds a grant on) and the #152
+// extension (each entry reports the caller's effective access classes).
 func TestListStores(t *testing.T) {
 	router, storeService, keyManager, _ := setupTestRouter(t)
 	defer storeService.CloseAll()
@@ -70,7 +72,7 @@ func TestListStores(t *testing.T) {
 	keyA := createStore(t, router, "list-a")
 	createStore(t, router, "list-b")
 
-	listWith := func(key string) (int, map[string]bool) {
+	listWith := func(key string) (int, map[string][]string) {
 		req, _ := http.NewRequest("GET", "/api/stores", nil)
 		if key != "" {
 			req.Header.Set("X-API-Key", key)
@@ -80,13 +82,14 @@ func TestListStores(t *testing.T) {
 
 		var resp struct {
 			Stores []struct {
-				Name string `json:"name"`
+				Name   string   `json:"name"`
+				Access []string `json:"access"`
 			} `json:"stores"`
 		}
 		json.Unmarshal(w.Body.Bytes(), &resp)
-		found := map[string]bool{}
+		found := map[string][]string{}
 		for _, s := range resp.Stores {
-			found[s.Name] = true
+			found[s.Name] = s.Access
 		}
 		return w.Code, found
 	}
@@ -96,19 +99,19 @@ func TestListStores(t *testing.T) {
 		t.Errorf("unauthenticated list: got %d, want 401", code)
 	}
 
-	// A store's own key sees only that store.
+	// A store's own key sees only that store, with its full access reported.
 	code, found := listWith(keyA)
 	if code != http.StatusOK {
 		t.Fatalf("list with store key: got %d, want 200", code)
 	}
-	if !found["list-a"] {
-		t.Error("store key cannot see its own store")
+	if got := found["list-a"]; !slices.Equal(got, []string{"read", "write", "manage"}) {
+		t.Errorf("store key access on its own store = %v, want [read write manage]", got)
 	}
-	if found["list-b"] {
+	if _, ok := found["list-b"]; ok {
 		t.Error("store key saw a store it has no grant for")
 	}
 
-	// A wildcard read key sees both.
+	// A wildcard read key sees both, as read-only.
 	wildKey, _, err := keyManager.Create("dashboard", []apikey.Grant{{
 		Stores: "*", Access: []apikey.Access{apikey.AccessRead},
 	}})
@@ -119,8 +122,29 @@ func TestListStores(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("list with wildcard key: got %d, want 200", code)
 	}
-	if !found["list-a"] || !found["list-b"] {
-		t.Errorf("wildcard key should see both stores, got %v", found)
+	for _, name := range []string{"list-a", "list-b"} {
+		if got := found[name]; !slices.Equal(got, []string{"read"}) {
+			t.Errorf("wildcard read key access on %s = %v, want [read]", name, got)
+		}
+	}
+
+	// A write-only key (the collector shape) sees its store with write access
+	// — under the pre-#152 read-only filter it got an empty listing.
+	writeKey, _, err := keyManager.Create("collector", []apikey.Grant{{
+		Stores: "list-b", Access: []apikey.Access{apikey.AccessWrite},
+	}})
+	if err != nil {
+		t.Fatalf("create write-only key: %v", err)
+	}
+	code, found = listWith(writeKey)
+	if code != http.StatusOK {
+		t.Fatalf("list with write-only key: got %d, want 200", code)
+	}
+	if got := found["list-b"]; !slices.Equal(got, []string{"write"}) {
+		t.Errorf("write-only key access on list-b = %v, want [write]", got)
+	}
+	if _, ok := found["list-a"]; ok {
+		t.Error("write-only key saw a store it has no grant for")
 	}
 
 	// An invalid key is rejected rather than silently unfiltered.
