@@ -184,13 +184,26 @@ GET /api/stores
 X-API-Key: <api-key>
 ```
 
-**Requires an API key**, and returns only the stores that key may `read`. A read-only dashboard key sees exactly the stores it can chart; a store's own key sees just that store.
+**Requires an API key**, and returns only the stores that key holds a grant on, each annotated with the caller's effective access classes:
 
-This doubles as a connection test that needs no store name — endpoint plus key is enough — and as store discovery for clients building a picker.
+```json
+{
+  "stores": [
+    { "name": "sensor-data", "data_type": "schema", "role": "store", "access": ["read", "write", "manage"] },
+    { "name": "docker-containers", "data_type": "schema", "role": "source", "access": ["read"] }
+  ]
+}
+```
+
+`access` is the subset of `read`/`write`/`manage` (always in that order) the key holds on that store — so a client learns "read here, read+write there" without probing. Access classes are independent flags (`manage` does not imply `read`), and *any* grant makes a store visible: a write-only collector key sees its store with `"access": ["write"]`.
+
+This doubles as a connection test that needs no store name — endpoint plus key is enough — and as store discovery for clients building a picker. A read-only dashboard key sees exactly the stores it can chart; a store's own key sees just that store.
 
 > **Breaking change.** This endpoint was previously unauthenticated and returned every store. It now returns `401` without a valid key. An unauthenticated listing would disclose the full store inventory of a deployment, which is precisely what scoped keys exist to prevent.
+>
+> The `access` field is additive. Visibility widened with it: keys holding only `write` and/or `manage` on a store previously got an empty listing; they now see those stores.
 
-The admin key is deliberately not accepted here: it is the server tier (store lifecycle, key management) and holds no read grants, so "which stores can I read?" has no meaningful answer for it.
+The admin key is deliberately not accepted here: it is the server tier (store lifecycle, key management) and holds no grants, so "which stores can I access?" has no meaningful answer for it.
 
 ### Delete Store (requires auth)
 ```

@@ -128,8 +128,8 @@ func (h *StoreHandler) ResetMetrics(c *gin.Context) {
 // ...}); earlier versions returned a flat array of name strings.
 //
 // BREAKING (issue #138): this endpoint now REQUIRES an API key and
-// returns only the stores that key may read. It was previously public
-// and unfiltered.
+// returns only the stores that key holds a grant on. It was previously
+// public and unfiltered.
 //
 // The filtering is the point: it makes this a connection test that needs
 // no store name (endpoint + key is enough), gives clients store
@@ -139,9 +139,15 @@ func (h *StoreHandler) ResetMetrics(c *gin.Context) {
 // deployment, which is the one thing this endpoint should not do once
 // keys are scoped.
 //
+// Each entry carries the caller's effective access classes on that store
+// (issue #152), so a client can learn "read here, read+write there"
+// without probing. Any grant makes a store visible — access classes are
+// independent flags, so a write-only collector key must see its store
+// rather than the empty listing a read-only filter would give it.
+//
 // The admin key is deliberately NOT accepted here: it is the server
-// tier (store lifecycle, key management) and holds no read grants, so
-// "which stores can I read?" has no meaningful answer for it.
+// tier (store lifecycle, key management) and holds no grants, so
+// "which stores can I access?" has no meaningful answer for it.
 func (h *StoreHandler) List(c *gin.Context) {
 	provided := c.GetHeader("X-API-Key")
 	if provided == "" {
@@ -169,13 +175,28 @@ func (h *StoreHandler) List(c *gin.Context) {
 	c.Set(middleware.AuthPassedKey, true)
 
 	all := h.storeService.ListAllInfo()
-	filtered := make([]service.StoreInfo, 0, len(all))
+	filtered := make([]storeListEntry, 0, len(all))
 	for _, info := range all {
-		if key.Permits(info.Name, apikey.AccessRead) {
-			filtered = append(filtered, info)
+		var access []apikey.Access
+		for _, a := range apikey.AllAccess {
+			if key.Permits(info.Name, a) {
+				access = append(access, a)
+			}
 		}
+		if len(access) == 0 {
+			continue
+		}
+		filtered = append(filtered, storeListEntry{StoreInfo: info, Access: access})
 	}
 	c.JSON(http.StatusOK, gin.H{"stores": filtered})
+}
+
+// storeListEntry is one row of the authenticated store listing: the store's
+// info plus the caller's effective access classes on it, in read/write/manage
+// order (issue #152).
+type storeListEntry struct {
+	service.StoreInfo
+	Access []apikey.Access `json:"access"`
 }
 
 // Reset handles POST /api/stores/:store/reset
