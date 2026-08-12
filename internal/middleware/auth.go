@@ -135,13 +135,27 @@ func Auth(keyManager *apikey.Manager, access apikey.Access) gin.HandlerFunc {
 // classify a new route fails closed for read-only keys rather than
 // silently exposing it.
 var routeAccess = map[string]apikey.Access{
-	// --- read: data queries and schema inspection ---
+	// --- read: data queries, schema inspection, and stream-out ---
 	"GET /api/stores/:store/data/time/:timestamp": apikey.AccessRead,
 	"GET /api/stores/:store/data/oldest":          apikey.AccessRead,
 	"GET /api/stores/:store/data/newest":          apikey.AccessRead,
 	"GET /api/stores/:store/data/range":           apikey.AccessRead,
 	"GET /api/stores/:store/schema":               apikey.AccessRead,
 	"GET /api/stores/:store/schema/versions":      apikey.AccessRead,
+	// Push-connection lifecycle is read, not manage (issue #154): a push
+	// connection only ever delivers data the key could already poll, so
+	// consumers manage their own subscriptions. Classifying it manage both
+	// over-privileged consumers (manage includes reset/schema mutation)
+	// and let a manage-only key exfiltrate data it cannot read.
+	"GET /api/stores/:store/connections":             apikey.AccessRead,
+	"GET /api/stores/:store/ws/connections":          apikey.AccessRead,
+	"POST /api/stores/:store/ws/connections":         apikey.AccessRead,
+	"GET /api/stores/:store/ws/connections/:id":      apikey.AccessRead,
+	"DELETE /api/stores/:store/ws/connections/:id":   apikey.AccessRead,
+	"GET /api/stores/:store/mqtt/connections":        apikey.AccessRead,
+	"POST /api/stores/:store/mqtt/connections":       apikey.AccessRead,
+	"GET /api/stores/:store/mqtt/connections/:id":    apikey.AccessRead,
+	"DELETE /api/stores/:store/mqtt/connections/:id": apikey.AccessRead,
 
 	// --- write: ingest ---
 	"POST /api/stores/:store/data":    apikey.AccessWrite,
@@ -150,24 +164,15 @@ var routeAccess = map[string]apikey.Access{
 	// --- manage: store-scoped administration ---
 	// Alerts belong to the store, so alert CRUD is a per-store grant
 	// rather than a server-admin operation.
-	"GET /api/stores/:store/alerts":                  apikey.AccessManage,
-	"POST /api/stores/:store/alerts":                 apikey.AccessManage,
-	"POST /api/stores/:store/alerts/test":            apikey.AccessManage,
-	"GET /api/stores/:store/alerts/:id":              apikey.AccessManage,
-	"DELETE /api/stores/:store/alerts/:id":           apikey.AccessManage,
-	"GET /api/stores/:store/rollups":                 apikey.AccessManage,
-	"POST /api/stores/:store/rollups":                apikey.AccessManage,
-	"GET /api/stores/:store/rollups/:id":             apikey.AccessManage,
-	"DELETE /api/stores/:store/rollups/:id":          apikey.AccessManage,
-	"GET /api/stores/:store/connections":             apikey.AccessManage,
-	"GET /api/stores/:store/ws/connections":          apikey.AccessManage,
-	"POST /api/stores/:store/ws/connections":         apikey.AccessManage,
-	"GET /api/stores/:store/ws/connections/:id":      apikey.AccessManage,
-	"DELETE /api/stores/:store/ws/connections/:id":   apikey.AccessManage,
-	"GET /api/stores/:store/mqtt/connections":        apikey.AccessManage,
-	"POST /api/stores/:store/mqtt/connections":       apikey.AccessManage,
-	"GET /api/stores/:store/mqtt/connections/:id":    apikey.AccessManage,
-	"DELETE /api/stores/:store/mqtt/connections/:id": apikey.AccessManage,
+	"GET /api/stores/:store/alerts":         apikey.AccessManage,
+	"POST /api/stores/:store/alerts":        apikey.AccessManage,
+	"POST /api/stores/:store/alerts/test":   apikey.AccessManage,
+	"GET /api/stores/:store/alerts/:id":     apikey.AccessManage,
+	"DELETE /api/stores/:store/alerts/:id":  apikey.AccessManage,
+	"GET /api/stores/:store/rollups":        apikey.AccessManage,
+	"POST /api/stores/:store/rollups":       apikey.AccessManage,
+	"GET /api/stores/:store/rollups/:id":    apikey.AccessManage,
+	"DELETE /api/stores/:store/rollups/:id": apikey.AccessManage,
 	// Schema mutation, reset, and store deletion are destructive.
 	"PUT /api/stores/:store/schema":         apikey.AccessManage,
 	"POST /api/stores/:store/reset":         apikey.AccessManage,

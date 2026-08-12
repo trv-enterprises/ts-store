@@ -15,14 +15,17 @@ import (
 type Access string
 
 const (
-	// AccessRead covers query/range/stats/schema-read and stream-out.
+	// AccessRead covers query/range/stats/schema-read and stream-out —
+	// including the push-connection lifecycle (issue #154): a push
+	// connection only delivers data the key could already poll, so
+	// consumers manage their own subscriptions.
 	AccessRead Access = "read"
 	// AccessWrite covers ingest.
 	AccessWrite Access = "write"
 	// AccessManage is store-scoped administration: alert rules, rollups,
-	// outbound connections, schema mutation, reset. Alerts belong to the
-	// store rather than the server, so managing them is a per-store grant
-	// and does not require the server admin key.
+	// schema mutation, reset. Alerts belong to the store rather than the
+	// server, so managing them is a per-store grant and does not require
+	// the server admin key.
 	AccessManage Access = "manage"
 )
 
