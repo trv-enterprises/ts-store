@@ -185,9 +185,9 @@ Bring your own key (instead of letting ts-store mint one):
   --api-key <key>              Supply the key directly (see caveat above).
 
 Access classes:
-  read    query, range, stats, schema read, stream out
+  read    query, range, stats, schema read, stream out (incl. push connections)
   write   ingest
-  manage  store-scoped admin: alerts, rollups, connections, schema writes
+  manage  store-scoped admin: alerts, rollups, schema writes, reset
 
 Examples:
   # Read-only key across every store

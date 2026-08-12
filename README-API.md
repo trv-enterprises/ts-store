@@ -98,11 +98,13 @@ Every endpoint requires one of three classes. They are **independent flags, not 
 
 | Class | Covers |
 |---|---|
-| `read` | Query, range, oldest/newest, schema read, stream out |
+| `read` | Query, range, oldest/newest, schema read, stream out — including WS/MQTT push-connection lifecycle |
 | `write` | Ingest (`POST /data`, `GET /ws/write`, the Unix socket) |
-| `manage` | Store-scoped administration: alert CRUD, rollups, WS/MQTT connections, schema writes, reset, store delete |
+| `manage` | Store-scoped administration: alert CRUD, rollups, schema writes, reset, store delete |
 
 Alerts are store-scoped rather than server-scoped, so alert management is a `manage` grant on the store — it does not require the admin key.
+
+Push connections (WS and MQTT sinks, and the consolidated `GET /connections` view) are `read`, not `manage`: a push connection only ever delivers data the key could already poll, so consumers create and remove their own subscriptions without holding `manage`'s reset/schema powers. This also means a manage-only key cannot gain data access by pointing a push connection at itself.
 
 #### Grants
 

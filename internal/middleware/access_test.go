@@ -39,6 +39,16 @@ func TestReadRoutesAreClassifiedRead(t *testing.T) {
 		"GET /api/stores/:store/data/oldest",
 		"GET /api/stores/:store/data/time/:timestamp",
 		"GET /api/stores/:store/schema",
+		// Push-connection lifecycle is stream-out, which read covers
+		// (issue #154): a consumer key must be able to manage its own
+		// subscriptions without holding manage's reset/schema powers,
+		// and a manage-only key must not gain data access via a push
+		// connection it points at itself.
+		"GET /api/stores/:store/connections",
+		"POST /api/stores/:store/ws/connections",
+		"DELETE /api/stores/:store/ws/connections/:id",
+		"POST /api/stores/:store/mqtt/connections",
+		"DELETE /api/stores/:store/mqtt/connections/:id",
 	}
 	for _, r := range readRoutes {
 		method, path, _ := strings.Cut(r, " ")
@@ -57,9 +67,6 @@ func TestAdminShapedRoutesRequireManage(t *testing.T) {
 		"POST /api/stores/:store/alerts",
 		"DELETE /api/stores/:store/alerts/:id",
 		"GET /api/stores/:store/rollups",
-		"GET /api/stores/:store/connections",
-		"GET /api/stores/:store/ws/connections",
-		"GET /api/stores/:store/mqtt/connections",
 		"PUT /api/stores/:store/schema",
 		"POST /api/stores/:store/reset",
 		"DELETE /api/stores/:store",
@@ -212,6 +219,49 @@ func TestAuthEnforcesAccessClass(t *testing.T) {
 	}
 	if code := call("POST", "/api/stores/teststore/data"); code != http.StatusForbidden {
 		t.Errorf("read key on a write route: got %d, want 403", code)
+	}
+}
+
+// TestManageOnlyKeyCannotStreamOut pins the issue #154 hole shut: access
+// classes are independent (manage does not imply read), and a push
+// connection delivers store data — so a manage-only key must be refused
+// the connection routes it could otherwise point at itself, while a
+// read key (the consumer) must reach them.
+func TestManageOnlyKeyCannotStreamOut(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	km := apikey.NewManager(t.TempDir())
+
+	mgmtKey, _, err := km.Create("alerts-admin", []apikey.Grant{{
+		Stores: "teststore", Access: []apikey.Access{apikey.AccessManage},
+	}})
+	if err != nil {
+		t.Fatalf("Create manage key: %v", err)
+	}
+	roKey, _, err := km.Create("consumer", []apikey.Grant{{
+		Stores: "teststore", Access: []apikey.Access{apikey.AccessRead},
+	}})
+	if err != nil {
+		t.Fatalf("Create read key: %v", err)
+	}
+
+	router := gin.New()
+	g := router.Group("/api/stores/:store")
+	g.Use(Auth(km, apikey.AccessWrite))
+	g.POST("/ws/connections", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	call := func(key string) int {
+		req, _ := http.NewRequest("POST", "/api/stores/teststore/ws/connections", nil)
+		req.Header.Set("X-API-Key", key)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if code := call(mgmtKey); code != http.StatusForbidden {
+		t.Errorf("manage-only key on push-connection create: got %d, want 403", code)
+	}
+	if code := call(roKey); code != http.StatusOK {
+		t.Errorf("read key on push-connection create: got %d, want 200", code)
 	}
 }
 
