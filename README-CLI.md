@@ -101,6 +101,23 @@ API keys can only be managed via CLI (requires device access) — there is no HT
 
 Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, hashes only) and carry **grants**: what the key may do, and on which stores.
 
+> **On a production host, run key commands as the service user.** Every key
+> command rewrites the registry file (write-temp-then-rename), and the file
+> ends up owned by whoever ran the command. The running server must be able
+> to rewrite that same file later — store creation registers the new store's
+> key — so a registry left root-owned by a bare `sudo` makes subsequent
+> store creates fail. Two more things the service user needs: a readable
+> working directory (the CLI probes `./config.json`, and `sudo -u tsstore`
+> inherits your login's cwd — typically your home directory, which `tsstore`
+> cannot enter, failing with `permission denied` before doing anything) and
+> the production data path (the default is `./data`):
+>
+> ```bash
+> sudo -u tsstore sh -c 'cd /var/lib/tsstore && \
+>   TSSTORE_DATA_PATH=/var/lib/tsstore tsstore key create \
+>     --grant "read:*" --note "dashboard"'
+> ```
+
 ```bash
 # Read-only across every store (e.g. a dashboard)
 ./tsstore key create --grant read:* --note "dashboard"
@@ -128,9 +145,9 @@ Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, ha
 
 | Class | Covers |
 |---|---|
-| `read` | Query, range, oldest/newest, schema read, stream out |
+| `read` | Query, range, oldest/newest, schema read, stream out — including WS/MQTT push-connection lifecycle |
 | `write` | Ingest (REST, WebSocket, Unix socket) |
-| `manage` | Alerts, rollups, WS/MQTT connections, schema writes, reset, delete |
+| `manage` | Alerts, rollups, schema writes, reset, delete |
 
 Store patterns are an exact name, a prefix glob (`sensors-*`), or `*`.
 
