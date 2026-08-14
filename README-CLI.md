@@ -106,12 +106,16 @@ Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, ha
 > ends up owned by whoever ran the command. The running server must be able
 > to rewrite that same file later — store creation registers the new store's
 > key — so a registry left root-owned by a bare `sudo` makes subsequent
-> store creates fail. Also point the CLI at the production data directory
-> (its default is `./data`):
+> store creates fail. Two more things the service user needs: a readable
+> working directory (the CLI probes `./config.json`, and `sudo -u tsstore`
+> inherits your login's cwd — typically your home directory, which `tsstore`
+> cannot enter, failing with `permission denied` before doing anything) and
+> the production data path (the default is `./data`):
 >
 > ```bash
-> sudo -u tsstore TSSTORE_DATA_PATH=/var/lib/tsstore tsstore key create \
->   --grant read:* --note "dashboard"
+> sudo -u tsstore sh -c 'cd /var/lib/tsstore && \
+>   TSSTORE_DATA_PATH=/var/lib/tsstore tsstore key create \
+>     --grant "read:*" --note "dashboard"'
 > ```
 
 ```bash
