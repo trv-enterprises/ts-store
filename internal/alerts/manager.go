@@ -593,13 +593,13 @@ func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
 		return nil, err
 	}
 	w, err := NewWorker(Options{
-		Store:        m.store,
-		StoreName:    m.storeName,
-		ID:           a.ID,
-		Type:         "webhook",
-		Target:       redactURL(a.URL),
-		Rule:         a.AlertCommon,
-		Sink:         sink,
+		Store:         m.store,
+		StoreName:     m.storeName,
+		ID:            a.ID,
+		Type:          "webhook",
+		Target:        redactURL(a.URL),
+		Rule:          a.AlertCommon,
+		Sink:          sink,
 		PollInterval:  a.PollInterval,
 		CursorPath:    cursorPathFor(m.store, "webhook", a.ID),
 		LastFiredPath: lastFiredPathFor(m.store, "webhook", a.ID),
@@ -618,13 +618,13 @@ func (m *Manager) buildWebhookWorker(a store.WebhookAlert) (*Worker, error) {
 func (m *Manager) buildWSWorker(a store.WSAlert) (*Worker, error) {
 	sink := NewWSSink(a.URL, a.Headers)
 	return NewWorker(Options{
-		Store:        m.store,
-		StoreName:    m.storeName,
-		ID:           a.ID,
-		Type:         "ws",
-		Target:       redactURL(a.URL),
-		Rule:         a.AlertCommon,
-		Sink:         sink,
+		Store:         m.store,
+		StoreName:     m.storeName,
+		ID:            a.ID,
+		Type:          "ws",
+		Target:        redactURL(a.URL),
+		Rule:          a.AlertCommon,
+		Sink:          sink,
 		PollInterval:  a.PollInterval,
 		CursorPath:    cursorPathFor(m.store, "ws", a.ID),
 		LastFiredPath: lastFiredPathFor(m.store, "ws", a.ID),
@@ -636,13 +636,13 @@ func (m *Manager) buildMQTTWorker(a store.MQTTAlert) (*Worker, error) {
 	clientID := fmt.Sprintf("tsstore-%s-alert-%s", m.storeName, a.ID)
 	sink := NewMQTTSink(a.BrokerURL, a.Topic, a.Username, a.Password, a.QoS, clientID)
 	return NewWorker(Options{
-		Store:        m.store,
-		StoreName:    m.storeName,
-		ID:           a.ID,
-		Type:         "mqtt",
-		Target:       fmt.Sprintf("%s -> %s", redactURL(a.BrokerURL), a.Topic),
-		Rule:         a.AlertCommon,
-		Sink:         sink,
+		Store:         m.store,
+		StoreName:     m.storeName,
+		ID:            a.ID,
+		Type:          "mqtt",
+		Target:        fmt.Sprintf("%s -> %s", redactURL(a.BrokerURL), a.Topic),
+		Rule:          a.AlertCommon,
+		Sink:          sink,
 		PollInterval:  a.PollInterval,
 		CursorPath:    cursorPathFor(m.store, "mqtt", a.ID),
 		LastFiredPath: lastFiredPathFor(m.store, "mqtt", a.ID),
