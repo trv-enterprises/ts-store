@@ -49,6 +49,11 @@ func TestReadRoutesAreClassifiedRead(t *testing.T) {
 		"DELETE /api/stores/:store/ws/connections/:id",
 		"POST /api/stores/:store/mqtt/connections",
 		"DELETE /api/stores/:store/mqtt/connections/:id",
+		// Alert reads are observability, not administration (issue #162).
+		// Safe at this tier because the detail payload redacts every
+		// credential surface (#163).
+		"GET /api/stores/:store/alerts",
+		"GET /api/stores/:store/alerts/:id",
 	}
 	for _, r := range readRoutes {
 		method, path, _ := strings.Cut(r, " ")
@@ -63,8 +68,8 @@ func TestReadRoutesAreClassifiedRead(t *testing.T) {
 // would have handed them to read-only keys.
 func TestAdminShapedRoutesRequireManage(t *testing.T) {
 	manageRoutes := []string{
-		"GET /api/stores/:store/alerts",
 		"POST /api/stores/:store/alerts",
+		"POST /api/stores/:store/alerts/test",
 		"DELETE /api/stores/:store/alerts/:id",
 		"GET /api/stores/:store/rollups",
 		"PUT /api/stores/:store/schema",
@@ -200,7 +205,7 @@ func TestAuthEnforcesAccessClass(t *testing.T) {
 	g := router.Group("/api/stores/:store")
 	g.Use(Auth(km, apikey.AccessWrite))
 	g.GET("/data/range", func(c *gin.Context) { c.Status(http.StatusOK) })
-	g.GET("/alerts", func(c *gin.Context) { c.Status(http.StatusOK) })
+	g.GET("/rollups", func(c *gin.Context) { c.Status(http.StatusOK) })
 	g.POST("/data", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	call := func(method, path string) int {
@@ -214,11 +219,65 @@ func TestAuthEnforcesAccessClass(t *testing.T) {
 	if code := call("GET", "/api/stores/teststore/data/range"); code != http.StatusOK {
 		t.Errorf("read key on a read route: got %d, want 200", code)
 	}
-	if code := call("GET", "/api/stores/teststore/alerts"); code != http.StatusForbidden {
+	if code := call("GET", "/api/stores/teststore/rollups"); code != http.StatusForbidden {
 		t.Errorf("read key on a manage route: got %d, want 403", code)
 	}
 	if code := call("POST", "/api/stores/teststore/data"); code != http.StatusForbidden {
 		t.Errorf("read key on a write route: got %d, want 403", code)
+	}
+}
+
+// TestAlertReadsSplitFromAlertMutation pins issue #162 end to end: a
+// read-only key — the dashboard persona — reaches both alert read
+// endpoints but is refused every mutating one, so "watch rule health"
+// no longer requires the authority to reconfigure or delete alerts
+// (and, via manage, to reset or drop the store).
+func TestAlertReadsSplitFromAlertMutation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	km := apikey.NewManager(t.TempDir())
+
+	roKey, _, err := km.Create("dashboard", []apikey.Grant{{
+		Stores: "teststore", Access: []apikey.Access{apikey.AccessRead},
+	}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	router := gin.New()
+	g := router.Group("/api/stores/:store")
+	g.Use(Auth(km, apikey.AccessWrite))
+	ok := func(c *gin.Context) { c.Status(http.StatusOK) }
+	g.GET("/alerts", ok)
+	g.GET("/alerts/:id", ok)
+	g.POST("/alerts", ok)
+	g.POST("/alerts/test", ok)
+	g.DELETE("/alerts/:id", ok)
+
+	call := func(method, path string) int {
+		req, _ := http.NewRequest(method, path, nil)
+		req.Header.Set("X-API-Key", roKey)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for _, r := range []struct{ method, path string }{
+		{"GET", "/api/stores/teststore/alerts"},
+		{"GET", "/api/stores/teststore/alerts/abc12345"},
+	} {
+		if code := call(r.method, r.path); code != http.StatusOK {
+			t.Errorf("read key on %s %s: got %d, want 200", r.method, r.path, code)
+		}
+	}
+
+	for _, r := range []struct{ method, path string }{
+		{"POST", "/api/stores/teststore/alerts"},
+		{"POST", "/api/stores/teststore/alerts/test"},
+		{"DELETE", "/api/stores/teststore/alerts/abc12345"},
+	} {
+		if code := call(r.method, r.path); code != http.StatusForbidden {
+			t.Errorf("read key on %s %s: got %d, want 403", r.method, r.path, code)
+		}
 	}
 }
 

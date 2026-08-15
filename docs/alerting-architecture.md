@@ -208,7 +208,7 @@ Staleness reuses everything already built — the three sinks, cooldown, `extern
 
 ## HTTP API
 
-All endpoints require the store's `X-API-Key` (same as streaming endpoints).
+All endpoints require the store's `X-API-Key` (same as streaming endpoints). The two GETs require the `read` access class; creating, testing, and deleting alerts require `manage` — so a dashboard watching rule health needs no administrative authority. Read-tier detail is safe because the payload redacts every credential surface: sink URLs lose userinfo and query strings, MQTT passwords are masked, and header values are masked.
 
 | Method | Path | Body | Description |
 |---|---|---|---|

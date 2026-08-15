@@ -35,9 +35,10 @@ func RouteAccessTable() map[string]apikey.Access { return routeAccess }
 //
 // access is the group's default class. Individual routes are classified
 // in routeAccess below and override it. The class is a property of the
-// route, not the request, and is never inferred from the HTTP method —
-// several read-shaped GETs (connection and alert listings) are
-// administrative, and inferring would hand them to read-only keys.
+// route, not the request, and is never inferred from the HTTP method:
+// method says nothing about authority in either direction — creating a
+// push connection is a POST that requires only read, while listing
+// rollups is a GET that requires manage.
 func Auth(keyManager *apikey.Manager, access apikey.Access) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Get store name from URL parameter
@@ -87,8 +88,8 @@ func Auth(keyManager *apikey.Manager, access apikey.Access) gin.HandlerFunc {
 		}
 
 		// The class is resolved from the matched route rather than the
-		// request, so a read-shaped GET that is really an administrative
-		// listing still requires "manage".
+		// request, so an administrative GET (e.g. listing rollups) still
+		// requires "manage" despite looking read-shaped.
 		required := accessFor(c.Request.Method, c.FullPath(), access)
 
 		// Resolve the key and check its grant for this store + class.
@@ -147,7 +148,19 @@ var routeAccess = map[string]apikey.Access{
 	// consumers manage their own subscriptions. Classifying it manage both
 	// over-privileged consumers (manage includes reset/schema mutation)
 	// and let a manage-only key exfiltrate data it cannot read.
-	"GET /api/stores/:store/connections":             apikey.AccessRead,
+	"GET /api/stores/:store/connections": apikey.AccessRead,
+	// Alert READS are observability, not administration (issue #162):
+	// which rules exist and whether they are keeping up (fired counts,
+	// lag, drop counters) is a question about the store's data. Requiring
+	// manage for a dashboard would also hand it alert/rollup CRUD, schema
+	// mutation, reset and delete. Safe at this tier only because the
+	// detail payload redacts every credential surface — see
+	// GetAlertDetail: URLs lose userinfo and query, MQTT passwords are
+	// masked, and header values are masked by allowlist (#163). That
+	// redaction is a security boundary now, not politeness. Alert
+	// MUTATION stays manage, below.
+	"GET /api/stores/:store/alerts":                  apikey.AccessRead,
+	"GET /api/stores/:store/alerts/:id":              apikey.AccessRead,
 	"GET /api/stores/:store/ws/connections":          apikey.AccessRead,
 	"POST /api/stores/:store/ws/connections":         apikey.AccessRead,
 	"GET /api/stores/:store/ws/connections/:id":      apikey.AccessRead,
@@ -162,12 +175,11 @@ var routeAccess = map[string]apikey.Access{
 	"GET /api/stores/:store/ws/write": apikey.AccessWrite,
 
 	// --- manage: store-scoped administration ---
-	// Alerts belong to the store, so alert CRUD is a per-store grant
-	// rather than a server-admin operation.
-	"GET /api/stores/:store/alerts":         apikey.AccessManage,
+	// Alerts belong to the store, so alert mutation is a per-store grant
+	// rather than a server-admin operation. Reads are classified read
+	// (see above).
 	"POST /api/stores/:store/alerts":        apikey.AccessManage,
 	"POST /api/stores/:store/alerts/test":   apikey.AccessManage,
-	"GET /api/stores/:store/alerts/:id":     apikey.AccessManage,
 	"DELETE /api/stores/:store/alerts/:id":  apikey.AccessManage,
 	"GET /api/stores/:store/rollups":        apikey.AccessManage,
 	"POST /api/stores/:store/rollups":       apikey.AccessManage,
