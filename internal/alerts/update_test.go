@@ -321,3 +321,39 @@ func TestUpdateAlertRejectsInvalidConfig(t *testing.T) {
 		t.Error("rejected update tore down the running worker")
 	}
 }
+
+// TestUpdateAlertRejectsTraversalID pins the guard CodeQL's path-injection
+// warning depends on. Unlike create, where the alert ID is a server-minted
+// UUID, update takes the ID from the request path — and that ID reaches
+// filepath.Join in cursorPathFor. Reaching it is gated on the worker-map
+// lookup, which only matches IDs the server itself generated, so a
+// traversal-shaped ID is refused before any path is built. If that lookup
+// ever moves after path construction, this test fails.
+func TestUpdateAlertRejectsTraversalID(t *testing.T) {
+	mgr := newManagerFixture(t)
+
+	// A real alert exists, so the failure below is the ID check rather
+	// than an empty manager.
+	if _, err := mgr.CreateAlert(CreateAlertRequest{
+		Type:        "webhook",
+		AlertCommon: store.AlertCommon{Name: "hot", Condition: "t > 80"},
+		Webhook:     &WebhookOptions{URL: "https://example.com/hook"},
+	}); err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+
+	for _, id := range []string{
+		"../../etc/passwd",
+		"../escape",
+		"a/b",
+		"..",
+	} {
+		if _, err := mgr.UpdateAlert(id, CreateAlertRequest{
+			Type:        "webhook",
+			AlertCommon: store.AlertCommon{Name: "x", Condition: "t > 1"},
+			Webhook:     &WebhookOptions{URL: "https://example.com/h"},
+		}); err != ErrNotFound {
+			t.Errorf("traversal-shaped id %q: got %v, want ErrNotFound", id, err)
+		}
+	}
+}
