@@ -106,6 +106,8 @@ Alerts are store-scoped rather than server-scoped, so alert management is a `man
 
 Push connections (WS and MQTT sinks, and the consolidated `GET /connections` view) are `read`, not `manage`: a push connection only ever delivers data the key could already poll, so consumers create and remove their own subscriptions without holding `manage`'s reset/schema powers. This also means a manage-only key cannot gain data access by pointing a push connection at itself.
 
+The exception is a **pull-mode** WS connection (`"mode": "pull"`), which reverses the data direction — ts-store ingests what the remote sends — so creating one additionally requires `write` on the store (403 otherwise).
+
 #### Grants
 
 A grant pairs access classes with a store pattern: an exact name, a prefix glob (`sensors-*`), or `*` for every store.

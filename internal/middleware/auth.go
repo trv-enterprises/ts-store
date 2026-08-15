@@ -197,10 +197,16 @@ func GetStoreName(c *gin.Context) string {
 	return ""
 }
 
-// GetKeyEntry retrieves the authenticated key entry from context.
-func GetKeyEntry(c *gin.Context) *apikey.KeyEntry {
+// GetKeyEntry retrieves the authenticated key from context — the
+// *RegistryKey that Auth stored after Authorize. Returns nil when absent
+// or of an unexpected type (callers must fail closed). The historical
+// *KeyEntry assertion here was wrong and panicked on first real use
+// (issue #160); Authorize has always returned *RegistryKey.
+func GetKeyEntry(c *gin.Context) *apikey.RegistryKey {
 	if v, ok := c.Get(KeyEntryKey); ok {
-		return v.(*apikey.KeyEntry)
+		if key, ok := v.(*apikey.RegistryKey); ok {
+			return key
+		}
 	}
 	return nil
 }
