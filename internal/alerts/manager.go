@@ -425,17 +425,24 @@ func (d AlertDetail) MarshalJSON() ([]byte, error) {
 	return out, nil
 }
 
-// sensitiveHeaderNames are HTTP header names whose values are masked when
-// returned via the read API. Matched case-insensitively. The values are
-// still persisted as-is on disk; this redaction is purely about not
-// echoing secrets back over the network on read.
-var sensitiveHeaderNames = map[string]struct{}{
-	"authorization":       {},
-	"proxy-authorization": {},
-	"cookie":              {},
-	"x-api-key":           {},
-	"x-auth-token":        {},
-	"x-access-token":      {},
+// echoableHeaderNames are the only HTTP header names whose values are
+// returned verbatim by the read API. Matched case-insensitively;
+// everything else is masked.
+//
+// This is an allowlist rather than a list of known-secret names on
+// purpose (issue #163). Header names are operator-chosen free text, so a
+// denylist can never be complete: X-Vendor-Signature, X-Hub-Signature-256
+// and PRIVATE-TOKEN all carry secrets and none of them look like
+// "authorization". Failing closed costs only the ability to read back a
+// benign custom header's value — the on-disk config is unchanged and
+// remains the source of truth.
+//
+// Keep this set small and boring. A header belongs here only if its value
+// can never be a credential for ANY sink an operator might configure.
+var echoableHeaderNames = map[string]struct{}{
+	"accept":       {},
+	"content-type": {},
+	"user-agent":   {},
 }
 
 // redactURL strips userinfo and query values from a sink URL for display.
@@ -454,13 +461,17 @@ func redactURL(raw string) string {
 	return u.String()
 }
 
+// redactHeaders masks every header value except those named in
+// echoableHeaderNames. Empty values pass through unmasked: "[redacted]"
+// on an empty header would imply a value existed.
 func redactHeaders(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return in
 	}
 	out := make(map[string]string, len(in))
 	for k, v := range in {
-		if _, isSensitive := sensitiveHeaderNames[strings.ToLower(k)]; isSensitive && v != "" {
+		_, echoable := echoableHeaderNames[strings.ToLower(k)]
+		if !echoable && v != "" {
 			out[k] = "[redacted]"
 		} else {
 			out[k] = v
