@@ -70,6 +70,7 @@ func TestAdminShapedRoutesRequireManage(t *testing.T) {
 	manageRoutes := []string{
 		"POST /api/stores/:store/alerts",
 		"POST /api/stores/:store/alerts/test",
+		"PUT /api/stores/:store/alerts/:id",
 		"DELETE /api/stores/:store/alerts/:id",
 		"GET /api/stores/:store/rollups",
 		"PUT /api/stores/:store/schema",
@@ -158,6 +159,7 @@ var storeScopedRoutes = []string{
 	"POST /api/stores/:store/reset",
 	"POST /api/stores/:store/rollups",
 	"POST /api/stores/:store/ws/connections",
+	"PUT /api/stores/:store/alerts/:id",
 	"PUT /api/stores/:store/schema",
 }
 

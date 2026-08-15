@@ -208,7 +208,7 @@ Staleness reuses everything already built — the three sinks, cooldown, `extern
 
 ## HTTP API
 
-All endpoints require the store's `X-API-Key` (same as streaming endpoints). The two GETs require the `read` access class; creating, testing, and deleting alerts require `manage` — so a dashboard watching rule health needs no administrative authority. Read-tier detail is safe because the payload redacts every credential surface: sink URLs lose userinfo and query strings, MQTT passwords are masked, and header values are masked.
+All endpoints require the store's `X-API-Key` (same as streaming endpoints). The two GETs require the `read` access class; creating, updating, testing, and deleting alerts require `manage` — so a dashboard watching rule health needs no administrative authority. Read-tier detail is safe because the payload redacts every credential surface: sink URLs lose userinfo and query strings, MQTT passwords are masked, and header values are masked.
 
 | Method | Path | Body | Description |
 |---|---|---|---|
@@ -216,7 +216,18 @@ All endpoints require the store's `X-API-Key` (same as streaming endpoints). The
 | POST   | `/api/stores/{store}/alerts/test` | `{condition, data}` | Dry-run a condition against a sample record — returns how it parsed and whether it matched. No alert is created. |
 | GET    | `/api/stores/{store}/alerts` | — | List all alerts (all three types, tagged with `type`). |
 | GET    | `/api/stores/{store}/alerts/{id}` | — | Get one alert's runtime status + persisted config (secrets redacted). |
+| PUT    | `/api/stores/{store}/alerts/{id}` | `CreateAlertRequest` | Update an alert in place. Same body shape as create; the path id wins. See [Updating an alert](#updating-an-alert). |
 | DELETE | `/api/stores/{store}/alerts/{id}` | — | Stop the worker and remove the persisted config. |
+
+#### Updating an alert
+
+`PUT /api/stores/{store}/alerts/{id}` edits an alert without destroying it. The alert **id**, its `created_at`, its poll cursor and cooldown mark on disk, and the worker's fired counter all survive — which is exactly what delete-and-recreate loses.
+
+Semantics are **full replace**, matching create: a field omitted from the body reverts to its default (omit `cooldown` and the alert has no cooldown). The one exception is the credentials reads redact — auth-style header values and the MQTT password. A client that fetched the alert only ever saw `[redacted]`, so it cannot round-trip them; submitting the marker back (or omitting the password) keeps the stored value. Submitting a real value replaces it, so rotation still works.
+
+The header **map** is replaced wholesale even though individual redacted values are preserved: dropping a header from the map removes it. If a `[redacted]` marker arrives under a header name that isn't stored, the value is dropped rather than persisted literally.
+
+Changing an alert's `type` is rejected with `400` — the persisted resources are per-transport, and a swap is rare enough to be a delete plus create. Validation is identical to create, and a rejected update leaves the running alert untouched.
 
 #### What "secrets redacted" covers
 

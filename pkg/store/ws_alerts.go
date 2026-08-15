@@ -86,6 +86,27 @@ func (s *Store) AddWSAlert(alert WSAlert) error {
 	return s.saveWSAlertsLocked(config)
 }
 
+// UpdateWSAlert replaces the stored alert carrying alert.ID, keeping its
+// position in the list. Returns ErrObjectNotFound if no alert has that ID.
+// See UpdateWebhookAlert for the caller's field-preservation contract.
+func (s *Store) UpdateWSAlert(alert WSAlert) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	config, err := s.loadWSAlertsLocked()
+	if err != nil {
+		return err
+	}
+
+	for i, a := range config.Alerts {
+		if a.ID == alert.ID {
+			config.Alerts[i] = alert
+			return s.saveWSAlertsLocked(config)
+		}
+	}
+	return ErrObjectNotFound
+}
+
 // RemoveWSAlert removes a WS alert by ID.
 func (s *Store) RemoveWSAlert(alertID string) error {
 	s.mu.Lock()

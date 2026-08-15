@@ -88,6 +88,29 @@ func (s *Store) AddWebhookAlert(alert WebhookAlert) error {
 	return s.saveWebhookAlertsLocked(config)
 }
 
+// UpdateWebhookAlert replaces the stored alert carrying alert.ID, keeping
+// its position in the list. Returns ErrObjectNotFound if no alert has that
+// ID. The caller is responsible for preserving fields the update must not
+// change (ID, CreatedAt, and any secret the client could not round-trip
+// because reads redact it) — see the alerts manager's UpdateAlert.
+func (s *Store) UpdateWebhookAlert(alert WebhookAlert) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	config, err := s.loadWebhookAlertsLocked()
+	if err != nil {
+		return err
+	}
+
+	for i, a := range config.Alerts {
+		if a.ID == alert.ID {
+			config.Alerts[i] = alert
+			return s.saveWebhookAlertsLocked(config)
+		}
+	}
+	return ErrObjectNotFound
+}
+
 // RemoveWebhookAlert removes a webhook alert by ID.
 func (s *Store) RemoveWebhookAlert(alertID string) error {
 	s.mu.Lock()

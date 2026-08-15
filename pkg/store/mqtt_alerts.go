@@ -89,6 +89,27 @@ func (s *Store) AddMQTTAlert(alert MQTTAlert) error {
 	return s.saveMQTTAlertsLocked(config)
 }
 
+// UpdateMQTTAlert replaces the stored alert carrying alert.ID, keeping its
+// position in the list. Returns ErrObjectNotFound if no alert has that ID.
+// See UpdateWebhookAlert for the caller's field-preservation contract.
+func (s *Store) UpdateMQTTAlert(alert MQTTAlert) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	config, err := s.loadMQTTAlertsLocked()
+	if err != nil {
+		return err
+	}
+
+	for i, a := range config.Alerts {
+		if a.ID == alert.ID {
+			config.Alerts[i] = alert
+			return s.saveMQTTAlertsLocked(config)
+		}
+	}
+	return ErrObjectNotFound
+}
+
 // RemoveMQTTAlert removes an MQTT alert by ID.
 func (s *Store) RemoveMQTTAlert(alertID string) error {
 	s.mu.Lock()

@@ -539,6 +539,7 @@ For WebSocket alerts, the payload is wrapped in a `{"type":"alert","alert":{...}
 ```
 GET    /api/stores/:store/alerts           # list (all types, tagged)
 GET    /api/stores/:store/alerts/:id       # detail (config + status, secrets redacted)
+PUT    /api/stores/:store/alerts/:id       # update in place (redacted secrets preserved on omit)
 DELETE /api/stores/:store/alerts/:id       # stop worker, remove persisted config
 ```
 

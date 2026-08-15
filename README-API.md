@@ -100,11 +100,11 @@ Every endpoint requires one of three classes. They are **independent flags, not 
 |---|---|
 | `read` | Query, range, oldest/newest, schema read, stream out — including WS/MQTT push-connection lifecycle and alert **reads** |
 | `write` | Ingest (`POST /data`, `GET /ws/write`, the Unix socket) |
-| `manage` | Store-scoped administration: alert **mutation**, rollups, schema writes, reset, store delete |
+| `manage` | Store-scoped administration: alert **mutation** (create/update/test/delete), rollups, schema writes, reset, store delete |
 
 Alerts are store-scoped rather than server-scoped, so alert management is a `manage` grant on the store — it does not require the admin key.
 
-Alert **reads** (`GET /alerts`, `GET /alerts/:id`) are `read`, not `manage`: seeing which rules exist and whether they are keeping up (fired counts, lag, drop counters) is observability over the store's data, so a dashboard doesn't need the authority to reconfigure or delete alerts. This is safe because alert read payloads redact every credential surface — sink URLs lose userinfo and query strings, MQTT passwords are masked, and header values are masked by allowlist. Creating, testing, and deleting alerts remain `manage`.
+Alert **reads** (`GET /alerts`, `GET /alerts/:id`) are `read`, not `manage`: seeing which rules exist and whether they are keeping up (fired counts, lag, drop counters) is observability over the store's data, so a dashboard doesn't need the authority to reconfigure or delete alerts. This is safe because alert read payloads redact every credential surface — sink URLs lose userinfo and query strings, MQTT passwords are masked, and header values are masked by allowlist. Creating, updating, testing, and deleting alerts remain `manage`.
 
 Push connections (WS and MQTT sinks, and the consolidated `GET /connections` view) are `read`, not `manage`: a push connection only ever delivers data the key could already poll, so consumers create and remove their own subscriptions without holding `manage`'s reset/schema powers. This also means a manage-only key cannot gain data access by pointing a push connection at itself.
 
