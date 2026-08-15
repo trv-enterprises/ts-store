@@ -8,4 +8,4 @@ package version
 
 // Version is rewritten by `make version-bump` (see Makefile) during a
 // release; the sed there matches this exact declaration.
-var Version = "v0.20.2"
+var Version = "v0.20.3"
