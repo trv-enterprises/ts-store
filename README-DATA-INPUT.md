@@ -156,6 +156,8 @@ Content-Type: application/json
 - `format` - `compact` or `full` for schema stores
 - `headers` - Custom HTTP headers for connection
 
+Because a pull connection ingests into the store, creating one requires the API key to hold **`write`** on the store (in addition to the `read` class the connection routes require) — a read-only key gets a 403.
+
 The connection automatically reconnects on failure and resumes from the last received timestamp.
 
 ---

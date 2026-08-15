@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tviviano/ts-store/internal/apikey"
 	"github.com/tviviano/ts-store/internal/middleware"
 	"github.com/tviviano/ts-store/internal/ws"
 )
@@ -70,6 +71,23 @@ func (h *WSConnectionsHandler) Create(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// The route's class is read, decided by push mode's semantics (#154:
+	// a push connection only delivers data the key could already poll).
+	// A pull-mode connection is the opposite direction — it INGESTS what
+	// the remote sends into the store — so it additionally requires
+	// write (issue #160). Route-level classification cannot see the
+	// body's mode, so the check lives here; fail closed if the key entry
+	// is somehow absent.
+	if req.Mode == "pull" {
+		key := middleware.GetKeyEntry(c)
+		if key == nil || !key.Permits(storeName, apikey.AccessWrite) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "pull-mode connections ingest data: API key lacks write access to store " + storeName,
+			})
+			return
+		}
 	}
 
 	status, err := manager.CreateConnection(ws.CreateConnectionRequest{
