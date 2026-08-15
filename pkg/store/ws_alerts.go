@@ -18,8 +18,8 @@ const wsAlertsFileName = "ws_alerts.json"
 // URL, sends one JSON frame per matching record, and closes the connection.
 type WSAlert struct {
 	ID           string            `json:"id"`
-	URL          string            `json:"url"`               // ws:// or wss://
-	Headers      map[string]string `json:"headers,omitempty"` // Sent on the upgrade request
+	URL          string            `json:"url"`                     // ws:// or wss://
+	Headers      map[string]string `json:"headers,omitempty"`       // Sent on the upgrade request
 	PollInterval string            `json:"poll_interval,omitempty"` // default "1s"
 	CreatedAt    time.Time         `json:"created_at"`
 	AlertCommon

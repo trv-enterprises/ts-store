@@ -17,14 +17,14 @@ const mqttAlertsFileName = "mqtt_alerts.json"
 // The worker holds a persistent MQTT client and publishes at the configured QoS
 // (default 1) when rules match.
 type MQTTAlert struct {
-	ID           string            `json:"id"`
-	BrokerURL    string            `json:"broker_url"`
-	Topic        string            `json:"topic"`
-	Username     string            `json:"username,omitempty"`
-	Password     string            `json:"password,omitempty"`
-	QoS          byte              `json:"qos"` // 0, 1, or 2 — default 1
-	PollInterval string            `json:"poll_interval,omitempty"` // default "1s"
-	CreatedAt    time.Time         `json:"created_at"`
+	ID           string    `json:"id"`
+	BrokerURL    string    `json:"broker_url"`
+	Topic        string    `json:"topic"`
+	Username     string    `json:"username,omitempty"`
+	Password     string    `json:"password,omitempty"`
+	QoS          byte      `json:"qos"`                     // 0, 1, or 2 — default 1
+	PollInterval string    `json:"poll_interval,omitempty"` // default "1s"
+	CreatedAt    time.Time `json:"created_at"`
 	AlertCommon
 }
 
