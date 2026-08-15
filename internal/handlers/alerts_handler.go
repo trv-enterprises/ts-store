@@ -87,6 +87,45 @@ func (h *AlertsHandler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, detail)
 }
 
+// Update handles PUT /api/stores/:store/alerts/:id — in-place edit of an
+// existing alert (issue #166). The body is the same shape as create; the
+// id in the path is authoritative and the type may not change.
+//
+// Semantics are full-replace, matching create: an omitted field reverts to
+// its default. The exception is secrets the read API redacts (auth-style
+// headers, the MQTT password) — a client that only ever saw "[redacted]"
+// cannot round-trip them, so the marker (or omission) keeps the stored
+// value. Without that, editing a rule whose credentials you don't hold
+// would be impossible.
+func (h *AlertsHandler) Update(c *gin.Context) {
+	mgr := h.resolveManager(c)
+	if mgr == nil {
+		return
+	}
+
+	var req alerts.CreateAlertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	status, err := mgr.UpdateAlert(c.Param("id"), req)
+	if err != nil {
+		switch {
+		case errors.Is(err, alerts.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "alert not found"})
+		case errors.Is(err, alerts.ErrManagerClosed):
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		default:
+			// Validation failures (bad condition, bad URL, type change)
+			// are client errors, same as on create.
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
 // Delete handles DELETE /api/stores/:store/alerts/:id
 func (h *AlertsHandler) Delete(c *gin.Context) {
 	mgr := h.resolveManager(c)

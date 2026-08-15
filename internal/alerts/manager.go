@@ -425,6 +425,12 @@ func (d AlertDetail) MarshalJSON() ([]byte, error) {
 	return out, nil
 }
 
+// redactedMarker is the placeholder substituted for a secret on read. It
+// is also accepted on update as "keep the stored value": a client editing
+// an alert it did not create can only echo back what the detail endpoint
+// gave it (issue #166).
+const redactedMarker = "[redacted]"
+
 // echoableHeaderNames are the only HTTP header names whose values are
 // returned verbatim by the read API. Matched case-insensitively;
 // everything else is masked.
@@ -456,7 +462,7 @@ func redactURL(raw string) string {
 	}
 	u.User = nil
 	if u.RawQuery != "" {
-		u.RawQuery = "[redacted]"
+		u.RawQuery = redactedMarker
 	}
 	return u.String()
 }
@@ -472,7 +478,7 @@ func redactHeaders(in map[string]string) map[string]string {
 	for k, v := range in {
 		_, echoable := echoableHeaderNames[strings.ToLower(k)]
 		if !echoable && v != "" {
-			out[k] = "[redacted]"
+			out[k] = redactedMarker
 		} else {
 			out[k] = v
 		}
@@ -522,7 +528,7 @@ func (m *Manager) GetAlertDetail(alertID string) (AlertDetail, error) {
 		}
 		redacted := *cfg
 		if redacted.Password != "" {
-			redacted.Password = "[redacted]"
+			redacted.Password = redactedMarker
 		}
 		redacted.BrokerURL = redactURL(cfg.BrokerURL)
 		detail.MQTTConfig = &redacted
@@ -563,6 +569,214 @@ func (m *Manager) DeleteAlert(alertID string) error {
 	}
 	// Worker existed in memory but no persisted config — clean up anyway.
 	return nil
+}
+
+// mergeSecretHeaders returns the headers to persist on an update. Reads
+// redact header values (see redactHeaders), so a client editing an alert
+// it did not create cannot round-trip them — it can only echo back the
+// "[redacted]" marker it was given. Any value that is exactly the marker
+// therefore means "keep what is stored"; every other value, including a
+// deliberately empty one, is taken literally.
+//
+// Note the map itself is replaced, not merged: dropping a header from the
+// map removes it. Only individual redacted VALUES are preserved. That
+// keeps a full-replace PUT honest while still letting a client save an
+// edit to a rule whose secrets it cannot see (issue #166).
+func mergeSecretHeaders(incoming, stored map[string]string) map[string]string {
+	if len(incoming) == 0 {
+		return incoming
+	}
+	out := make(map[string]string, len(incoming))
+	for k, v := range incoming {
+		if v == redactedMarker {
+			if prev, ok := stored[k]; ok {
+				out[k] = prev
+				continue
+			}
+			// Marker with nothing stored under that name: the client
+			// invented it. Drop the value rather than persisting the
+			// literal "[redacted]" as if it were a credential.
+			out[k] = ""
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// UpdateAlert replaces the configuration of an existing alert in place,
+// preserving its identity and operational history: the alert ID, the
+// CreatedAt stamp, the poll cursor and cooldown mark on disk, and the
+// worker's fired counter all survive (issue #166). That is the whole
+// point — delete+recreate loses every one of them.
+//
+// Semantics are full-replace, matching POST: a field omitted from the
+// request reverts to its default. The single exception is secrets the
+// read API redacts (auth-style headers, the MQTT password), which cannot
+// be round-tripped by a client that only ever saw "[redacted]" — those
+// preserve the stored value when the marker comes back, or when omitted
+// entirely.
+//
+// Changing an alert's transport type is rejected: the persisted resource
+// lists are per-type, and a swap is rare enough to be a delete+recreate.
+func (m *Manager) UpdateAlert(alertID string, req CreateAlertRequest) (Status, error) {
+	if err := req.AlertCommon.Validate(); err != nil {
+		return Status{}, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return Status{}, ErrManagerClosed
+	}
+
+	old, ok := m.workers[alertID]
+	if !ok {
+		return Status{}, ErrNotFound
+	}
+	existingType := old.Status().Type
+	if req.Type != "" && req.Type != existingType {
+		return Status{}, fmt.Errorf("cannot change alert type from %q to %q: delete and recreate instead", existingType, req.Type)
+	}
+
+	// Build the replacement config first, so a validation failure leaves
+	// the running alert untouched.
+	var (
+		newWorker *Worker
+		persist   func() error
+		rollback  func()
+	)
+
+	switch existingType {
+	case "webhook":
+		if req.Webhook == nil {
+			return Status{}, fmt.Errorf("type=webhook requires \"webhook\" options")
+		}
+		if req.WS != nil || req.MQTT != nil {
+			return Status{}, fmt.Errorf("type=webhook must not include \"ws\" or \"mqtt\" options")
+		}
+		if req.Webhook.URL == "" {
+			return Status{}, fmt.Errorf("webhook.url is required")
+		}
+		if err := validateSinkURL(req.Webhook.URL, "webhook.url", "http", "https"); err != nil {
+			return Status{}, err
+		}
+		stored, err := m.store.GetWebhookAlert(alertID)
+		if err != nil {
+			return Status{}, err
+		}
+		updated := store.WebhookAlert{
+			ID:           alertID,
+			URL:          req.Webhook.URL,
+			Headers:      mergeSecretHeaders(req.Webhook.Headers, stored.Headers),
+			PollInterval: req.PollInterval,
+			Timeout:      req.Webhook.Timeout,
+			CreatedAt:    stored.CreatedAt,
+			AlertCommon:  req.AlertCommon,
+		}
+		if newWorker, err = m.buildWebhookWorker(updated); err != nil {
+			return Status{}, err
+		}
+		prev := *stored
+		persist = func() error { return m.store.UpdateWebhookAlert(updated) }
+		rollback = func() { _ = m.store.UpdateWebhookAlert(prev) }
+
+	case "ws":
+		if req.WS == nil {
+			return Status{}, fmt.Errorf("type=ws requires \"ws\" options")
+		}
+		if req.Webhook != nil || req.MQTT != nil {
+			return Status{}, fmt.Errorf("type=ws must not include \"webhook\" or \"mqtt\" options")
+		}
+		if req.WS.URL == "" {
+			return Status{}, fmt.Errorf("ws.url is required")
+		}
+		if err := validateSinkURL(req.WS.URL, "ws.url", "ws", "wss"); err != nil {
+			return Status{}, err
+		}
+		stored, err := m.store.GetWSAlert(alertID)
+		if err != nil {
+			return Status{}, err
+		}
+		updated := store.WSAlert{
+			ID:           alertID,
+			URL:          req.WS.URL,
+			Headers:      mergeSecretHeaders(req.WS.Headers, stored.Headers),
+			PollInterval: req.PollInterval,
+			CreatedAt:    stored.CreatedAt,
+			AlertCommon:  req.AlertCommon,
+		}
+		if newWorker, err = m.buildWSWorker(updated); err != nil {
+			return Status{}, err
+		}
+		prev := *stored
+		persist = func() error { return m.store.UpdateWSAlert(updated) }
+		rollback = func() { _ = m.store.UpdateWSAlert(prev) }
+
+	case "mqtt":
+		if req.MQTT == nil {
+			return Status{}, fmt.Errorf("type=mqtt requires \"mqtt\" options")
+		}
+		if req.Webhook != nil || req.WS != nil {
+			return Status{}, fmt.Errorf("type=mqtt must not include \"webhook\" or \"ws\" options")
+		}
+		if req.MQTT.BrokerURL == "" || req.MQTT.Topic == "" {
+			return Status{}, fmt.Errorf("mqtt.broker_url and mqtt.topic are required")
+		}
+		if err := validateSinkURL(req.MQTT.BrokerURL, "mqtt.broker_url", "tcp", "ssl", "tls", "ws", "wss", "mqtt", "mqtts", "unix"); err != nil {
+			return Status{}, err
+		}
+		stored, err := m.store.GetMQTTAlert(alertID)
+		if err != nil {
+			return Status{}, err
+		}
+		// Password: the marker (or omission) means keep the stored one.
+		password := req.MQTT.Password
+		if password == redactedMarker || password == "" {
+			password = stored.Password
+		}
+		updated := store.MQTTAlert{
+			ID:           alertID,
+			BrokerURL:    req.MQTT.BrokerURL,
+			Topic:        req.MQTT.Topic,
+			Username:     req.MQTT.Username,
+			Password:     password,
+			QoS:          req.MQTT.QoS,
+			PollInterval: req.PollInterval,
+			CreatedAt:    stored.CreatedAt,
+			AlertCommon:  req.AlertCommon,
+		}
+		if newWorker, err = m.buildMQTTWorker(updated); err != nil {
+			return Status{}, err
+		}
+		prev := *stored
+		persist = func() error { return m.store.UpdateMQTTAlert(updated) }
+		rollback = func() { _ = m.store.UpdateMQTTAlert(prev) }
+
+	default:
+		return Status{}, fmt.Errorf("unknown alert type %q", existingType)
+	}
+
+	if err := persist(); err != nil {
+		return Status{}, err
+	}
+
+	// Swap the running worker. Unregister before stopping so no fan-out
+	// delivery races the teardown, exactly as DeleteAlert does. The
+	// cursor and last-fired files are keyed by alert ID and deliberately
+	// NOT removed, so the replacement resumes where the old one left off
+	// rather than replaying or skipping records.
+	m.poller.unregister(alertID)
+	old.Stop()
+	m.workers[alertID] = newWorker
+	m.startWorker(newWorker)
+
+	if newWorker.Status().State == "error" {
+		// The rebuilt worker refused to start; put the config back so
+		// disk and memory don't disagree.
+		rollback()
+	}
+	return newWorker.Status(), nil
 }
 
 // Stop stops all workers. Safe to call multiple times.

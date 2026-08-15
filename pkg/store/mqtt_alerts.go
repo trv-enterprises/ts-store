@@ -17,14 +17,14 @@ const mqttAlertsFileName = "mqtt_alerts.json"
 // The worker holds a persistent MQTT client and publishes at the configured QoS
 // (default 1) when rules match.
 type MQTTAlert struct {
-	ID           string            `json:"id"`
-	BrokerURL    string            `json:"broker_url"`
-	Topic        string            `json:"topic"`
-	Username     string            `json:"username,omitempty"`
-	Password     string            `json:"password,omitempty"`
-	QoS          byte              `json:"qos"` // 0, 1, or 2 — default 1
-	PollInterval string            `json:"poll_interval,omitempty"` // default "1s"
-	CreatedAt    time.Time         `json:"created_at"`
+	ID           string    `json:"id"`
+	BrokerURL    string    `json:"broker_url"`
+	Topic        string    `json:"topic"`
+	Username     string    `json:"username,omitempty"`
+	Password     string    `json:"password,omitempty"`
+	QoS          byte      `json:"qos"`                     // 0, 1, or 2 — default 1
+	PollInterval string    `json:"poll_interval,omitempty"` // default "1s"
+	CreatedAt    time.Time `json:"created_at"`
 	AlertCommon
 }
 
@@ -87,6 +87,27 @@ func (s *Store) AddMQTTAlert(alert MQTTAlert) error {
 
 	config.Alerts = append(config.Alerts, alert)
 	return s.saveMQTTAlertsLocked(config)
+}
+
+// UpdateMQTTAlert replaces the stored alert carrying alert.ID, keeping its
+// position in the list. Returns ErrObjectNotFound if no alert has that ID.
+// See UpdateWebhookAlert for the caller's field-preservation contract.
+func (s *Store) UpdateMQTTAlert(alert MQTTAlert) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	config, err := s.loadMQTTAlertsLocked()
+	if err != nil {
+		return err
+	}
+
+	for i, a := range config.Alerts {
+		if a.ID == alert.ID {
+			config.Alerts[i] = alert
+			return s.saveMQTTAlertsLocked(config)
+		}
+	}
+	return ErrObjectNotFound
 }
 
 // RemoveMQTTAlert removes an MQTT alert by ID.

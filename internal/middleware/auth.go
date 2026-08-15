@@ -180,6 +180,7 @@ var routeAccess = map[string]apikey.Access{
 	// (see above).
 	"POST /api/stores/:store/alerts":        apikey.AccessManage,
 	"POST /api/stores/:store/alerts/test":   apikey.AccessManage,
+	"PUT /api/stores/:store/alerts/:id":     apikey.AccessManage,
 	"DELETE /api/stores/:store/alerts/:id":  apikey.AccessManage,
 	"GET /api/stores/:store/rollups":        apikey.AccessManage,
 	"POST /api/stores/:store/rollups":       apikey.AccessManage,
