@@ -218,6 +218,16 @@ All endpoints require the store's `X-API-Key` (same as streaming endpoints). The
 | GET    | `/api/stores/{store}/alerts/{id}` | — | Get one alert's runtime status + persisted config (secrets redacted). |
 | DELETE | `/api/stores/{store}/alerts/{id}` | — | Stop the worker and remove the persisted config. |
 
+#### What "secrets redacted" covers
+
+Read responses never echo credential material. The on-disk config is unchanged — this shapes only what the API returns:
+
+- **Sink URLs** (webhook/WS URL, MQTT broker URL, and the `target` field in listings): userinfo is stripped and any query string is replaced with `[redacted]`, since both commonly carry bearer secrets. Scheme, host, and path survive so the target stays identifiable.
+- **MQTT password**: masked.
+- **Headers**: masked by **allowlist** — every header value is `[redacted]` except a small set of benign transport headers (`accept`, `content-type`, `user-agent`). This is deliberately not a list of known-secret names: header names are operator-chosen, so a denylist misses vendor auth headers like `X-Vendor-Signature`, `X-Hub-Signature-256`, or `PRIVATE-TOKEN`. Failing closed costs only the ability to read back a benign custom header's value.
+
+An empty header value passes through unmasked — `[redacted]` there would falsely imply a value exists.
+
 ### Create request
 
 The POST body has a `type` discriminator (`"webhook"` | `"ws"` | `"mqtt"`) and exactly one matching nested options object. The common alert fields (above) live at the top level.

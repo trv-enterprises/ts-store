@@ -6,6 +6,7 @@ package alerts
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,8 +83,13 @@ func TestAlertDetailMarshalNoConfig(t *testing.T) {
 	}
 }
 
-func TestRedactHeadersMasksKnownAuthHeaders(t *testing.T) {
+// TestRedactHeadersMasksEverythingButAllowlist pins the issue #163
+// inversion: redaction is an allowlist, so any header not explicitly
+// echoable is masked — including vendor auth headers that no denylist
+// would have anticipated.
+func TestRedactHeadersMasksEverythingButAllowlist(t *testing.T) {
 	in := map[string]string{
+		// Classic auth headers.
 		"Authorization":       "Bearer secret",
 		"authorization":       "Bearer also-secret", // lowercase variant
 		"X-API-Key":           "k123",
@@ -91,26 +97,31 @@ func TestRedactHeadersMasksKnownAuthHeaders(t *testing.T) {
 		"Cookie":              "sid=abc",
 		"Proxy-Authorization": "Basic xyz",
 		"X-Access-Token":      "at789",
-		// These must NOT be redacted.
+		// The #163 cases: real secrets a name-based denylist misses.
+		"X-Vendor-Signature":       "sig-abc",
+		"X-Hub-Signature-256":      "sha256=deadbeef",
+		"X-Shopify-Hmac-Sha256":    "hmac-xyz",
+		"PRIVATE-TOKEN":            "glpat-secret",
+		"X-Figma-Token":            "figd-secret",
+		"X-Anything-Unanticipated": "could-be-anything",
+		// Benign transport headers: echoed.
 		"Content-Type": "application/json",
-		"X-Custom":     "ok-to-show",
-		"X-Public-Key": "rsa-pub", // contains "key" but isn't on the list
+		"Accept":       "application/json",
+		"User-Agent":   "tsstore/1.0",
 	}
 	out := redactHeaders(in)
 
-	for _, k := range []string{"Authorization", "authorization", "X-API-Key", "X-Auth-Token", "Cookie", "Proxy-Authorization", "X-Access-Token"} {
-		if out[k] != "[redacted]" {
-			t.Errorf("%q: got %q, want [redacted]", k, out[k])
+	for k := range in {
+		switch strings.ToLower(k) {
+		case "content-type", "accept", "user-agent":
+			if out[k] != in[k] {
+				t.Errorf("%q should be echoed, got %q", k, out[k])
+			}
+		default:
+			if out[k] != "[redacted]" {
+				t.Errorf("%q: got %q, want [redacted] — allowlist must fail closed", k, out[k])
+			}
 		}
-	}
-	if out["Content-Type"] != "application/json" {
-		t.Errorf("Content-Type was redacted: %q", out["Content-Type"])
-	}
-	if out["X-Custom"] != "ok-to-show" {
-		t.Errorf("X-Custom was redacted: %q", out["X-Custom"])
-	}
-	if out["X-Public-Key"] != "rsa-pub" {
-		t.Errorf("X-Public-Key was redacted (substring match too aggressive): %q", out["X-Public-Key"])
 	}
 }
 
@@ -130,5 +141,64 @@ func TestRedactHeadersNilSafe(t *testing.T) {
 	}
 	if got := redactHeaders(map[string]string{}); len(got) != 0 {
 		t.Errorf("empty input should pass through: %v", got)
+	}
+}
+
+// TestRedactedConfigLeaksNoSecretsInJSON is the refactor-proof check: it
+// plants secrets in every channel a webhook config carries (URL userinfo,
+// URL query, a vendor auth header) and asserts none of those plaintexts
+// survive into the marshalled read payload. It deliberately asserts on the
+// serialized bytes rather than on individual fields, so a future field
+// added to the config without redaction fails here.
+func TestRedactedConfigLeaksNoSecretsInJSON(t *testing.T) {
+	const (
+		userinfoSecret = "userinfo-secret-9d3f"
+		querySecret    = "query-secret-7b1a"
+		headerSecret   = "vendor-header-secret-4c8e"
+		mqttPassword   = "mqtt-password-2f6d"
+	)
+
+	cfg := store.WebhookAlert{
+		ID:  "abc12345",
+		URL: "https://user:" + userinfoSecret + "@example.com/hook?token=" + querySecret,
+		Headers: map[string]string{
+			"X-Vendor-Signature": headerSecret,
+			"Content-Type":       "application/json",
+		},
+		AlertCommon: store.AlertCommon{Name: "r1", Condition: "x > 0"},
+	}
+	redacted := cfg
+	redacted.Headers = redactHeaders(cfg.Headers)
+	redacted.URL = redactURL(cfg.URL)
+
+	mqtt := store.MQTTAlert{
+		ID:          "def67890",
+		BrokerURL:   "tcp://broker.example.com:1883",
+		Password:    mqttPassword,
+		AlertCommon: store.AlertCommon{Name: "r2", Condition: "y > 0"},
+	}
+	redactedMQTT := mqtt
+	redactedMQTT.Password = "[redacted]"
+	redactedMQTT.BrokerURL = redactURL(mqtt.BrokerURL)
+
+	payload, err := json.Marshal(AlertDetail{
+		Status:        Status{ID: "abc12345", Type: "webhook", Target: redactURL(cfg.URL)},
+		WebhookConfig: &redacted,
+		MQTTConfig:    &redactedMQTT,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	for _, secret := range []string{userinfoSecret, querySecret, headerSecret, mqttPassword} {
+		if strings.Contains(string(payload), secret) {
+			t.Errorf("secret %q leaked into the read payload: %s", secret, payload)
+		}
+	}
+
+	// Sanity: the target is still identifiable after redaction, else the
+	// endpoint would be useless.
+	if !strings.Contains(string(payload), "example.com/hook") {
+		t.Errorf("redaction destroyed the identifying host/path: %s", payload)
 	}
 }
