@@ -32,7 +32,7 @@ func (h *WSConnectionsHandler) List(c *gin.Context) {
 
 	manager := h.getManager(storeName)
 	if manager == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "store not found or not open"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "store not found"})
 		return
 	}
 
@@ -63,7 +63,7 @@ func (h *WSConnectionsHandler) Create(c *gin.Context) {
 
 	manager := h.getManager(storeName)
 	if manager == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "store not found or not open"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "store not found"})
 		return
 	}
 
@@ -121,7 +121,7 @@ func (h *WSConnectionsHandler) Get(c *gin.Context) {
 
 	manager := h.getManager(storeName)
 	if manager == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "store not found or not open"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "store not found"})
 		return
 	}
 
@@ -145,7 +145,7 @@ func (h *WSConnectionsHandler) Delete(c *gin.Context) {
 
 	manager := h.getManager(storeName)
 	if manager == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "store not found or not open"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "store not found"})
 		return
 	}
 

@@ -29,7 +29,7 @@ func (h *RollupsHandler) resolveManager(c *gin.Context) *rollups.Manager {
 	storeName := middleware.GetStoreName(c)
 	mgr := h.getManager(storeName)
 	if mgr == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "store not found or not open"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "store not found"})
 		return nil
 	}
 	return mgr

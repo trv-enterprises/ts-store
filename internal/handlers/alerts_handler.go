@@ -24,11 +24,16 @@ func NewAlertsHandler(getManager func(storeName string) *alerts.Manager) *Alerts
 	return &AlertsHandler{getManager: getManager}
 }
 
+// resolveManager returns the store's alerts manager, or writes a 404 and
+// returns nil. getManager is expected to OPEN a store that exists on disk but
+// isn't open yet (see StoreService.GetAlertsManagerOrOpen) — so a nil here
+// means the store genuinely does not exist, not merely that nothing has
+// touched it since the last restart.
 func (h *AlertsHandler) resolveManager(c *gin.Context) *alerts.Manager {
 	storeName := middleware.GetStoreName(c)
 	mgr := h.getManager(storeName)
 	if mgr == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "store not found or not open"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "store not found"})
 		return nil
 	}
 	return mgr

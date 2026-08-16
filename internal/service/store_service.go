@@ -616,6 +616,52 @@ func (s *StoreService) GetRollupsManager(name string) *rollups.Manager {
 	return s.rollupsManagers[name]
 }
 
+// The Get*ManagerOrOpen variants open the store first when it exists on disk
+// but isn't open yet, so a store-scoped endpoint doesn't depend on some
+// earlier request having opened it.
+//
+// The plain Get*Manager accessors above only consult the open-store maps, and
+// wiring HTTP handlers to them made alerts/rollups/connections 404 on a store
+// that exists and serves data fine — until a data endpoint (which opens
+// lazily via GetOrOpen) happened to run first. Stores fed only through the
+// Unix socket collector path never got opened on the HTTP side at all, so a
+// dashboard polling /alerts saw a permanent 404 that looked like a bad key.
+//
+// A nil return now means the store genuinely does not exist (or failed to
+// open), which is a real 404 — callers should say "store not found".
+
+// GetWSManagerOrOpen returns the WS manager, opening the store if needed.
+func (s *StoreService) GetWSManagerOrOpen(name string) *ws.Manager {
+	if _, err := s.GetOrOpen(name); err != nil {
+		return nil
+	}
+	return s.GetWSManager(name)
+}
+
+// GetMQTTManagerOrOpen returns the MQTT manager, opening the store if needed.
+func (s *StoreService) GetMQTTManagerOrOpen(name string) *mqtt.Manager {
+	if _, err := s.GetOrOpen(name); err != nil {
+		return nil
+	}
+	return s.GetMQTTManager(name)
+}
+
+// GetAlertsManagerOrOpen returns the alerts manager, opening the store if needed.
+func (s *StoreService) GetAlertsManagerOrOpen(name string) *alerts.Manager {
+	if _, err := s.GetOrOpen(name); err != nil {
+		return nil
+	}
+	return s.GetAlertsManager(name)
+}
+
+// GetRollupsManagerOrOpen returns the rollups manager, opening the store if needed.
+func (s *StoreService) GetRollupsManagerOrOpen(name string) *rollups.Manager {
+	if _, err := s.GetOrOpen(name); err != nil {
+		return nil
+	}
+	return s.GetRollupsManager(name)
+}
+
 // --- rollups.Provider implementation ---
 
 // GetOrOpenStore satisfies rollups.Provider.
