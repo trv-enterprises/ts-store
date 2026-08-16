@@ -306,7 +306,7 @@ func (w *Worker) Stop() {
 
 	w.evaluator.Stop()
 	if err := w.sink.Close(); err != nil {
-		log.Printf("alerts %s/%s: sink close: %v", w.alertType, w.id, err)
+		log.Printf("alerts %s/%s: sink close: %v", logSafe(w.alertType), logSafe(w.id), err)
 	}
 }
 
@@ -503,6 +503,25 @@ func (w *Worker) noteSuccess() {
 //
 // No-op for restart_policy="now" or "" (the common case): metric
 // streams don't need durable resume and we avoid disk I/O every tick.
+// logSafe strips CR/LF (and other control characters) from a value before it
+// is written to a log line. The alert ID reaches these logs, and since PUT
+// takes that ID from a request path (issue #166), an unsanitized value could
+// forge log entries — which matters here because journald output is itself
+// ingested into ts-store by the journal-logs collector. Truncated too: a log
+// field is never a place for unbounded caller-supplied text.
+func logSafe(s string) string {
+	const max = 128
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || (r >= 0 && r < 0x20) || r == 0x7f {
+			return '_'
+		}
+		return r
+	}, s)
+}
+
 func (w *Worker) writeCursor(ts int64) {
 	if w.restartPolicy != "resume" {
 		return
@@ -513,11 +532,11 @@ func (w *Worker) writeCursor(ts int64) {
 	tmp := w.cursorPath + ".tmp"
 	body := strconv.FormatInt(ts, 10) + "\n"
 	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
-		log.Printf("alerts %s/%s: cursor write: %v", w.alertType, w.id, err)
+		log.Printf("alerts %s/%s: cursor write: %v", logSafe(w.alertType), logSafe(w.id), err)
 		return
 	}
 	if err := os.Rename(tmp, w.cursorPath); err != nil {
-		log.Printf("alerts %s/%s: cursor rename: %v", w.alertType, w.id, err)
+		log.Printf("alerts %s/%s: cursor rename: %v", logSafe(w.alertType), logSafe(w.id), err)
 	}
 }
 
@@ -533,11 +552,11 @@ func (w *Worker) writeLastFired(t time.Time) {
 	tmp := w.lastFiredPath + ".tmp"
 	body := strconv.FormatInt(t.UnixNano(), 10) + "\n"
 	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
-		log.Printf("alerts %s/%s: last-fired write: %v", w.alertType, w.id, err)
+		log.Printf("alerts %s/%s: last-fired write: %v", logSafe(w.alertType), logSafe(w.id), err)
 		return
 	}
 	if err := os.Rename(tmp, w.lastFiredPath); err != nil {
-		log.Printf("alerts %s/%s: last-fired rename: %v", w.alertType, w.id, err)
+		log.Printf("alerts %s/%s: last-fired rename: %v", logSafe(w.alertType), logSafe(w.id), err)
 	}
 }
 

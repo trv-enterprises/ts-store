@@ -29,7 +29,7 @@ GO = go
 LDFLAGS = -s -w -X main.Version=$(VERSION)
 
 .PHONY: all build build-arm64 build-amd64 build-local build-collectors clean test test-verbose help
-.PHONY: version-bump release release-binaries release-collectors
+.PHONY: version-bump release release-binaries release-collectors security-scan security-scan-codeql
 
 # Collectors built and shipped alongside tsstore. Each name must match a
 # subdirectory under examples/ that builds as `main`.
@@ -90,6 +90,26 @@ test: ## Run all tests
 
 test-verbose: ## Run all tests with verbose output
 	$(GO) test -v ./...
+
+## Security targets
+
+security-scan: ## Reconcile scanner output against security/accepted-vulns.yaml
+	@echo "── Security scan ─────────────────────────────────────────────"
+	@if command -v govulncheck >/dev/null 2>&1; then \
+		govulncheck -json ./... 2>/dev/null | security/reconcile-scan.py --scanner govulncheck; \
+		rc=$$?; \
+		if [ $$rc -eq 2 ]; then echo "✗ registry error or EXPIRED exception — fix security/accepted-vulns.yaml"; exit 1; fi; \
+		if [ $$rc -eq 1 ]; then echo "✗ actionable vulnerabilities — remediate, or accept them in security/accepted-vulns.yaml"; exit 1; fi; \
+	else \
+		echo "⚠ govulncheck not installed — skipping (go install golang.org/x/vuln/cmd/govulncheck@latest)"; \
+	fi
+	@# CodeQL SARIF is produced by CI, not locally. Pass a downloaded SARIF
+	@# with: make security-scan-codeql SARIF=results.sarif
+	@echo "✓ security scan complete"
+
+security-scan-codeql: ## Reconcile a CodeQL SARIF file (use with SARIF=path/to/results.sarif)
+	@if [ -z "$(SARIF)" ]; then echo "Error: SARIF must be set (e.g. make security-scan-codeql SARIF=results.sarif)"; exit 1; fi
+	@security/reconcile-scan.py --scanner codeql --input "$(SARIF)"
 
 ## Release targets
 

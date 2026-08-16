@@ -29,8 +29,11 @@ on:
       - 'internal/handlers/**'
       - 'internal/unixsock/**'
       - 'internal/service/**'
+      - 'internal/alerts/**'
+      - 'internal/notify/**'
       - 'cmd/**'
       - '.github/workflows/codeql.yml'
+      - '.github/codeql/codeql-config.yml'
   workflow_dispatch:
 
 concurrency:
@@ -65,6 +68,10 @@ jobs:
           # a webhook sink that posts to arbitrary LAN addresses by
           # design — exactly the surface the extra queries cover.
           queries: security-extended
+          # Query filters for consciously-accepted findings. Each exclusion
+          # is justified by an entry in security/accepted-vulns.yaml with an
+          # expiry date; see security/README.md for the process.
+          config-file: ./.github/codeql/codeql-config.yml
 
       # Build explicitly rather than relying on autobuild: this module
       # needs no special steps, and being explicit means a build failure
