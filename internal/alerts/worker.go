@@ -306,7 +306,7 @@ func (w *Worker) Stop() {
 
 	w.evaluator.Stop()
 	if err := w.sink.Close(); err != nil {
-		log.Printf("alerts %s/%s: sink close: %v", logSafe(w.alertType), logSafe(w.id), err)
+		log.Printf("alerts %s/%s: sink close: %v", logSafe(w.alertType), logSafe(w.id), logSafeErr(err))
 	}
 }
 
@@ -503,6 +503,18 @@ func (w *Worker) noteSuccess() {
 //
 // No-op for restart_policy="now" or "" (the common case): metric
 // streams don't need durable resume and we avoid disk I/O every tick.
+// logSafeErr is logSafe for an error. os.WriteFile/os.Rename return
+// *os.PathError, whose Error() embeds the offending PATH — which is built
+// from the alert ID, so the ID reaches the log through the error even when
+// the explicit ID argument is already sanitized. CodeQL caught exactly that
+// after the first pass of this fix sanitized only the direct arguments.
+func logSafeErr(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return logSafeN(err.Error(), 256)
+}
+
 // logSafe strips CR/LF (and other control characters) from a value before it
 // is written to a log line. The alert ID reaches these logs, and since PUT
 // takes that ID from a request path (issue #166), an unsanitized value could
@@ -510,7 +522,13 @@ func (w *Worker) noteSuccess() {
 // ingested into ts-store by the journal-logs collector. Truncated too: a log
 // field is never a place for unbounded caller-supplied text.
 func logSafe(s string) string {
-	const max = 128
+	return logSafeN(s, 128)
+}
+
+// logSafeN is logSafe with an explicit length bound: error text carries more
+// context than an identifier and is worth more room, but is still bounded —
+// a log field is never a place for unbounded caller-influenced text.
+func logSafeN(s string, max int) string {
 	if len(s) > max {
 		s = s[:max] + "…"
 	}
@@ -532,11 +550,11 @@ func (w *Worker) writeCursor(ts int64) {
 	tmp := w.cursorPath + ".tmp"
 	body := strconv.FormatInt(ts, 10) + "\n"
 	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
-		log.Printf("alerts %s/%s: cursor write: %v", logSafe(w.alertType), logSafe(w.id), err)
+		log.Printf("alerts %s/%s: cursor write: %v", logSafe(w.alertType), logSafe(w.id), logSafeErr(err))
 		return
 	}
 	if err := os.Rename(tmp, w.cursorPath); err != nil {
-		log.Printf("alerts %s/%s: cursor rename: %v", logSafe(w.alertType), logSafe(w.id), err)
+		log.Printf("alerts %s/%s: cursor rename: %v", logSafe(w.alertType), logSafe(w.id), logSafeErr(err))
 	}
 }
 
@@ -552,11 +570,11 @@ func (w *Worker) writeLastFired(t time.Time) {
 	tmp := w.lastFiredPath + ".tmp"
 	body := strconv.FormatInt(t.UnixNano(), 10) + "\n"
 	if err := os.WriteFile(tmp, []byte(body), 0644); err != nil {
-		log.Printf("alerts %s/%s: last-fired write: %v", logSafe(w.alertType), logSafe(w.id), err)
+		log.Printf("alerts %s/%s: last-fired write: %v", logSafe(w.alertType), logSafe(w.id), logSafeErr(err))
 		return
 	}
 	if err := os.Rename(tmp, w.lastFiredPath); err != nil {
-		log.Printf("alerts %s/%s: last-fired rename: %v", logSafe(w.alertType), logSafe(w.id), err)
+		log.Printf("alerts %s/%s: last-fired rename: %v", logSafe(w.alertType), logSafe(w.id), logSafeErr(err))
 	}
 }
 

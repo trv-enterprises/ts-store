@@ -5,6 +5,7 @@
 package alerts
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -383,5 +384,27 @@ func TestLogSafeNeutralizesForgedLogLines(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	if got := logSafe(long); len([]rune(got)) > 129 {
 		t.Errorf("logSafe did not bound length: %d runes", len([]rune(got)))
+	}
+}
+
+// TestLogSafeErrSanitizesEmbeddedPaths: os.WriteFile/os.Rename return
+// *os.PathError, whose Error() embeds the path — which is built from the
+// alert ID. Sanitizing only the explicit ID argument left that route open,
+// which is what CodeQL flagged on PR #169 after the first pass.
+func TestLogSafeErrSanitizesEmbeddedPaths(t *testing.T) {
+	err := &os.PathError{
+		Op:   "open",
+		Path: "/var/lib/tsstore/x/webhook_alert_abc\nAug 16 00:00:00 host tsstore[1]: FAKE.cursor",
+		Err:  os.ErrPermission,
+	}
+	got := logSafeErr(err)
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("logSafeErr left a line break: %q", got)
+	}
+	if !strings.Contains(got, "permission denied") {
+		t.Errorf("logSafeErr dropped the useful part of the error: %q", got)
+	}
+	if logSafeErr(nil) != "<nil>" {
+		t.Errorf("logSafeErr(nil) = %q, want <nil>", logSafeErr(nil))
 	}
 }
