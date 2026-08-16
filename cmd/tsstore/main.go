@@ -343,12 +343,16 @@ func runServer(args []string) {
 	unifiedHandler := handlers.NewUnifiedHandler(storeService)
 	schemaHandler := handlers.NewSchemaHandler(storeService)
 	wsHandler := handlers.NewWSHandler(storeService)
-	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManager)
-	mqttHandler := handlers.NewMQTTHandler(storeService.GetMQTTManager)
-	alertsHandler := handlers.NewAlertsHandler(storeService.GetAlertsManager)
+	// The *OrOpen accessors open a store that exists on disk but isn't open
+	// yet, matching how the data endpoints behave. Wiring the plain
+	// Get*Manager accessors here made these endpoints 404 until some data
+	// request happened to open the store first.
+	wsConnHandler := handlers.NewWSConnectionsHandler(storeService.GetWSManagerOrOpen)
+	mqttHandler := handlers.NewMQTTHandler(storeService.GetMQTTManagerOrOpen)
+	alertsHandler := handlers.NewAlertsHandler(storeService.GetAlertsManagerOrOpen)
 	connectionsHandler := handlers.NewConnectionsHandler(
-		storeService.GetWSManager, storeService.GetMQTTManager, storeService.GetAlertsManager)
-	rollupsHandler := handlers.NewRollupsHandler(storeService.GetRollupsManager)
+		storeService.GetWSManagerOrOpen, storeService.GetMQTTManagerOrOpen, storeService.GetAlertsManagerOrOpen)
+	rollupsHandler := handlers.NewRollupsHandler(storeService.GetRollupsManagerOrOpen)
 
 	// API routes
 	api := router.Group("/api")
