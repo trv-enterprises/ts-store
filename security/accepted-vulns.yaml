@@ -44,6 +44,116 @@
 # use sparingly and justify hard.
 
 exceptions:
+  # ── 2026-08-16 triage of the 82 open alerts on main ──────────────────────
+  # Grouped by root cause rather than by site: 82 alerts collapse to 6
+  # decisions. Rules are accepted REPO-WIDE here (bare rule id) only where the
+  # same guard or the same false-positive mechanism covers every instance —
+  # each entry says which. Verified by probe where a guard is load-bearing.
+
+  - id: go/path-injection
+    scanner: codeql
+    module: pkg/store/* (52 sites) + internal/{alerts,mqtt,rollups}/*
+    accepted_by: Tom Viviano
+    accepted_on: 2026-08-16
+    expires_on: 2027-02-16
+    reason: >
+      Every instance is the same shape: a store name (or an alert/connection ID
+      derived from one) joined onto the data path. Store names are gated by
+      ValidateStoreName — regex ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$, which admits
+      no path separator, no leading dot (so no ".."), and caps length at 64 —
+      enforced at three chokepoints before any path is built: the auth
+      middleware (internal/middleware/auth.go), store.Create, and store.Open.
+      Probed with ../etc/passwd, .., ., a/b, ./x, x/../../y, .hidden, embedded
+      NUL, whitespace, backslash, and a 65-byte name: all rejected, while
+      legitimate names pass. Alert IDs reaching cursorPathFor are additionally
+      gated on a worker-map lookup that only matches server-generated IDs
+      (pinned by TestUpdateAlertRejectsTraversalID). CodeQL does not model the
+      regex as a sanitizer, so it reports the flow regardless.
+    remediation: >
+      None needed while ValidateStoreName guards the entry points. If a new
+      code path ever builds a store path WITHOUT passing through the auth
+      middleware, store.Create, or store.Open, it must call ValidateStoreName
+      itself — this acceptance assumes those three remain the only doors.
+    suppression: none — left visible so a genuinely new traversal shape is not hidden
+
+  - id: go/log-injection
+    scanner: codeql
+    module: internal/{mqtt,alerts,ws,rollups,middleware,service}/* (22 sites)
+    accepted_by: Tom Viviano
+    accepted_on: 2026-08-16
+    expires_on: 2027-02-16
+    reason: >
+      The values reaching these log lines are store names, alert/connection
+      IDs, and broker URLs — all constrained by ValidateStoreName or
+      server-generated. The alert worker sites additionally route every
+      argument through logSafe/logSafeErr, which strips CR/LF and control
+      characters and bounds length; CodeQL does not recognize strings.Map as a
+      sanitizer, so it reports the flow anyway. Accepted as a class rather than
+      fixed at all 22 sites because the inputs are already constrained at the
+      boundary; the worker sites were hardened only because PUT (issue #166)
+      introduced a caller-supplied ID.
+    remediation: >
+      If a genuinely free-text, user-supplied value is ever logged (a rule
+      name, a note, an error from a remote), route it through
+      alerts.logSafe-style scrubbing at that site.
+    suppression: none — left visible; a new site logging free-text user input should surface
+
+  - id: go/clear-text-logging
+    scanner: codeql
+    module: cmd/tsstore/main.go, examples/{journal-logs,system-stats}/main.go
+    accepted_by: Tom Viviano
+    accepted_on: 2026-08-16
+    expires_on: 2027-02-16
+    reason: >
+      Two distinct false positives, both verified by reading the code. (1) The
+      collectors' apiKey flows into connectAndAuth, which does
+      fmt.Fprintf(writer, "AUTH %s %s\n", store, apiKey) — the writer is a
+      bufio.Writer over the Unix socket, i.e. the authentication handshake
+      itself, not a log. CodeQL treats Fprintf as a logging sink regardless of
+      destination. (2) cmd/tsstore prints the freshly-minted key to stdout on
+      store creation, which is the only time it is ever available — and the
+      adopt path already suppresses it ("API Key: (adopted — not shown)")
+      precisely because echoing a caller-supplied secret adds nothing.
+    remediation: >
+      None. If the CLI ever gains a non-interactive/quiet mode, the mint case
+      should write the key to a file or fd rather than stdout.
+    suppression: none — five sites, all read and understood; not worth a repo-wide filter
+
+  - id: go/weak-sensitive-data-hashing
+    scanner: codeql
+    module: internal/apikey/apikey.go (hashKey)
+    accepted_by: Tom Viviano
+    accepted_on: 2026-08-16
+    expires_on: 2027-02-16
+    reason: >
+      The rule targets PASSWORD hashing, where a slow KDF (bcrypt/argon2)
+      exists to make brute-forcing a low-entropy human-chosen secret
+      expensive. API keys here are not passwords: they are "tsstore_" + a v4
+      UUID — 122 bits of entropy, machine-generated, never user-chosen
+      (ValidateSuppliedKey enforces the same shape for adopted keys). Against
+      that keyspace a slow KDF buys nothing, while costing latency on EVERY
+      authenticated request, since the hash is computed per request to look the
+      key up in the registry.
+    remediation: >
+      Revisit only if key format ever admits user-chosen or low-entropy
+      secrets — then a KDF becomes necessary and the per-request cost must be
+      solved with a verification cache.
+    suppression: none
+
+  - id: go/allocation-size-overflow
+    scanner: codeql
+    module: internal/alerts/manager.go (AlertDetail JSON assembly)
+    accepted_by: Tom Viviano
+    accepted_on: 2026-08-16
+    expires_on: 2027-02-16
+    reason: >
+      The flagged expression is a make() capacity hint summing the lengths of
+      two already-marshalled in-memory JSON buffers plus a short key. Both
+      operands are lengths of byte slices that already exist in memory, so
+      reaching an overflowing sum would require the process to already hold
+      ~2^63 bytes. Not reachable; the arithmetic is a preallocation
+      optimisation, not a size taken from input.
+    suppression: none
   - id: go/request-forgery@internal/notify/webhook.go
     scanner: codeql
     module: internal/notify/webhook.go (WebhookSink dispatch)
