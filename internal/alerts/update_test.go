@@ -5,6 +5,8 @@
 package alerts
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/tviviano/ts-store/pkg/store"
@@ -355,5 +357,54 @@ func TestUpdateAlertRejectsTraversalID(t *testing.T) {
 		}); err != ErrNotFound {
 			t.Errorf("traversal-shaped id %q: got %v, want ErrNotFound", id, err)
 		}
+	}
+}
+
+// TestLogSafeNeutralizesForgedLogLines: the alert ID reaches log lines, and
+// PUT takes that ID from a request path — so a value containing newlines
+// could forge journal entries, which ts-store's own journal-logs collector
+// then ingests. logSafe strips control characters and bounds the length.
+func TestLogSafeNeutralizesForgedLogLines(t *testing.T) {
+	forged := "abc\nAug 16 00:00:00 host tsstore[1]: alerts: FAKE ENTRY"
+	got := logSafe(forged)
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("logSafe left a line break in %q", got)
+	}
+	if strings.Contains(got, "FAKE") == false {
+		t.Errorf("logSafe should neutralize, not silently drop content: %q", got)
+	}
+
+	if got := logSafe("tab\there"); strings.Contains(got, "\t") {
+		t.Errorf("logSafe left a tab: %q", got)
+	}
+	if got := logSafe("clean-id-123"); got != "clean-id-123" {
+		t.Errorf("logSafe mangled a benign value: %q", got)
+	}
+
+	long := strings.Repeat("x", 500)
+	if got := logSafe(long); len([]rune(got)) > 129 {
+		t.Errorf("logSafe did not bound length: %d runes", len([]rune(got)))
+	}
+}
+
+// TestLogSafeErrSanitizesEmbeddedPaths: os.WriteFile/os.Rename return
+// *os.PathError, whose Error() embeds the path — which is built from the
+// alert ID. Sanitizing only the explicit ID argument left that route open,
+// which is what CodeQL flagged on PR #169 after the first pass.
+func TestLogSafeErrSanitizesEmbeddedPaths(t *testing.T) {
+	err := &os.PathError{
+		Op:   "open",
+		Path: "/var/lib/tsstore/x/webhook_alert_abc\nAug 16 00:00:00 host tsstore[1]: FAKE.cursor",
+		Err:  os.ErrPermission,
+	}
+	got := logSafeErr(err)
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("logSafeErr left a line break: %q", got)
+	}
+	if !strings.Contains(got, "permission denied") {
+		t.Errorf("logSafeErr dropped the useful part of the error: %q", got)
+	}
+	if logSafeErr(nil) != "<nil>" {
+		t.Errorf("logSafeErr(nil) = %q, want <nil>", logSafeErr(nil))
 	}
 }

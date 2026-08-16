@@ -1,0 +1,47 @@
+name: "ts-store CodeQL config"
+
+# Query filters for findings we have consciously accepted. Every exclusion
+# here MUST have a matching entry in security/accepted-vulns.yaml carrying the
+# justification, who accepted it, and an expiry date — the registry is the
+# reasoning, this file is only the mechanism that stops it re-reporting.
+#
+# Why filters rather than inline `// codeql[rule-id]` comments: CodeQL records
+# an inline suppression in the SARIF but still emits the alert, so the
+# code-scanning check stays red. Only excluding the query actually keeps the
+# check meaningful (see security/README.md).
+#
+# The cost of this mechanism is that an exclusion is REPO-GLOBAL for that rule
+# id — CodeQL cannot scope a query filter to a path. So exclude a rule only
+# when it is inapplicable to this codebase as a whole, never merely because one
+# site is a false positive. A rule that is genuinely wrong at one site and
+# right elsewhere stays enabled; accept that finding in the registry and leave
+# it visible.
+query-filters:
+  # go/request-forgery: dialing an operator-configured URL is the product,
+  # not a defect. Webhook, WS, and MQTT alert sinks all exist to reach an
+  # address their creator specified (a `manage` grant on the store — the same
+  # authority needed to reconfigure or delete the alert). validateSinkURL
+  # constrains scheme and host at create and update; loopback/private ranges
+  # are deliberately reachable because same-box and LAN sinks are the core
+  # homelab pattern here. Documented in docs/alerting-architecture.md
+  # ("SSRF posture") and accepted in security/accepted-vulns.yaml until
+  # 2027-02-16. Repo-global is correct for this one: every sink in this
+  # codebase is operator-configured by design.
+  - exclude:
+      id: go/request-forgery
+
+# NOT excluded, deliberately:
+#
+#   go/path-injection — accepted at internal/alerts/worker.go (the alert ID
+#     reaching filepath.Join is gated on a worker-map lookup that only matches
+#     server-generated IDs, pinned by TestUpdateAlertRejectsTraversalID), but
+#     path traversal is a real risk class elsewhere in a store that builds
+#     paths from user-supplied store names. Excluding it repo-wide would blind
+#     us to a genuine bug, so the accepted instance stays visible in the
+#     Security tab with its registry entry as the explanation.
+#
+#   go/log-injection — FIXED rather than accepted: logSafe() in
+#     internal/alerts/worker.go scrubs control characters and bounds length
+#     before user-controlled values reach a log line. Journald output is
+#     ingested back into ts-store by the journal-logs collector, so forged log
+#     entries are a real problem, and the fix was cheap.

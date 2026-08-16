@@ -1,0 +1,93 @@
+# Accepted-vulnerability registry
+# ================================
+# The single source of truth for security findings we have CONSCIOUSLY ACCEPTED
+# because their blast radius does not affect this system (or remediation is
+# gated on an upstream/toolchain bump we don't yet have). `make security-scan`
+# reconciles scanner output against this file:
+#   - a finding whose ID is listed here (and not expired) → reported as
+#     "Known-accepted", suppressed from the actionable list.
+#   - any finding NOT listed here → reported as "ACTIONABLE".
+#
+# This file is human-authored and code-reviewed. Adding an entry is an explicit
+# risk-acceptance decision — write the justification as if defending it in an
+# audit. Reconciliation tooling: security/reconcile-scan.py.
+#
+# Ported from the same convention in the Outpost repo, extended with `codeql`
+# as a scanner since ts-store's static-analysis findings are SARIF alerts
+# rather than dependency advisories.
+#
+# ── Entry schema ─────────────────────────────────────────────────────────────
+#   id:            REQUIRED. Matched verbatim against scan output.
+#                  govulncheck → "GO-YYYY-NNNN".
+#                  codeql      → "<rule-id>@<path>" (e.g.
+#                                "go/request-forgery@internal/notify/webhook.go"),
+#                  or a bare rule id to accept the rule repo-wide.
+#   scanner:       REQUIRED. one of: codeql | govulncheck | gitleaks
+#   module:        REQUIRED. the affected module/package/file (for humans).
+#   accepted_by:   REQUIRED. who made the risk-acceptance decision.
+#   accepted_on:   REQUIRED. ISO date (YYYY-MM-DD) the exception was granted.
+#   expires_on:    REQUIRED. ISO date after which this exception is INVALID and
+#                  the finding becomes actionable again (forces periodic
+#                  re-review; an exception is never permanent). Re-affirm or
+#                  remediate by then.
+#   reason:        REQUIRED. why the blast radius does not affect THIS system.
+#                  Be specific about the unreachable path / guarded input / why
+#                  the fix is gated.
+#   remediation:   OPTIONAL. the known fix, so re-review is a quick "is the fix
+#                  available to us yet?".
+#   suppression:   OPTIONAL but expected for codeql entries. Where the matching
+#                  in-code suppression lives, so the two never drift apart.
+#
+# gitleaks: secret leaks are NEVER accepted via this file. A committed secret is
+# always actionable (rotate + purge). gitleaks entries exist only to suppress
+# documented FALSE POSITIVES (e.g. a fixture that looks like a key but isn't);
+# use sparingly and justify hard.
+
+exceptions:
+  - id: go/request-forgery@internal/notify/webhook.go
+    scanner: codeql
+    module: internal/notify/webhook.go (WebhookSink dispatch)
+    accepted_by: Tom Viviano
+    accepted_on: 2026-08-16
+    expires_on: 2027-02-16
+    reason: >
+      Dialing an operator-configured URL is the feature, not a defect: a webhook
+      alert exists to POST to the address its creator specified. The URL is not
+      attacker-supplied in the usual SSRF sense — setting it requires a `manage`
+      grant on the store, the same authority needed to reconfigure or delete the
+      alert outright. validateSinkURL constrains the scheme (http/https) and
+      requires a host at create AND update time. Loopback, link-local and
+      private-range targets are deliberately NOT blocked because alerts posting
+      to services on the same box or LAN are a core homelab pattern here; the
+      posture, its consequence, and the condition for revisiting it are recorded
+      in docs/alerting-architecture.md ("SSRF posture"). Re-evaluate if ts-store
+      is ever deployed multi-tenant or internet-exposed, where a store key
+      stops implying physical/network trust.
+    remediation: >
+      Not a code fix while operator-configured sinks are supported. If the threat
+      model changes, add an opt-in deny-list (e.g. 169.254.0.0/16 and RFC1918)
+      behind a config flag, defaulting to permissive for homelab installs.
+    suppression: inline `// codeql[go/request-forgery]` at the client.Do call
+
+  - id: go/path-injection@internal/alerts/worker.go
+    scanner: codeql
+    module: internal/alerts/worker.go (cursor + last-fired file paths)
+    accepted_by: Tom Viviano
+    accepted_on: 2026-08-16
+    expires_on: 2027-02-16
+    reason: >
+      The tainted value is the alert ID, which reaches filepath.Join via
+      cursorPathFor/lastFiredPathFor. On the create path the ID is a
+      server-minted UUID and never attacker-controlled. On the update path
+      (PUT, issue #166) it comes from the request URL — but every branch of
+      Manager.UpdateAlert does the worker-map lookup FIRST and returns
+      ErrNotFound unless the ID exactly matches an ID the server itself
+      generated, so a traversal-shaped value never reaches path construction.
+      Verified by probe (`../../etc/passwd`, `../escape`, `a/b`, `..` all
+      rejected) and pinned permanently by TestUpdateAlertRejectsTraversalID,
+      which fails if that ordering is ever reversed.
+    remediation: >
+      If the lookup guard is ever removed or reordered, sanitize at the boundary
+      instead: reject any ID that is not a bare hex/UUID token before building a
+      path, rather than relying on the map lookup.
+    suppression: inline `// codeql[go/path-injection]` at the path-building sites
