@@ -164,7 +164,7 @@ func TestAdminAuthBodyPeekLeavesBodyIntact(t *testing.T) {
 
 // TestAdminGrantRejectsInvalidStoreName: the peeked name is caller-supplied
 // and reaches a filepath join downstream, so it is validated before any grant
-// check — a traversal-shaped name is a 400, never a 403 or a created store.
+// check — a path-traversal name is a 400, never a 403 or a created store.
 func TestAdminGrantRejectsInvalidStoreName(t *testing.T) {
 	router, storeService, keyManager := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()

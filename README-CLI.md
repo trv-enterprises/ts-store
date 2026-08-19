@@ -150,8 +150,8 @@ Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, ha
 |---|---|
 | `read` | Query, range, oldest/newest, schema read, stream out — including WS/MQTT push-connection lifecycle and alert reads (`GET /alerts`, `GET /alerts/:id`) |
 | `write` | Ingest (REST, WebSocket, Unix socket) |
-| `manage` | Alert mutation (create/update/test/delete), rollups, schema writes, reset, delete |
-| `admin` | Store lifecycle: creating stores matching the pattern. No data or config access — pair with read/write to also use what you create. |
+| `manage` | Store configuration: alert mutation (create/update/test/delete), rollups, schema writes, metrics reset |
+| `admin` | Store lifecycle: create, delete, reset stores matching the pattern. No data or config access — pair with read/write to also use what you create. |
 
 Store patterns are an exact name, a prefix glob (`sensors-*`), or `*`.
 

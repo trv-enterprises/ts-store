@@ -107,8 +107,8 @@ Every endpoint requires one of three classes. They are **independent flags, not 
 |---|---|
 | `read` | Query, range, oldest/newest, schema read, stream out — including WS/MQTT push-connection lifecycle and alert **reads** |
 | `write` | Ingest (`POST /data`, `GET /ws/write`, the Unix socket) |
-| `manage` | Store-scoped administration: alert **mutation** (create/update/test/delete), rollups, schema writes, reset, store delete |
-| `admin` | Store **lifecycle**: creating stores whose name matches the pattern. Grants **no** data or configuration access — an admin-only key can bring a store into existence and never read, write, or configure it. |
+| `manage` | Store **configuration**: alert mutation (create/update/test/delete), rollups, schema writes, metrics reset |
+| `admin` | Store **lifecycle**: create, delete, and reset stores whose name matches the pattern. Grants **no** data or configuration access — an admin-only key can create and destroy a store and never read, write, or configure it. |
 
 Alerts are store-scoped rather than server-scoped, so alert management is a `manage` grant on the store — it does not require the admin key.
 
@@ -133,6 +133,15 @@ An `admin` grant contributes no access classes to `GET /api/stores`, so an
 admin-only key sees an empty listing — it can create stores, not enumerate
 them. Note also that a store's own initial key carries `read,write,manage` and
 deliberately **not** `admin`: lifecycle authority is always granted explicitly.
+
+> **Behavior change.** `DELETE /api/stores/:store` and
+> `POST /api/stores/:store/reset` previously required `manage`; they now
+> require `admin`. That bundling meant a key which only needed to manage alert
+> rules could also erase the store and everything in it. A consequence worth
+> stating plainly: **a store's own key can no longer delete or reset that
+> store** — a leaked store key can corrupt data, but not destroy the store.
+> `POST /:store/metrics/reset` stays `manage`: it zeroes counters and touches
+> no stored data.
 
 Wildcards matter because an enumerated store list goes stale the moment a collector auto-creates a store.
 

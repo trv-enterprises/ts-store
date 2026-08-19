@@ -71,7 +71,7 @@ func Auth(keyManager *apikey.Manager, access apikey.Access) gin.HandlerFunc {
 			return
 		}
 
-		// Reject traversal-capable names before they reach any code that
+		// Reject path-traversal names before they reach any code that
 		// joins them onto the data path (key lookup reads <name>/keys.json).
 		if err := store.ValidateStoreName(storeName); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid store name"})
@@ -193,11 +193,29 @@ var routeAccess = map[string]apikey.Access{
 	"POST /api/stores/:store/rollups":       apikey.AccessManage,
 	"GET /api/stores/:store/rollups/:id":    apikey.AccessManage,
 	"DELETE /api/stores/:store/rollups/:id": apikey.AccessManage,
-	// Schema mutation, reset, and store deletion are destructive.
+	// Schema mutation is destructive but is store CONFIGURATION, so it
+	// stays manage. Zeroing metrics counters likewise — it changes no
+	// stored data and is routine operational hygiene, not lifecycle.
 	"PUT /api/stores/:store/schema":         apikey.AccessManage,
-	"POST /api/stores/:store/reset":         apikey.AccessManage,
 	"POST /api/stores/:store/metrics/reset": apikey.AccessManage,
-	"DELETE /api/stores/:store":             apikey.AccessManage,
+
+	// --- admin: store lifecycle ---
+	// Ending a store's life is lifecycle, not configuration (issue #157
+	// phase 2). Keeping these under manage bundled "configure this store"
+	// with "destroy this store", so a key that only needed to manage alert
+	// rules could also erase the store and everything in it.
+	//
+	// reset belongs here with delete: it wipes every record while keeping
+	// the store, which is destruction of the data by another name. The
+	// Postgres analogue is instructive — TRUNCATE is its own privilege,
+	// separate from row-level DELETE.
+	//
+	// Note this means a store's own initial key (read,write,manage on
+	// itself) can no longer delete or reset that store: lifecycle
+	// authority is granted explicitly, so a leaked store key can corrupt
+	// data but not erase the store.
+	"POST /api/stores/:store/reset": apikey.AccessAdmin,
+	"DELETE /api/stores/:store":     apikey.AccessAdmin,
 }
 
 // accessFor resolves the class for a matched route, falling back to the

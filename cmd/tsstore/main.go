@@ -188,9 +188,10 @@ Bring your own key (instead of letting ts-store mint one):
 Access classes:
   read    query, range, stats, schema read, stream out (incl. push connections)
   write   ingest
-  manage  store-scoped admin: alerts, rollups, schema writes, reset
-  admin   store lifecycle: create stores matching the pattern. Grants NO
-          data or config access — pair with read/write to also use them.
+  manage  store configuration: alerts, rollups, schema writes, metrics reset
+  admin   store lifecycle: create, delete, reset stores matching the
+          pattern. Grants NO data or config access — pair with read/write
+          to also use them.
 
 Examples:
   # Read-only key across every store
@@ -199,7 +200,8 @@ Examples:
   # Read+write on one namespace, full control of one store
   tsstore key create --grant read,write:sensors-* --grant read,write,manage:home-env
 
-  # Provision-only key: may create sensors-* stores, can't read or write them
+  # Lifecycle-only key: may create/delete/reset sensors-* stores, never
+  # read or write them
   tsstore key create --grant admin:sensors-* --note "provisioner"
 
   # Adopt a key minted in 1Password (never touches argv or shell history)

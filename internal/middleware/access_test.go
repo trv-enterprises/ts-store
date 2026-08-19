@@ -74,14 +74,36 @@ func TestAdminShapedRoutesRequireManage(t *testing.T) {
 		"DELETE /api/stores/:store/alerts/:id",
 		"GET /api/stores/:store/rollups",
 		"PUT /api/stores/:store/schema",
-		"POST /api/stores/:store/reset",
-		"DELETE /api/stores/:store",
+		"POST /api/stores/:store/metrics/reset",
 	}
 	for _, r := range manageRoutes {
 		method, path, _ := strings.Cut(r, " ")
 		if got := accessFor(method, path, apikey.AccessWrite); got != apikey.AccessManage {
 			t.Errorf("%s classified %q, want manage", r, got)
 		}
+	}
+}
+
+// TestLifecycleRoutesRequireAdmin pins issue #157 phase 2: ending a store's
+// life is lifecycle, not configuration. Before this, manage bundled
+// "configure this store" with "destroy this store", so a key that only
+// needed to manage alert rules could also erase the store.
+func TestLifecycleRoutesRequireAdmin(t *testing.T) {
+	for _, r := range []string{
+		"DELETE /api/stores/:store",
+		"POST /api/stores/:store/reset",
+	} {
+		method, path, _ := strings.Cut(r, " ")
+		if got := accessFor(method, path, apikey.AccessWrite); got != apikey.AccessAdmin {
+			t.Errorf("%s classified %q, want admin", r, got)
+		}
+	}
+
+	// metrics/reset zeroes counters, changes no stored data, and is routine
+	// operational hygiene — it stays manage. Guards against a future sweep
+	// that moves everything named "reset" to admin.
+	if got := accessFor("POST", "/api/stores/:store/metrics/reset", apikey.AccessWrite); got != apikey.AccessManage {
+		t.Errorf("metrics/reset classified %q, want manage", got)
 	}
 }
 
@@ -371,5 +393,77 @@ func TestAuthScopesKeyToItsGrantedStore(t *testing.T) {
 		if w.Code != want {
 			t.Errorf("key on store %q: got %d, want %d", store, w.Code, want)
 		}
+	}
+}
+
+// TestManageKeyCannotDeleteOrResetStore drives the real middleware for the
+// behavior change in #157 phase 2: a full store key (read,write,manage on
+// itself — exactly what store creation mints) can configure the store but can
+// no longer end its life. A leaked store key can corrupt data; it cannot
+// erase the store.
+func TestManageKeyCannotDeleteOrResetStore(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	km := apikey.NewManager(t.TempDir())
+
+	storeKey, _, err := km.Create("store-key", []apikey.Grant{{
+		Stores: "teststore", Access: apikey.AllAccess,
+	}})
+	if err != nil {
+		t.Fatalf("Create store key: %v", err)
+	}
+	lifecycleKey, _, err := km.Create("lifecycle", []apikey.Grant{{
+		Stores: "teststore", Access: []apikey.Access{apikey.AccessAdmin},
+	}})
+	if err != nil {
+		t.Fatalf("Create lifecycle key: %v", err)
+	}
+
+	router := gin.New()
+	g := router.Group("/api/stores/:store")
+	g.Use(Auth(km, apikey.AccessWrite))
+	ok := func(c *gin.Context) { c.Status(http.StatusOK) }
+	g.DELETE("", ok)
+	g.POST("/reset", ok)
+	g.POST("/metrics/reset", ok)
+	g.PUT("/schema", ok)
+
+	call := func(key, method, path string) int {
+		req, _ := http.NewRequest(method, path, nil)
+		req.Header.Set("X-API-Key", key)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	// The store's own full key: refused on lifecycle, allowed on config.
+	for _, r := range []struct{ method, path string }{
+		{"DELETE", "/api/stores/teststore"},
+		{"POST", "/api/stores/teststore/reset"},
+	} {
+		if code := call(storeKey, r.method, r.path); code != http.StatusForbidden {
+			t.Errorf("read,write,manage key on %s %s: got %d, want 403", r.method, r.path, code)
+		}
+	}
+	for _, r := range []struct{ method, path string }{
+		{"PUT", "/api/stores/teststore/schema"},
+		{"POST", "/api/stores/teststore/metrics/reset"},
+	} {
+		if code := call(storeKey, r.method, r.path); code != http.StatusOK {
+			t.Errorf("read,write,manage key on %s %s: got %d, want 200", r.method, r.path, code)
+		}
+	}
+
+	// An admin-granted key is the one that may end the store's life — and,
+	// classes being independent flags, it cannot touch configuration.
+	for _, r := range []struct{ method, path string }{
+		{"DELETE", "/api/stores/teststore"},
+		{"POST", "/api/stores/teststore/reset"},
+	} {
+		if code := call(lifecycleKey, r.method, r.path); code != http.StatusOK {
+			t.Errorf("admin key on %s %s: got %d, want 200", r.method, r.path, code)
+		}
+	}
+	if code := call(lifecycleKey, "PUT", "/api/stores/teststore/schema"); code != http.StatusForbidden {
+		t.Errorf("admin key on schema mutation: got %d, want 403 (admin is not manage)", code)
 	}
 }
