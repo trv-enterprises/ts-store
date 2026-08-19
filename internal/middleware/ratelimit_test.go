@@ -7,6 +7,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 
 // newLimitedRouter mirrors the production shape: AuthFailureLimiter in front
 // of Auth on the store routes and in front of AdminAuth on store creation.
-func newLimitedRouter(t *testing.T, l *AuthLimiter) (*gin.Engine, string) {
+func newLimitedRouter(t *testing.T, l *AuthLimiter) (*gin.Engine, string, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -25,22 +26,28 @@ func newLimitedRouter(t *testing.T, l *AuthLimiter) (*gin.Engine, string) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	// Store creation authorizes against the registry now (issue #176), so
+	// the admin route needs a real bootstrap key rather than a config string.
+	boot, err := km.EnsureBootstrap("")
+	if err != nil {
+		t.Fatalf("EnsureBootstrap: %v", err)
+	}
 
 	r := gin.New()
 	ok := func(c *gin.Context) { c.String(http.StatusOK, "ok") }
-	r.POST("/api/stores", AuthFailureLimiter(l), AdminAuth("test-admin-key-01234567890", nil), ok)
+	r.POST("/api/stores", AuthFailureLimiter(l), AdminAuth(km), ok)
 	sr := r.Group("/api/stores/:store")
 	sr.Use(AuthFailureLimiter(l))
 	sr.Use(Auth(km, apikey.AccessWrite))
 	sr.GET("/data/newest", ok)
-	return r, key
+	return r, key, boot.Plaintext
 }
 
 func TestAuthFailureLimiterBlocksAfterThreshold(t *testing.T) {
 	now := time.Unix(1000, 0)
 	l := NewAuthLimiter(3, 30*time.Second, 15*time.Minute)
 	l.now = func() time.Time { return now }
-	r, key := newLimitedRouter(t, l)
+	r, key, _ := newLimitedRouter(t, l)
 
 	do := func(headerKey string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/stores/teststore/data/newest", nil)
@@ -121,10 +128,14 @@ func TestAuthFailureLimiterAdminRoute(t *testing.T) {
 	now := time.Unix(1000, 0)
 	l := NewAuthLimiter(2, 30*time.Second, 15*time.Minute)
 	l.now = func() time.Time { return now }
-	r, _ := newLimitedRouter(t, l)
+	r, _, bootstrapKey := newLimitedRouter(t, l)
 
 	do := func(adminKey string) int {
-		req := httptest.NewRequest(http.MethodPost, "/api/stores", nil)
+		// A valid body: store creation validates the requested name before
+		// authorizing (the name reaches a filepath join), so a bodyless
+		// request would 400 before the credential is ever examined — and
+		// this test is about auth failures reaching the limiter.
+		req := httptest.NewRequest(http.MethodPost, "/api/stores", strings.NewReader(`{"name":"limiter-store"}`))
 		if adminKey != "" {
 			req.Header.Set("X-Admin-Key", adminKey)
 		}
@@ -134,18 +145,18 @@ func TestAuthFailureLimiterAdminRoute(t *testing.T) {
 		return w.Code
 	}
 
-	if code := do("wrong-admin-key-aaaaaaaaaaaa"); code != http.StatusUnauthorized {
+	if code := do(apikey.KeyPrefix + "00000000-0000-0000-0000-000000000000"); code != http.StatusUnauthorized {
 		t.Fatalf("bad admin key: %d, want 401", code)
 	}
-	if code := do("wrong-admin-key-aaaaaaaaaaaa"); code != http.StatusUnauthorized {
+	if code := do(apikey.KeyPrefix + "00000000-0000-0000-0000-000000000000"); code != http.StatusUnauthorized {
 		t.Fatalf("bad admin key #2: %d, want 401", code)
 	}
 	// IP is now blocked — even the correct key gets 429 until the block ends.
-	if code := do("test-admin-key-01234567890"); code != http.StatusTooManyRequests {
+	if code := do(bootstrapKey); code != http.StatusTooManyRequests {
 		t.Fatalf("blocked admin request: %d, want 429", code)
 	}
 	now = now.Add(31 * time.Second)
-	if code := do("test-admin-key-01234567890"); code != http.StatusOK {
+	if code := do(bootstrapKey); code != http.StatusOK {
 		t.Fatalf("valid admin key after block: %d, want 200", code)
 	}
 }

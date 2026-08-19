@@ -17,21 +17,27 @@ import (
 	"github.com/tviviano/ts-store/internal/service"
 )
 
-const testAdminKey = "test-admin-key-at-least-20-chars"
-
 // setupAdminGrantRouter wires POST /api/stores behind AdminAuth the way
 // main.go does, so these tests exercise the real credential resolution
 // (X-Admin-Key or an admin-granted X-API-Key) rather than a stub.
-func setupAdminGrantRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.Manager) {
+func setupAdminGrantRouter(t *testing.T) (*gin.Engine, *service.StoreService, *apikey.Manager, string) {
 	t.Helper()
 	router, storeService, keyManager, _ := setupTestRouter(t)
 
+	// The bootstrap key replaces the old config-string admin key (issue
+	// #176): it is an ordinary registry entry that happens to hold every
+	// grant, so it authorizes store creation like any admin-granted key.
+	boot, err := keyManager.EnsureBootstrap("")
+	if err != nil {
+		t.Fatalf("EnsureBootstrap: %v", err)
+	}
+
 	storeHandler := NewStoreHandler(storeService, keyManager)
 	g := router.Group("/api/v2/stores")
-	g.Use(middleware.AdminAuth(testAdminKey, keyManager))
+	g.Use(middleware.AdminAuth(keyManager))
 	g.POST("", storeHandler.Create)
 
-	return router, storeService, keyManager
+	return router, storeService, keyManager, boot.Plaintext
 }
 
 func createStoreAs(t *testing.T, router *gin.Engine, header, value, name string) (int, string) {
@@ -51,11 +57,16 @@ func createStoreAs(t *testing.T, router *gin.Engine, header, value, name string)
 // unchanged by #157. A fresh server has an empty key registry, so some
 // credential must exist before any grant can.
 func TestAdminKeyStillCreatesStores(t *testing.T) {
-	router, storeService, _ := setupAdminGrantRouter(t)
+	router, storeService, _, bootstrapKey := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()
 
-	if code, body := createStoreAs(t, router, "X-Admin-Key", testAdminKey, "via-admin-key"); code != http.StatusCreated {
-		t.Errorf("admin key: got %d (%s), want 201", code, body)
+	// Deprecated header, still accepted for one release.
+	if code, body := createStoreAs(t, router, "X-Admin-Key", bootstrapKey, "via-admin-key"); code != http.StatusCreated {
+		t.Errorf("bootstrap key via deprecated X-Admin-Key: got %d (%s), want 201", code, body)
+	}
+	// ...and as X-API-Key, which is the replacement.
+	if code, body := createStoreAs(t, router, "X-API-Key", bootstrapKey, "via-api-key"); code != http.StatusCreated {
+		t.Errorf("bootstrap key via X-API-Key: got %d (%s), want 201", code, body)
 	}
 }
 
@@ -63,7 +74,7 @@ func TestAdminKeyStillCreatesStores(t *testing.T) {
 // key with admin:sensors-* may create stores in that namespace — something the
 // all-or-nothing server admin key cannot express.
 func TestAdminGrantCreatesMatchingStore(t *testing.T) {
-	router, storeService, keyManager := setupAdminGrantRouter(t)
+	router, storeService, keyManager, _ := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()
 
 	provisioner, _, err := keyManager.Create("provisioner", []apikey.Grant{{
@@ -89,7 +100,7 @@ func TestAdminGrantCreatesMatchingStore(t *testing.T) {
 // pins that AllAccess (what every store's initial key carries) does not
 // include admin — otherwise every store key could create stores.
 func TestNonAdminGrantsCannotCreate(t *testing.T) {
-	router, storeService, keyManager := setupAdminGrantRouter(t)
+	router, storeService, keyManager, _ := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()
 
 	full, _, err := keyManager.Create("full-store-key", []apikey.Grant{{
@@ -107,13 +118,13 @@ func TestNonAdminGrantsCannotCreate(t *testing.T) {
 // TestAdminAuthRejectsUnknownKey keeps the 401/403 split honest on this path:
 // an unknown credential is 401, a known one lacking authority is 403.
 func TestAdminAuthRejectsUnknownKey(t *testing.T) {
-	router, storeService, _ := setupAdminGrantRouter(t)
+	router, storeService, _, _ := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()
 
 	if code, _ := createStoreAs(t, router, "X-API-Key", "tsstore_00000000-0000-0000-0000-000000000000", "nope"); code != http.StatusUnauthorized {
 		t.Errorf("unknown key: got %d, want 401", code)
 	}
-	if code, _ := createStoreAs(t, router, "X-Admin-Key", "wrong-admin-key-000000", "nope"); code != http.StatusUnauthorized {
+	if code, _ := createStoreAs(t, router, "X-Admin-Key", apikey.KeyPrefix+"00000000-0000-0000-0000-000000000000", "nope"); code != http.StatusUnauthorized {
 		t.Errorf("wrong admin key: got %d, want 401", code)
 	}
 	if code, _ := createStoreAs(t, router, "", "", "nope"); code != http.StatusUnauthorized {
@@ -128,7 +139,7 @@ func TestAdminAuthRejectsUnknownKey(t *testing.T) {
 // required" even though the request was well-formed. A 201 here proves the
 // handler still received the full body.
 func TestAdminAuthBodyPeekLeavesBodyIntact(t *testing.T) {
-	router, storeService, keyManager := setupAdminGrantRouter(t)
+	router, storeService, keyManager, _ := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()
 
 	provisioner, _, err := keyManager.Create("provisioner", []apikey.Grant{{
@@ -166,7 +177,7 @@ func TestAdminAuthBodyPeekLeavesBodyIntact(t *testing.T) {
 // and reaches a filepath join downstream, so it is validated before any grant
 // check — a path-traversal name is a 400, never a 403 or a created store.
 func TestAdminGrantRejectsInvalidStoreName(t *testing.T) {
-	router, storeService, keyManager := setupAdminGrantRouter(t)
+	router, storeService, keyManager, _ := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()
 
 	provisioner, _, err := keyManager.Create("provisioner", []apikey.Grant{{
@@ -187,7 +198,7 @@ func TestAdminGrantRejectsInvalidStoreName(t *testing.T) {
 // and says nothing about an existing store's contents, so it contributes no
 // access classes and the store stays out of that key's listing (issue #157).
 func TestAdminOnlyKeyGetsNoStoreListing(t *testing.T) {
-	router, storeService, keyManager := setupAdminGrantRouter(t)
+	router, storeService, keyManager, _ := setupAdminGrantRouter(t)
 	defer storeService.CloseAll()
 
 	provisioner, _, err := keyManager.Create("provisioner", []apikey.Grant{{

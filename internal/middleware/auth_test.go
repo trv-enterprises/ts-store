@@ -7,6 +7,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -75,24 +76,44 @@ func TestAuthHeaderKeysStillWork(t *testing.T) {
 
 func TestAdminAuthRejectsQueryKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	const admin = "super-secret-admin-key-123"
+
+	// The admin key is now an ordinary registry entry carrying every grant
+	// (issue #176), so this test needs a real manager rather than a string.
+	km := apikey.NewManager(t.TempDir())
+	admin := apikey.KeyPrefix + "12345678-1234-1234-1234-123456789abc"
+	if _, err := km.EnsureBootstrap(admin); err != nil {
+		t.Fatalf("EnsureBootstrap: %v", err)
+	}
+
 	r := gin.New()
-	r.POST("/api/stores", AdminAuth(admin, nil), func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+	r.POST("/api/stores", AdminAuth(km), func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+
+	body := func() *strings.Reader { return strings.NewReader(`{"name":"a-store"}`) }
 
 	// admin_key query parameter: no longer accepted.
-	req := httptest.NewRequest(http.MethodPost, "/api/stores?admin_key="+admin, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/stores?admin_key="+admin, body())
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("query admin_key: status %d, want 401", w.Code)
 	}
 
-	// X-Admin-Key header still works.
-	req = httptest.NewRequest(http.MethodPost, "/api/stores", nil)
+	// X-Admin-Key still works — deprecated alias, resolved via the registry.
+	req = httptest.NewRequest(http.MethodPost, "/api/stores", body())
 	req.Header.Set("X-Admin-Key", admin)
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Errorf("header admin key: status %d, want 200", w.Code)
+		t.Errorf("deprecated X-Admin-Key: status %d, want 200", w.Code)
+	}
+
+	// ...and so does the same value sent as X-API-Key, which is the
+	// replacement callers should migrate to.
+	req = httptest.NewRequest(http.MethodPost, "/api/stores", body())
+	req.Header.Set("X-API-Key", admin)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("bootstrap key via X-API-Key: status %d, want 200", w.Code)
 	}
 }

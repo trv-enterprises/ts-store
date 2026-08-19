@@ -67,23 +67,3 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		}
 	}
 }
-
-// TestSecureCompare pins the constant-time comparison behavior after the
-// crypto/subtle swap.
-func TestSecureCompare(t *testing.T) {
-	cases := []struct {
-		a, b string
-		want bool
-	}{
-		{"same-key-value", "same-key-value", true},
-		{"same-key-value", "same-key-valuX", false},
-		{"short", "longer-than-a", false},
-		{"", "", true},
-		{"", "x", false},
-	}
-	for _, c := range cases {
-		if got := secureCompare(c.a, c.b); got != c.want {
-			t.Errorf("secureCompare(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
-		}
-	}
-}
