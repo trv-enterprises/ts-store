@@ -128,6 +128,9 @@ Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, ha
   --grant read,write,manage:home-env \
   --note "collector"
 
+# Provision-only: may CREATE sensors-* stores, cannot read or write them
+./tsstore key create --grant admin:sensors-* --note "provisioner"
+
 # List keys (IDs and grants — never the keys themselves)
 ./tsstore key list
 ./tsstore key list my-store       # only keys that can reach my-store
@@ -141,13 +144,14 @@ Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, ha
 
 ### Access classes
 
-`read`, `write`, and `manage` are independent flags, **not a hierarchy** — `manage` does not imply `read`.
+`read`, `write`, `manage`, and `admin` are independent flags, **not a hierarchy** — `manage` does not imply `read`.
 
 | Class | Covers |
 |---|---|
 | `read` | Query, range, oldest/newest, schema read, stream out — including WS/MQTT push-connection lifecycle and alert reads (`GET /alerts`, `GET /alerts/:id`) |
 | `write` | Ingest (REST, WebSocket, Unix socket) |
-| `manage` | Alert mutation (create/update/test/delete), rollups, schema writes, reset, delete |
+| `manage` | Store configuration: alert mutation (create/update/test/delete), rollups, schema writes, metrics reset |
+| `admin` | Store lifecycle: create, delete, reset stores matching the pattern. No data or config access — pair with read/write to also use what you create. |
 
 Store patterns are an exact name, a prefix glob (`sensors-*`), or `*`.
 

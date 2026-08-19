@@ -390,7 +390,7 @@ func TestInvalidAPIKey(t *testing.T) {
 }
 
 func TestDeleteStore(t *testing.T) {
-	router, storeService, _, _ := setupTestRouter(t)
+	router, storeService, keyManager, _ := setupTestRouter(t)
 	defer storeService.CloseAll()
 
 	// Create a store
@@ -403,9 +403,19 @@ func TestDeleteStore(t *testing.T) {
 	var createResp service.CreateStoreResponse
 	json.Unmarshal(w.Body.Bytes(), &createResp)
 
-	// Delete the store
+	// Deleting a store is LIFECYCLE authority and needs an admin grant
+	// since #157 phase 2 — the store's own key (read,write,manage) is
+	// deliberately refused, which TestManageKeyCannotDeleteOrResetStore
+	// pins directly.
+	lifecycleKey, _, err := keyManager.Create("lifecycle", []apikey.Grant{{
+		Stores: "delete-test", Access: []apikey.Access{apikey.AccessAdmin},
+	}})
+	if err != nil {
+		t.Fatalf("create lifecycle key: %v", err)
+	}
+
 	req, _ = http.NewRequest("DELETE", "/api/stores/delete-test", nil)
-	req.Header.Set("X-API-Key", createResp.APIKey)
+	req.Header.Set("X-API-Key", lifecycleKey)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 

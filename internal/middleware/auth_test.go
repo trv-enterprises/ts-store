@@ -77,7 +77,7 @@ func TestAdminAuthRejectsQueryKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const admin = "super-secret-admin-key-123"
 	r := gin.New()
-	r.POST("/api/stores", AdminAuth(admin), func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+	r.POST("/api/stores", AdminAuth(admin, nil), func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
 	// admin_key query parameter: no longer accepted.
 	req := httptest.NewRequest(http.MethodPost, "/api/stores?admin_key="+admin, nil)

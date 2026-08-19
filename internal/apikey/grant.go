@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// Access is one class of operation a grant may permit. The three classes
-// are deliberately coarse — authorization is store-granular, never
-// per-series or per-field (issue #138).
+// Access is one class of operation a grant may permit. The classes are
+// deliberately coarse — authorization is store-granular, never per-series
+// or per-field (issue #138).
 type Access string
 
 const (
@@ -27,11 +27,23 @@ const (
 	// server, so managing them is a per-store grant and does not require
 	// the server admin key.
 	AccessManage Access = "manage"
+	// AccessAdmin is store LIFECYCLE: creating stores today, and (phase 2
+	// of issue #157) deleting and resetting them. It deliberately grants
+	// NO access to data or configuration — an admin-only key can bring a
+	// store into existence and never read, write, or configure it. Paired
+	// with a store pattern it expresses something the server-wide admin
+	// key cannot: "may create stores named sensors-*, and nothing else".
+	AccessAdmin Access = "admin"
 )
 
-// AllAccess is every access class, in escalating order. Used for the
-// legacy migration, which must reproduce the old all-or-nothing store
-// key exactly.
+// AllAccess is the set granted to a store's own initial key and to
+// legacy keys imported by the pre-#138 migration: read, write, manage on
+// exactly that store.
+//
+// AccessAdmin is deliberately NOT a member. Adding it would silently give
+// every existing store key — and every migrated legacy key — the ability
+// to create stores, which no key has today. Lifecycle authority has to be
+// granted explicitly (issue #157).
 var AllAccess = []Access{AccessRead, AccessWrite, AccessManage}
 
 // ParseAccess validates an access class name.
@@ -43,8 +55,10 @@ func ParseAccess(s string) (Access, error) {
 		return AccessWrite, nil
 	case AccessManage:
 		return AccessManage, nil
+	case AccessAdmin:
+		return AccessAdmin, nil
 	}
-	return "", fmt.Errorf("unknown access class %q (want read, write, or manage)", s)
+	return "", fmt.Errorf("unknown access class %q (want read, write, manage, or admin)", s)
 }
 
 // Grant ties a set of access classes to a set of stores.

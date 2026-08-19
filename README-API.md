@@ -40,6 +40,13 @@ Create `config.json`:
 }
 ```
 
+`base_path` is the data directory every store lives under. The other three
+(`data_block_size`, `index_block_size`, `num_blocks`) are **defaults applied
+when a store is created without them** — see [Create Store](#create-store).
+They do not affect stores that already exist: a store's geometry is fixed in
+its own metadata at creation, so changing these only shapes stores created
+afterwards.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -100,7 +107,8 @@ Every endpoint requires one of three classes. They are **independent flags, not 
 |---|---|
 | `read` | Query, range, oldest/newest, schema read, stream out — including WS/MQTT push-connection lifecycle and alert **reads** |
 | `write` | Ingest (`POST /data`, `GET /ws/write`, the Unix socket) |
-| `manage` | Store-scoped administration: alert **mutation** (create/update/test/delete), rollups, schema writes, reset, store delete |
+| `manage` | Store **configuration**: alert mutation (create/update/test/delete), rollups, schema writes, metrics reset |
+| `admin` | Store **lifecycle**: create, delete, and reset stores whose name matches the pattern. Grants **no** data or configuration access — an admin-only key can create and destroy a store and never read, write, or configure it. |
 
 Alerts are store-scoped rather than server-scoped, so alert management is a `manage` grant on the store — it does not require the admin key.
 
@@ -118,7 +126,22 @@ A grant pairs access classes with a store pattern: an exact name, a prefix glob 
 read:*                        read-only across every store
 read,write:sensors-*          ingest into a namespace
 read,write,manage:home-env    full control of one store
+admin:sensors-*               may CREATE sensors-* stores; no access to them
 ```
+
+An `admin` grant contributes no access classes to `GET /api/stores`, so an
+admin-only key sees an empty listing — it can create stores, not enumerate
+them. Note also that a store's own initial key carries `read,write,manage` and
+deliberately **not** `admin`: lifecycle authority is always granted explicitly.
+
+> **Behavior change.** `DELETE /api/stores/:store` and
+> `POST /api/stores/:store/reset` previously required `manage`; they now
+> require `admin`. That bundling meant a key which only needed to manage alert
+> rules could also erase the store and everything in it. A consequence worth
+> stating plainly: **a store's own key can no longer delete or reset that
+> store** — a leaked store key can corrupt data, but not destroy the store.
+> `POST /:store/metrics/reset` stays `manage`: it zeroes counters and touches
+> no stored data.
 
 Wildcards matter because an enumerated store list goes stale the moment a collector auto-creates a store.
 
@@ -154,7 +177,7 @@ GET /health
 ```
 Returns server health status. No authentication required.
 
-### Create Store (requires admin key)
+### Create Store
 ```
 POST /api/stores
 X-Admin-Key: <admin-key>
@@ -168,6 +191,24 @@ Content-Type: application/json
   "data_type": "json"
 }
 ```
+
+**Authentication — either credential works:**
+
+- `X-Admin-Key` — the server-tier bootstrap credential. A fresh server has an
+  empty key registry, so this always works and is the only option before any
+  key exists.
+- `X-API-Key` — a registry key holding an **`admin` grant whose pattern covers
+  the requested name** (see [Access classes](#access-classes)). A key granted
+  `admin:sensors-*` may create `sensors-garage` but not `billing` — scoping the
+  all-or-nothing admin key cannot express. Since this route has no `:store` in
+  the path, the name is read from the request body to evaluate the pattern.
+
+A name outside the grant's pattern is `403`; an unrecognized key is `401`.
+
+**Fields:** only `name` is required. `num_blocks`, `data_block_size`, and
+`index_block_size` are **optional** — omit them and the server's
+[configured defaults](#configuration) (`store.num_blocks` etc.) apply.
+`data_type` defaults to `json`.
 
 **Data Types:**
 - `binary` - Raw binary data (Content-Type: application/octet-stream)

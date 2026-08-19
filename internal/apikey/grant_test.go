@@ -59,6 +59,7 @@ func TestParseGrant(t *testing.T) {
 		{in: "read:*", stores: "*", access: []Access{AccessRead}},
 		{in: "read,write:sensors-*", stores: "sensors-*", access: []Access{AccessRead, AccessWrite}},
 		{in: "read,write,manage:home", stores: "home", access: []Access{AccessRead, AccessWrite, AccessManage}},
+		{in: "admin:sensors-*", stores: "sensors-*", access: []Access{AccessAdmin}},
 		{in: " read , write : home ", stores: "home", access: []Access{AccessRead, AccessWrite}},
 		// Duplicates collapse rather than erroring — harmless intent.
 		{in: "read,read:home", stores: "home", access: []Access{AccessRead}},
@@ -66,7 +67,9 @@ func TestParseGrant(t *testing.T) {
 		{in: "read", wantErr: "want <access>:<store-pattern>"},
 		{in: "read:", wantErr: "store pattern is empty"},
 		{in: ":home", wantErr: "no access classes given"},
-		{in: "admin:home", wantErr: "unknown access class"},
+		// "admin" became a real class in #157; keep an unknown-class case
+		// so that error path stays covered.
+		{in: "owner:home", wantErr: "unknown access class"},
 		{in: "read:sen*ors", wantErr: "trailing wildcard"},
 	}
 
