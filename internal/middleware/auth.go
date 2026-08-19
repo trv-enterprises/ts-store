@@ -6,7 +6,10 @@
 package middleware
 
 import (
+	"bytes"
 	"crypto/subtle"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -29,6 +32,25 @@ const (
 // which cross-check it against the router's actual registered routes so
 // a new route can't silently inherit the wrong class.
 func RouteAccessTable() map[string]apikey.Access { return routeAccess }
+
+// apiKeyFromRequest extracts the caller's API key: X-API-Key, else an
+// Authorization: Bearer header.
+//
+// The api_key query fallback exists only for the browser WebSocket handshake —
+// the WebSocket API cannot set request headers. Query credentials land in
+// proxy/access logs and browser history, so every other route is header-only.
+func apiKeyFromRequest(c *gin.Context) string {
+	if v := c.GetHeader("X-API-Key"); v != "" {
+		return v
+	}
+	if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimPrefix(authHeader, "Bearer ")
+	}
+	if strings.HasSuffix(c.FullPath(), "/ws/write") {
+		return c.Query("api_key")
+	}
+	return ""
+}
 
 // Auth creates authentication middleware that validates API keys and
 // checks the key's grant for the route's store (issue #138).
@@ -57,22 +79,7 @@ func Auth(keyManager *apikey.Manager, access apikey.Access) gin.HandlerFunc {
 			return
 		}
 
-		// Get API key from header: X-API-Key or Authorization: Bearer.
-		apiKeyValue := c.GetHeader("X-API-Key")
-		if apiKeyValue == "" {
-			// Check Authorization: Bearer header
-			authHeader := c.GetHeader("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				apiKeyValue = strings.TrimPrefix(authHeader, "Bearer ")
-			}
-		}
-		// The api_key query fallback exists only for the browser WebSocket
-		// handshake — the WebSocket API can't set request headers. Query
-		// credentials land in proxy/access logs and browser history, so
-		// every other route is header-only.
-		if apiKeyValue == "" && strings.HasSuffix(c.FullPath(), "/ws/write") {
-			apiKeyValue = c.Query("api_key")
-		}
+		apiKeyValue := apiKeyFromRequest(c)
 
 		if apiKeyValue == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "API key required"})
@@ -224,19 +231,99 @@ func GetKeyEntry(c *gin.Context) *apikey.RegistryKey {
 	return nil
 }
 
-// AdminAuth creates middleware that validates the admin key for store
-// management operations. The admin key must be provided via the
-// X-Admin-Key header — the former admin_key query fallback is gone (query
-// credentials leak into proxy/access logs, and nothing header-incapable
-// ever needs admin operations).
-func AdminAuth(adminKey string) gin.HandlerFunc {
+// storeCreateBody is the subset of the create request the auth layer needs:
+// which store name is being created. Decoded from a REPLAYED copy of the
+// body so the handler still sees an intact stream.
+type storeCreateBody struct {
+	Name string `json:"name"`
+}
+
+// peekCreateStoreName reads the requested store name out of the JSON body
+// without consuming it. Gin's request body is a single-use stream, so it is
+// buffered and reinstalled — forgetting that gives the handler an empty body
+// and a baffling "name is required".
+//
+// Returns "" when the body is absent or unparseable; the caller treats that
+// as "no name to authorize" and refuses, letting the handler produce the real
+// validation error for a genuinely malformed request.
+func peekCreateStoreName(c *gin.Context) string {
+	if c.Request.Body == nil {
+		return ""
+	}
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, maxCreateBodyPeek))
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	if err != nil {
+		return ""
+	}
+	var body storeCreateBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return ""
+	}
+	return body.Name
+}
+
+// maxCreateBodyPeek bounds the buffered copy. A create body is a handful of
+// fields; anything larger is not a create request this middleware needs to
+// understand.
+const maxCreateBodyPeek = 64 << 10
+
+// AdminAuth creates middleware authorizing store creation. Two credentials
+// are accepted:
+//
+//   - X-Admin-Key — the server-tier bootstrap credential, unchanged. A fresh
+//     server has an empty key registry, so some credential must exist before
+//     any grant can.
+//   - X-API-Key — a registry key holding an "admin" grant whose pattern
+//     covers the store name being created (issue #157).
+//
+// The second is why this middleware reads the body. Every other authenticated
+// route is /api/stores/:store/..., so the store name comes from the URL and
+// Auth checks the grant against it. Creation posts to /api/stores with the
+// name in the JSON body, so a pattern-scoped grant like admin:sensors-* can
+// only be evaluated by looking there. That is the entire reason for the peek.
+func AdminAuth(adminKey string, keyManager *apikey.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		providedKey := c.GetHeader("X-Admin-Key")
+
+		// No admin key, but an API key: try the admin-grant path before
+		// falling through to the old "wrong header" error.
+		if providedKey == "" && keyManager != nil {
+			if apiKeyValue := apiKeyFromRequest(c); apiKeyValue != "" {
+				storeName := peekCreateStoreName(c)
+				if storeName == "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+					c.Abort()
+					return
+				}
+				if err := store.ValidateStoreName(storeName); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid store name"})
+					c.Abort()
+					return
+				}
+				key, err := keyManager.Authorize(storeName, apiKeyValue, apikey.AccessAdmin)
+				if err != nil {
+					switch err {
+					case apikey.ErrForbidden:
+						c.JSON(http.StatusForbidden, gin.H{
+							"error": "API key lacks admin access to create store " + storeName,
+						})
+					default:
+						c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
+					}
+					c.Abort()
+					return
+				}
+				c.Set(KeyEntryKey, key)
+				c.Set(AuthPassedKey, true)
+				c.Next()
+				return
+			}
+		}
 
 		if providedKey == "" {
 			// Check if they sent X-API-Key instead, and give a helpful hint
 			if c.GetHeader("X-API-Key") != "" {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "store creation requires X-Admin-Key header, not X-API-Key"})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "store creation requires an X-Admin-Key header, or an X-API-Key whose grant includes admin access to that store name"})
 			} else {
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "admin key required (provide via X-Admin-Key header)"})
 			}

@@ -28,7 +28,7 @@ func newLimitedRouter(t *testing.T, l *AuthLimiter) (*gin.Engine, string) {
 
 	r := gin.New()
 	ok := func(c *gin.Context) { c.String(http.StatusOK, "ok") }
-	r.POST("/api/stores", AuthFailureLimiter(l), AdminAuth("test-admin-key-01234567890"), ok)
+	r.POST("/api/stores", AuthFailureLimiter(l), AdminAuth("test-admin-key-01234567890", nil), ok)
 	sr := r.Group("/api/stores/:store")
 	sr.Use(AuthFailureLimiter(l))
 	sr.Use(Auth(km, apikey.AccessWrite))

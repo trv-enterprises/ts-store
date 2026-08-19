@@ -174,8 +174,9 @@ Subcommands:
 
 Keys carry grants — what they may do, and on which stores:
   --grant <access>:<pattern>   Repeatable. Access is any comma-separated mix
-                               of read, write, manage. Pattern is an exact
-                               store name, a prefix glob (sensors-*), or *.
+                               of read, write, manage, admin. Pattern is an
+                               exact store name, a prefix glob (sensors-*),
+                               or *.
   --note <text>                Free-text label shown by 'key list'
 
 Bring your own key (instead of letting ts-store mint one):
@@ -188,6 +189,8 @@ Access classes:
   read    query, range, stats, schema read, stream out (incl. push connections)
   write   ingest
   manage  store-scoped admin: alerts, rollups, schema writes, reset
+  admin   store lifecycle: create stores matching the pattern. Grants NO
+          data or config access — pair with read/write to also use them.
 
 Examples:
   # Read-only key across every store
@@ -195,6 +198,9 @@ Examples:
 
   # Read+write on one namespace, full control of one store
   tsstore key create --grant read,write:sensors-* --grant read,write,manage:home-env
+
+  # Provision-only key: may create sensors-* stores, can't read or write them
+  tsstore key create --grant admin:sensors-* --note "provisioner"
 
   # Adopt a key minted in 1Password (never touches argv or shell history)
   op read op://HOMELAB/nas-disks/credential \
@@ -360,7 +366,7 @@ func runServer(args []string) {
 		// Store management
 		stores := api.Group("/stores")
 		{
-			stores.POST("", middleware.AuthFailureLimiter(authLimiter), middleware.AdminAuth(cfg.Server.AdminKey), storeHandler.Create) // Create new store (requires admin key)
+			stores.POST("", middleware.AuthFailureLimiter(authLimiter), middleware.AdminAuth(cfg.Server.AdminKey, keyManager), storeHandler.Create) // Create: X-Admin-Key, or an X-API-Key with an admin grant covering the name (issue #157)
 			// List stores the caller's key can read. Requires an API key
 			// (breaking change, issue #138) and shares the auth-failure
 			// limiter so it can't be used as an unthrottled oracle for

@@ -177,6 +177,12 @@ func (h *StoreHandler) List(c *gin.Context) {
 	all := h.storeService.ListAllInfo()
 	filtered := make([]storeListEntry, 0, len(all))
 	for _, info := range all {
+		// Iterating AllAccess (read/write/manage) rather than every defined
+		// class is deliberate: an "admin" grant is lifecycle authority and
+		// conveys nothing about an EXISTING store's contents (issue #157).
+		// An admin-only key therefore reports no access here and the store
+		// stays out of its listing — it can create stores, not enumerate
+		// them.
 		var access []apikey.Access
 		for _, a := range apikey.AllAccess {
 			if key.Permits(info.Name, a) {
