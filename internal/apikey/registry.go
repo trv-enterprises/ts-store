@@ -32,6 +32,17 @@ type RegistryKey struct {
 	CreatedAt time.Time `json:"created_at"`
 	Note      string    `json:"note,omitempty"`
 	Grants    []Grant   `json:"grants"`
+
+	// Bootstrap marks the server's bootstrap key: the one entry startup
+	// adopts from config, or mints when config carries none. Exactly one
+	// key holds it, and startup REPLACES that key rather than accumulating
+	// one per boot (issue #176).
+	//
+	// A dedicated field rather than a magic Note value: Note is free text
+	// a user can set by hand, and mistaking a user's key for the bootstrap
+	// key would delete it on the next restart. omitempty keeps registry
+	// files byte-identical until a bootstrap key is actually written.
+	Bootstrap bool `json:"bootstrap,omitempty"`
 }
 
 // Permits reports whether this key may perform access on storeName.
