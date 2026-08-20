@@ -25,8 +25,16 @@ type ServerConfig struct {
 	Port       int       `json:"port"`
 	Mode       string    `json:"mode"`        // "debug" or "release"
 	SocketPath string    `json:"socket_path"` // Unix socket path (empty to disable)
-	AdminKey   string    `json:"admin_key"`   // Admin key for store management (min 20 chars)
+	AdminKey   string    `json:"admin_key"`   // Bootstrap key adopted into the registry at startup (min 20 chars). Optional: one is minted on first boot when absent, and it can be removed from config once saved elsewhere (issue #176).
 	TLS        TLSConfig `json:"tls"`         // TLS configuration (optional)
+
+	// EnableKeyAPI exposes key management (mint/list/revoke) over HTTP.
+	// Default false: minting returns the new key's plaintext in the
+	// response body, so it transits the network and may land in client
+	// logs or a proxy. That is a deliberate trade for edge deployments
+	// that need remote provisioning, and it should be an explicit choice
+	// rather than something a deployment gets by accident (issue #176).
+	EnableKeyAPI bool `json:"enable_key_api"`
 }
 
 // TLSConfig holds TLS/HTTPS settings.
@@ -126,6 +134,13 @@ func (c *Config) LoadFromEnv() error {
 	}
 	if adminKey := os.Getenv("TSSTORE_ADMIN_KEY"); adminKey != "" {
 		c.Server.AdminKey = adminKey
+	}
+	if v := os.Getenv("TSSTORE_ENABLE_KEY_API"); v != "" {
+		enabled, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("invalid TSSTORE_ENABLE_KEY_API %q: expected a boolean", v)
+		}
+		c.Server.EnableKeyAPI = enabled
 	}
 	if tlsCert := os.Getenv("TSSTORE_TLS_CERT"); tlsCert != "" {
 		c.Server.TLS.CertFile = tlsCert

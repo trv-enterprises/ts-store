@@ -56,6 +56,9 @@ type KeyEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 	Note      string    `json:"note"`
 	Grants    []Grant   `json:"grants,omitempty"`
+	// Bootstrap marks the server's root key — surfaced so callers can
+	// identify it (CLI listings) and refuse to destroy it (issue #176).
+	Bootstrap bool `json:"bootstrap,omitempty"`
 }
 
 // cachedRegistry is the parsed registry plus the file identity it came
@@ -507,6 +510,7 @@ func toKeyEntry(k RegistryKey) *KeyEntry {
 		CreatedAt: k.CreatedAt,
 		Note:      k.Note,
 		Grants:    k.Grants,
+		Bootstrap: k.Bootstrap,
 	}
 }
 

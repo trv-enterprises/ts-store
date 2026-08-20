@@ -138,6 +138,11 @@ Keys live in a central registry (`<data-path>/keys.registry.json`, mode 0600, ha
 # Revoke by ID (IDs are globally unique)
 ./tsstore key revoke a1b2c3d4
 
+# The bootstrap key (marked * in `key list`) needs --force: revoking it
+# leaves nothing able to create stores or mint keys until the next restart
+# adopts a replacement from TSSTORE_ADMIN_KEY.
+./tsstore key revoke <bootstrap-id> --force
+
 # Replace the keys granting a store by name, minting a fresh one
 ./tsstore key regenerate my-store
 ```
@@ -169,6 +174,19 @@ op read op://HOMELAB/nas-disks/credential \
 ```
 
 `--key-file <path|->` is the documented path. `--api-key <key>` also works but puts the secret in the process table (`/proc/<pid>/cmdline` is world-readable) for as long as the command runs. Supplied keys must use the same format as generated ones: `tsstore_` prefix, ≥44 characters. An adopted key is never echoed back.
+
+### The bootstrap key
+
+The server's root credential is an ordinary registry key holding every grant.
+At startup a configured `TSSTORE_ADMIN_KEY` is adopted (replacing the previous
+one — that is how you rotate); with none configured, an existing bootstrap key
+is preserved, and on a truly fresh server one is minted and printed once.
+
+Once it is saved elsewhere, **remove `TSSTORE_ADMIN_KEY` from the host**. The
+registry keeps the key, and leaving the plaintext in an env file defeats the
+point of storing it hashed.
+
+`key list` marks it with `*`.
 
 ### Upgrading from per-store keys
 

@@ -170,7 +170,7 @@ Subcommands:
   create [options]         Mint (or adopt) a key with explicit grants
   regenerate <store-name>  Replace the keys granting access to a store by name
   list [store-name]        List keys; with a store name, only those reaching it
-  revoke <key-id>          Revoke a key by ID
+  revoke <key-id> [--force] Revoke a key by ID (--force for the bootstrap key)
 
 Keys carry grants — what they may do, and on which stores:
   --grant <access>:<pattern>   Repeatable. Access is any comma-separated mix
@@ -401,6 +401,26 @@ func runServer(args []string) {
 	// API routes
 	api := router.Group("/api")
 	{
+		// Key management over HTTP, off unless explicitly enabled
+		// (issue #176). Minting returns the new key's plaintext in the
+		// response body — appropriate for edge deployments that must
+		// provision remotely, but a deliberate opt-in rather than a
+		// default. Shares the auth-failure limiter so it cannot be used
+		// as an unthrottled oracle for guessing keys.
+		if cfg.Server.EnableKeyAPI {
+			keysHandler := handlers.NewKeysHandler(keyManager)
+			keys := api.Group("/keys")
+			keys.Use(middleware.AuthFailureLimiter(authLimiter))
+			{
+				keys.POST("", keysHandler.Create)
+				keys.GET("", keysHandler.List)
+				keys.DELETE("/:id", keysHandler.Delete)
+			}
+			log.Printf("Key management API ENABLED at /api/keys — minted keys are " +
+				"returned in the response body; ensure this endpoint is not reachable " +
+				"from untrusted networks")
+		}
+
 		// Store management
 		stores := api.Group("/stores")
 		{
@@ -797,11 +817,26 @@ func runKeyCommand(args []string) {
 			for _, g := range k.Grants {
 				grants = append(grants, g.String())
 			}
+			// Mark the bootstrap key: it is the server's root of trust and
+			// revoking it is not an ordinary revoke (issue #176).
+			id := k.ID
+			if k.Bootstrap {
+				id = "*" + k.ID
+			}
 			fmt.Printf("%-8s  %-25s  %-30s  %s\n",
-				k.ID,
+				id,
 				k.CreatedAt.Format("2006-01-02 15:04:05 MST"),
 				strings.Join(grants, " "),
 				k.Note)
+		}
+		for _, k := range keys {
+			if k.Bootstrap {
+				fmt.Println("")
+				fmt.Println("* bootstrap key — the server's root of trust. Revoking it requires")
+				fmt.Println("  --force, and locks you out unless TSSTORE_ADMIN_KEY is set before")
+				fmt.Println("  the next restart.")
+				break
+			}
 		}
 
 	case "revoke":
@@ -813,7 +848,39 @@ func runKeyCommand(args []string) {
 		// Key IDs are globally unique now, so a store name is no longer
 		// needed. Tolerate the old "revoke <store> <key-id>" form by
 		// taking the last argument as the ID.
-		keyID := args[len(args)-1]
+		force := false
+		filtered := make([]string, 0, len(args))
+		for _, a := range args {
+			if a == "--force" {
+				force = true
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		if len(filtered) < 2 {
+			fmt.Println("Error: key ID required")
+			printKeyUsage()
+			os.Exit(1)
+		}
+		keyID := filtered[len(filtered)-1]
+
+		// Revoking the bootstrap key without a replacement locks the
+		// operator out of their own server: nothing can create stores or
+		// mint keys until a restart adopts a new one from config. Require
+		// an explicit --force rather than making that a typo away.
+		if entries, err := keyManager.List(); err == nil {
+			for _, e := range entries {
+				if e.ID == keyID && e.Bootstrap && !force {
+					fmt.Printf("Key '%s' is the BOOTSTRAP key — the server's root of trust.\n", keyID)
+					fmt.Println("Revoking it leaves no key able to create stores or mint keys until")
+					fmt.Println("the next restart adopts a new one from TSSTORE_ADMIN_KEY.")
+					fmt.Println("")
+					fmt.Printf("Re-run with --force if that is what you intend:\n")
+					fmt.Printf("  tsstore key revoke %s --force\n", keyID)
+					os.Exit(1)
+				}
+			}
+		}
 
 		if err := keyManager.Revoke(keyID); err != nil {
 			log.Fatalf("Failed to revoke key: %v", err)
