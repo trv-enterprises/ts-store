@@ -188,15 +188,79 @@ func TestEnsureBootstrapRefusesExistingRegistryKey(t *testing.T) {
 	}
 }
 
-// TestEnsureBootstrapRejectsMalformedConfigKey: a too-short or wrongly
-// prefixed admin key fails loudly at startup rather than being adopted into
-// the registry as a weak credential.
+// TestEnsureBootstrapRejectsMalformedConfigKey: an unusable admin key fails
+// loudly at startup rather than being adopted as a weak credential.
+//
+// "Unusable" means too short or containing whitespace — NOT "missing the
+// tsstore_ prefix". This test originally asserted the prefix was required,
+// which is what crash-looped a canary host: every admin key in the field
+// predates that format. See TestEnsureBootstrapAcceptsLegacyAdminKeyFormat.
 func TestEnsureBootstrapRejectsMalformedConfigKey(t *testing.T) {
 	m := NewManager(t.TempDir())
 
-	for _, bad := range []string{"short", "no-prefix-but-long-enough-to-pass-length", KeyPrefix + "tiny"} {
+	for _, bad := range []string{"short", KeyPrefix + "tiny", "has a space in it and is long"} {
 		if _, err := m.EnsureBootstrap(bad); err == nil {
-			t.Errorf("malformed config key %q was accepted", bad)
+			t.Errorf("unusable config key %q was accepted", bad)
+		}
+	}
+}
+
+// TestEnsureBootstrapAcceptsLegacyAdminKeyFormat is a regression test for a
+// crash-loop on trv-srv-001 (2026-08-20). EnsureBootstrap validated the
+// config key with ValidateSuppliedKey, which demands the "tsstore_" prefix
+// and 44+ characters — the rules for keys ts-store MINTS. An admin key has
+// never been that: the rule was 20+ characters of any shape, so every real
+// deployment's key was rejected and, because the failure is fatal, the server
+// refused to start.
+//
+// The keys below are the shapes actually found in the field.
+func TestEnsureBootstrapAcceptsLegacyAdminKeyFormat(t *testing.T) {
+	legacy := []struct {
+		name, key string
+	}{
+		{"passphrase", "correct-horse-battery-st"},
+		{"random base64-ish", "K7awfnJTA7Ok0EqxskqlLLKV"},
+		{"exactly the minimum length", "12345678901234567890"},
+		{"long but no prefix", "a-very-long-admin-key-without-any-prefix-at-all"},
+	}
+
+	for _, tc := range legacy {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			res, err := m.EnsureBootstrap(tc.key)
+			if err != nil {
+				t.Fatalf("legacy admin key rejected: %v", err)
+			}
+			if res.Action != "adopted" {
+				t.Errorf("Action = %q, want adopted", res.Action)
+			}
+			// And it must actually authenticate afterwards.
+			key, err := m.Resolve(tc.key)
+			if err != nil {
+				t.Fatalf("adopted legacy key does not resolve: %v", err)
+			}
+			if !key.Permits("any-store", AccessAdmin) {
+				t.Error("adopted legacy key lacks admin authority")
+			}
+		})
+	}
+}
+
+// TestValidateBootstrapKeyRejectsUnusable: laxer than the minted-key format,
+// but not anything-goes. Whitespace in particular is refused — the value is
+// hashed verbatim, so a newline picked up from an env file yields a key
+// nobody can reproduce by typing it.
+func TestValidateBootstrapKeyRejectsUnusable(t *testing.T) {
+	bad := map[string]string{
+		"empty":            "",
+		"too short":        "short-key",
+		"trailing newline": "a-perfectly-fine-admin-key\n",
+		"embedded space":   "admin key with spaces here",
+		"leading tab":      "\tan-otherwise-valid-admin-key",
+	}
+	for name, key := range bad {
+		if err := ValidateBootstrapKey(key); err == nil {
+			t.Errorf("%s: accepted %q", name, key)
 		}
 	}
 }
