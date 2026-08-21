@@ -216,8 +216,8 @@ type BootstrapResult struct {
 // a magic note string a user could collide with.
 func (m *Manager) EnsureBootstrap(configKey string) (*BootstrapResult, error) {
 	if configKey != "" {
-		if err := ValidateSuppliedKey(configKey); err != nil {
-			return nil, fmt.Errorf("configured admin key is not a valid ts-store key: %w", err)
+		if err := ValidateBootstrapKey(configKey); err != nil {
+			return nil, fmt.Errorf("configured admin key is unusable: %w", err)
 		}
 	}
 
@@ -562,6 +562,31 @@ func ValidateSuppliedKey(key string) error {
 	if !ValidateKeyFormat(key) {
 		return fmt.Errorf("API key must start with %q and be at least %d characters (mint one as %q + a UUID)",
 			KeyPrefix, len(KeyPrefix)+36, KeyPrefix)
+	}
+	return nil
+}
+
+// ValidateBootstrapKey checks an operator-supplied bootstrap key.
+//
+// Deliberately laxer than ValidateSuppliedKey: this value is whatever an
+// operator already had in server.admin_key or TSSTORE_ADMIN_KEY, and that has
+// only ever required 20+ characters of any shape. Applying the minted-key
+// format here (the "tsstore_" prefix and 44+ characters) rejects every admin
+// key in the field — which crash-looped a canary host on first deploy, since
+// a failure to establish the bootstrap key is fatal.
+//
+// Whitespace is still refused: the value is compared and hashed verbatim, so
+// a stray newline from an env file or a here-doc becomes a key nobody can
+// reproduce by typing it.
+func ValidateBootstrapKey(key string) error {
+	if key == "" {
+		return fmt.Errorf("bootstrap key is required")
+	}
+	if strings.ContainsAny(key, " \t\r\n") {
+		return fmt.Errorf("bootstrap key must not contain whitespace")
+	}
+	if len(key) < MinKeyLength {
+		return fmt.Errorf("bootstrap key must be at least %d characters", MinKeyLength)
 	}
 	return nil
 }
