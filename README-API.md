@@ -40,6 +40,15 @@ Create `config.json`:
 }
 ```
 
+`admin_key` is the **bootstrap key**: at startup it is adopted into the key
+registry as an ordinary entry carrying every grant (`read,write,manage,admin`
+on `*`). It is optional — a server with none configured mints one on first
+boot and prints it once. Once you have saved it elsewhere you can **remove it
+from config**; the registry keeps it. See [Bootstrap key](#bootstrap-key).
+
+`enable_key_api` (default `false`) exposes [key management](#key-management)
+over HTTP.
+
 `base_path` is the data directory every store lives under. The other three
 (`data_block_size`, `index_block_size`, `num_blocks`) are **defaults applied
 when a store is created without them** — see [Create Store](#create-store).
@@ -169,6 +178,67 @@ Pre-existing per-store keys are imported into the registry automatically on firs
 
 Repeated authentication failures are throttled per client IP: after 10 consecutive `401`s the IP receives `429 Too Many Requests` (with a `Retry-After` header) for 30 seconds, doubling on each further block up to 15 minutes. Any successful authentication from that IP clears its counter. This applies to both store API keys and the admin key; the state is in-memory and resets on server restart.
 
+### Bootstrap key
+
+ts-store has one credential system. The server's root credential is a normal
+registry key that happens to hold every grant, so it is hashed, listable, and
+revocable like any other — not a string compared against config.
+
+At startup:
+
+| `admin_key` / `TSSTORE_ADMIN_KEY` | Registry | Result |
+|---|---|---|
+| set | any | **Adopted**, replacing any previous bootstrap key. This is how you rotate. |
+| absent | has one | **Preserved.** The steady state. |
+| absent | empty | **Minted**, printed once to stdout. First boot needs no configuration. |
+
+The intended lifecycle is: set it once for first boot (or let the server mint
+one), save it in your secret store, then **remove it from the host's
+configuration**. Leaving it set means the plaintext sits in an env file
+forever, which is exactly what moving the key into the registry avoids.
+
+`tsstore key list` marks the bootstrap key with `*`. Revoking it requires
+`--force`, because nothing can create stores or mint keys until a restart
+adopts a replacement.
+
+### Key management
+
+**Disabled by default.** Set `server.enable_key_api` (or
+`TSSTORE_ENABLE_KEY_API=true`) to expose:
+
+```
+POST   /api/keys        mint a key
+GET    /api/keys        list keys (ids, grants, notes — never key values)
+DELETE /api/keys/:id    revoke a key
+```
+
+> ⚠️ **A minted key is returned in the response body.** That is the point —
+> it is the only way to provision access remotely — but it means the key
+> transits the network and can land in client logs, proxy logs, or shell
+> history. Enable this only where you control the network path, ideally with
+> TLS, and never expose it to an untrusted network. It is off by default so
+> that this is a deliberate decision.
+
+```bash
+curl -X POST "$HOST/api/keys" -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"grants":["read,write:sensors-*"],"note":"garage collector"}'
+```
+
+```json
+{ "id": "a1b2c3d4", "api_key": "tsstore_…", "grants": ["read,write:sensors-*"] }
+```
+
+**A key can issue no more authority than it holds.** Grants are checked by
+store *pattern* as well as access class, so a key holding `admin:sensors-*`
+can mint `admin:sensors-garage` but not `admin:*`, and not `read:sensors-*` —
+`admin` conveys no data access. The bootstrap key holds everything, so it can
+mint anything.
+
+Revoking follows the same rule: you cannot revoke a key holding authority
+beyond your own, and the bootstrap key cannot be revoked over the API at all
+(use the CLI on the host).
+
 ## Core Endpoints
 
 ### Health Check
@@ -194,9 +264,9 @@ Content-Type: application/json
 
 **Authentication — either credential works:**
 
-- `X-Admin-Key` — the server-tier bootstrap credential. A fresh server has an
-  empty key registry, so this always works and is the only option before any
-  key exists.
+- `X-Admin-Key` — **deprecated alias**, accepted for one release. It now
+  resolves through the registry like any other key; send the same value as
+  `X-API-Key` instead.
 - `X-API-Key` — a registry key holding an **`admin` grant whose pattern covers
   the requested name** (see [Access classes](#access-classes)). A key granted
   `admin:sensors-*` may create `sensors-garage` but not `billing` — scoping the

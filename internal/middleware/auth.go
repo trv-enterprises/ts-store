@@ -7,7 +7,6 @@ package middleware
 
 import (
 	"bytes"
-	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"log"
@@ -285,88 +284,82 @@ func peekCreateStoreName(c *gin.Context) string {
 // understand.
 const maxCreateBodyPeek = 64 << 10
 
-// AdminAuth creates middleware authorizing store creation. Two credentials
-// are accepted:
+// AdminAuth authorizes store creation. Both credentials now resolve through
+// the SAME registry lookup (issue #176) — the admin key is an ordinary
+// registry entry carrying every grant, not a string compared against config:
 //
-//   - X-Admin-Key — the server-tier bootstrap credential, unchanged. A fresh
-//     server has an empty key registry, so some credential must exist before
-//     any grant can.
-//   - X-API-Key — a registry key holding an "admin" grant whose pattern
-//     covers the store name being created (issue #157).
+//   - X-API-Key — a key holding an "admin" grant whose pattern covers the
+//     store name being created (issue #157).
+//   - X-Admin-Key — DEPRECATED alias accepted for one release so existing
+//     deployments keep working. Send the same value as X-API-Key instead.
 //
-// The second is why this middleware reads the body. Every other authenticated
-// route is /api/stores/:store/..., so the store name comes from the URL and
-// Auth checks the grant against it. Creation posts to /api/stores with the
-// name in the JSON body, so a pattern-scoped grant like admin:sensors-* can
-// only be evaluated by looking there. That is the entire reason for the peek.
-func AdminAuth(adminKey string, keyManager *apikey.Manager) gin.HandlerFunc {
+// Reading the request body is what makes pattern-scoped grants possible here.
+// Every other authenticated route is /api/stores/:store/..., so the store name
+// comes from the URL and Auth checks the grant against it. Creation posts to
+// /api/stores with the name in the JSON body, so a grant like admin:sensors-*
+// can only be evaluated by looking there.
+func AdminAuth(keyManager *apikey.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		providedKey := c.GetHeader("X-Admin-Key")
-
-		// No admin key, but an API key: try the admin-grant path before
-		// falling through to the old "wrong header" error.
-		if providedKey == "" && keyManager != nil {
-			if apiKeyValue := apiKeyFromRequest(c); apiKeyValue != "" {
-				storeName := peekCreateStoreName(c)
-				if storeName == "" {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-					c.Abort()
-					return
-				}
-				if err := store.ValidateStoreName(storeName); err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid store name"})
-					c.Abort()
-					return
-				}
-				key, err := keyManager.Authorize(storeName, apiKeyValue, apikey.AccessAdmin)
-				if err != nil {
-					switch err {
-					case apikey.ErrForbidden:
-						c.JSON(http.StatusForbidden, gin.H{
-							"error": "API key lacks admin access to create store " + storeName,
-						})
-					default:
-						c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
-					}
-					c.Abort()
-					return
-				}
-				c.Set(KeyEntryKey, key)
-				c.Set(AuthPassedKey, true)
-				c.Next()
-				return
+		credential := apiKeyFromRequest(c)
+		viaDeprecatedHeader := false
+		if credential == "" {
+			if legacy := c.GetHeader("X-Admin-Key"); legacy != "" {
+				credential = legacy
+				viaDeprecatedHeader = true
 			}
 		}
 
-		if providedKey == "" {
-			// Check if they sent X-API-Key instead, and give a helpful hint
-			if c.GetHeader("X-API-Key") != "" {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "store creation requires an X-Admin-Key header, or an X-API-Key whose grant includes admin access to that store name"})
-			} else {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "admin key required (provide via X-Admin-Key header)"})
+		if credential == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "store creation requires an X-API-Key whose grant includes admin access to that store name",
+			})
+			c.Abort()
+			return
+		}
+		if keyManager == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "key manager unavailable"})
+			c.Abort()
+			return
+		}
+
+		storeName := peekCreateStoreName(c)
+		if storeName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+			c.Abort()
+			return
+		}
+		// The name is caller-supplied and reaches a filepath join downstream,
+		// so it is validated before anything else looks at it.
+		if err := store.ValidateStoreName(storeName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid store name"})
+			c.Abort()
+			return
+		}
+
+		key, err := keyManager.Authorize(storeName, credential, apikey.AccessAdmin)
+		if err != nil {
+			switch err {
+			case apikey.ErrForbidden:
+				c.JSON(http.StatusForbidden, gin.H{
+					"error": "API key lacks admin access to create store " + storeName,
+				})
+			default:
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
 			}
 			c.Abort()
 			return
 		}
 
-		// Constant-time comparison to prevent timing attacks
-		if !secureCompare(providedKey, adminKey) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid admin key"})
-			c.Abort()
-			return
+		if viaDeprecatedHeader {
+			// Header NAME only — never the value, which is the credential.
+			log.Printf("deprecation: X-Admin-Key was accepted for store creation; " +
+				"send the same key as X-API-Key instead (the header is removed in a future release)")
 		}
 
+		c.Set(KeyEntryKey, key)
 		c.Set(AuthPassedKey, true)
 		c.Next()
 	}
-}
-
-// secureCompare performs a constant-time string comparison to prevent
-// timing attacks. crypto/subtle does the comparison; the length check is
-// unavoidable (ConstantTimeCompare requires equal lengths) but a length
-// oracle on a random ≥20-char admin key is not exploitable.
-func secureCompare(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // CORS creates CORS middleware. The API is deliberately open to any origin:

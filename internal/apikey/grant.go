@@ -173,3 +173,66 @@ func (g Grant) String() string {
 	}
 	return strings.Join(parts, ",") + ":" + g.Stores
 }
+
+// CoversPattern reports whether this grant's store pattern covers every
+// store the other pattern could match — i.e. other is a subset of g.Stores.
+//
+// This is pattern containment, not equality, and it is the guard that keeps
+// API key minting from escalating privilege (issue #176). Comparing only
+// access CLASSES would let a key holding admin:sensors-* mint admin:*, which
+// is precisely the escalation the constraint exists to prevent.
+//
+//	"*"          covers everything
+//	"sensors-*"  covers "sensors-*", "sensors-x", "sensors-x-*"
+//	             but NOT "*" or "sens-*" (which match names it cannot)
+//	"sensors-x"  covers only itself
+func (g Grant) CoversPattern(other string) bool {
+	if g.Stores == "*" {
+		return true
+	}
+	if !strings.HasSuffix(g.Stores, "*") {
+		// An exact-name grant covers only that exact name. A wildcard
+		// other could match names outside it, so it is never covered.
+		return g.Stores == other
+	}
+	prefix := strings.TrimSuffix(g.Stores, "*")
+	// other must be constrained to at least this prefix. That holds for a
+	// literal name starting with it, and for a glob whose own prefix starts
+	// with it ("sensors-a*" ⊂ "sensors-*"). A bare "*" never qualifies,
+	// since TrimSuffix leaves "" which cannot start with a non-empty prefix.
+	return strings.HasPrefix(strings.TrimSuffix(other, "*"), prefix)
+}
+
+// PermitsGrant reports whether the grants held by a key are sufficient to
+// ISSUE the requested grant: every requested access class must be covered by
+// some held grant whose store pattern also covers the requested pattern.
+//
+// Note the check is per class rather than per grant — a key holding
+// read:sensors-* plus write:sensors-* may mint read,write:sensors-x, which no
+// single held grant covers alone.
+func PermitsGrant(held []Grant, requested Grant) bool {
+	if strings.TrimSpace(requested.Stores) == "" || len(requested.Access) == 0 {
+		return false
+	}
+	for _, want := range requested.Access {
+		covered := false
+		for _, h := range held {
+			if !h.CoversPattern(requested.Stores) {
+				continue
+			}
+			for _, a := range h.Access {
+				if a == want {
+					covered = true
+					break
+				}
+			}
+			if covered {
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}

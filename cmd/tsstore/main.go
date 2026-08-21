@@ -170,7 +170,7 @@ Subcommands:
   create [options]         Mint (or adopt) a key with explicit grants
   regenerate <store-name>  Replace the keys granting access to a store by name
   list [store-name]        List keys; with a store name, only those reaching it
-  revoke <key-id>          Revoke a key by ID
+  revoke <key-id> [--force] Revoke a key by ID (--force for the bootstrap key)
 
 Keys carry grants — what they may do, and on which stores:
   --grant <access>:<pattern>   Repeatable. Access is any comma-separated mix
@@ -280,12 +280,12 @@ func runServer(args []string) {
 		cfg.Server.SocketPath = socketPathOverride
 	}
 
-	// Validate admin key
-	if cfg.Server.AdminKey == "" {
-		log.Fatal("Admin key required: set TSSTORE_ADMIN_KEY environment variable or admin_key in config")
-	}
-	if len(cfg.Server.AdminKey) < 20 {
-		log.Fatal("Admin key must be at least 20 characters")
+	// The admin key is no longer required at startup (issue #176): it is
+	// reconciled into the key registry below, which mints one on first boot
+	// when none is configured. Length is still validated here so a too-short
+	// value fails with a clear message rather than deep inside adoption.
+	if cfg.Server.AdminKey != "" && len(cfg.Server.AdminKey) < apikey.MinKeyLength {
+		log.Fatalf("Admin key must be at least %d characters", apikey.MinKeyLength)
 	}
 
 	// Validate TLS configuration if partially provided
@@ -318,6 +318,42 @@ func runServer(args []string) {
 		log.Fatalf("Failed to migrate legacy API keys: %v", err)
 	} else if n > 0 {
 		log.Printf("Migrated %d legacy API key(s) into %s", n, apikey.RegistryFileName)
+	}
+
+	// Reconcile the server's bootstrap key with the registry (issue #176).
+	// This replaces the old string-compare admin key: the credential is now
+	// an ordinary registry entry — hashed, revocable, listable — that simply
+	// carries every grant.
+	//
+	// Fatal on error: a server whose root credential is unresolved should
+	// not come up, because the failure modes are "nobody can administer it"
+	// or "the wrong key can".
+	bootstrap, err := keyManager.EnsureBootstrap(cfg.Server.AdminKey)
+	if err != nil {
+		log.Fatalf("Failed to establish the bootstrap key: %v", err)
+	}
+	switch bootstrap.Action {
+	case "generated":
+		// The only moment this value exists outside the operator's hands.
+		// Printed to stdout rather than logged: logs are shipped, and on
+		// these hosts journald is itself ingested back into ts-store.
+		fmt.Println("")
+		fmt.Println("┌──────────────────────────────────────────────────────────────┐")
+		fmt.Println("│  FIRST BOOT — bootstrap API key generated                     │")
+		fmt.Println("│  Save it now. It is shown once and cannot be recovered.       │")
+		fmt.Println("└──────────────────────────────────────────────────────────────┘")
+		fmt.Printf("  key id:  %s\n", bootstrap.ID)
+		fmt.Printf("  API key: %s\n", bootstrap.Plaintext)
+		fmt.Println("")
+		fmt.Println("  Grants read,write,manage,admin on every store. Use it to mint")
+		fmt.Println("  scoped keys, then keep it somewhere safe.")
+		fmt.Println("")
+	case "adopted":
+		log.Printf("Bootstrap key adopted from configuration (key id %s). "+
+			"Once saved elsewhere, TSSTORE_ADMIN_KEY can be removed from this host's "+
+			"configuration — the key persists in the registry.", bootstrap.ID)
+	case "preserved":
+		log.Printf("Bootstrap key loaded from the registry (key id %s)", bootstrap.ID)
 	}
 
 	storeService := service.NewStoreService(cfg, keyManager)
@@ -365,10 +401,30 @@ func runServer(args []string) {
 	// API routes
 	api := router.Group("/api")
 	{
+		// Key management over HTTP, off unless explicitly enabled
+		// (issue #176). Minting returns the new key's plaintext in the
+		// response body — appropriate for edge deployments that must
+		// provision remotely, but a deliberate opt-in rather than a
+		// default. Shares the auth-failure limiter so it cannot be used
+		// as an unthrottled oracle for guessing keys.
+		if cfg.Server.EnableKeyAPI {
+			keysHandler := handlers.NewKeysHandler(keyManager)
+			keys := api.Group("/keys")
+			keys.Use(middleware.AuthFailureLimiter(authLimiter))
+			{
+				keys.POST("", keysHandler.Create)
+				keys.GET("", keysHandler.List)
+				keys.DELETE("/:id", keysHandler.Delete)
+			}
+			log.Printf("Key management API ENABLED at /api/keys — minted keys are " +
+				"returned in the response body; ensure this endpoint is not reachable " +
+				"from untrusted networks")
+		}
+
 		// Store management
 		stores := api.Group("/stores")
 		{
-			stores.POST("", middleware.AuthFailureLimiter(authLimiter), middleware.AdminAuth(cfg.Server.AdminKey, keyManager), storeHandler.Create) // Create: X-Admin-Key, or an X-API-Key with an admin grant covering the name (issue #157)
+			stores.POST("", middleware.AuthFailureLimiter(authLimiter), middleware.AdminAuth(keyManager), storeHandler.Create) // Create: X-Admin-Key, or an X-API-Key with an admin grant covering the name (issue #157)
 			// List stores the caller's key can read. Requires an API key
 			// (breaking change, issue #138) and shares the auth-failure
 			// limiter so it can't be used as an unthrottled oracle for
@@ -761,11 +817,26 @@ func runKeyCommand(args []string) {
 			for _, g := range k.Grants {
 				grants = append(grants, g.String())
 			}
+			// Mark the bootstrap key: it is the server's root of trust and
+			// revoking it is not an ordinary revoke (issue #176).
+			id := k.ID
+			if k.Bootstrap {
+				id = "*" + k.ID
+			}
 			fmt.Printf("%-8s  %-25s  %-30s  %s\n",
-				k.ID,
+				id,
 				k.CreatedAt.Format("2006-01-02 15:04:05 MST"),
 				strings.Join(grants, " "),
 				k.Note)
+		}
+		for _, k := range keys {
+			if k.Bootstrap {
+				fmt.Println("")
+				fmt.Println("* bootstrap key — the server's root of trust. Revoking it requires")
+				fmt.Println("  --force, and locks you out unless TSSTORE_ADMIN_KEY is set before")
+				fmt.Println("  the next restart.")
+				break
+			}
 		}
 
 	case "revoke":
@@ -777,7 +848,39 @@ func runKeyCommand(args []string) {
 		// Key IDs are globally unique now, so a store name is no longer
 		// needed. Tolerate the old "revoke <store> <key-id>" form by
 		// taking the last argument as the ID.
-		keyID := args[len(args)-1]
+		force := false
+		filtered := make([]string, 0, len(args))
+		for _, a := range args {
+			if a == "--force" {
+				force = true
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		if len(filtered) < 2 {
+			fmt.Println("Error: key ID required")
+			printKeyUsage()
+			os.Exit(1)
+		}
+		keyID := filtered[len(filtered)-1]
+
+		// Revoking the bootstrap key without a replacement locks the
+		// operator out of their own server: nothing can create stores or
+		// mint keys until a restart adopts a new one from config. Require
+		// an explicit --force rather than making that a typo away.
+		if entries, err := keyManager.List(); err == nil {
+			for _, e := range entries {
+				if e.ID == keyID && e.Bootstrap && !force {
+					fmt.Printf("Key '%s' is the BOOTSTRAP key — the server's root of trust.\n", keyID)
+					fmt.Println("Revoking it leaves no key able to create stores or mint keys until")
+					fmt.Println("the next restart adopts a new one from TSSTORE_ADMIN_KEY.")
+					fmt.Println("")
+					fmt.Printf("Re-run with --force if that is what you intend:\n")
+					fmt.Printf("  tsstore key revoke %s --force\n", keyID)
+					os.Exit(1)
+				}
+			}
+		}
 
 		if err := keyManager.Revoke(keyID); err != nil {
 			log.Fatalf("Failed to revoke key: %v", err)

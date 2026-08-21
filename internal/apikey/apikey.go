@@ -56,6 +56,9 @@ type KeyEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 	Note      string    `json:"note"`
 	Grants    []Grant   `json:"grants,omitempty"`
+	// Bootstrap marks the server's root key — surfaced so callers can
+	// identify it (CLI listings) and refuse to destroy it (issue #176).
+	Bootstrap bool `json:"bootstrap,omitempty"`
 }
 
 // cachedRegistry is the parsed registry plus the file identity it came
@@ -164,6 +167,129 @@ func (m *Manager) create(plaintext, note string, grants []Grant) (string, *KeyEn
 	m.regCache = nil
 
 	return plaintext, toKeyEntry(entry), nil
+}
+
+// BootstrapNote values distinguish how the bootstrap key came to exist, for
+// humans reading `tsstore key list`. The Bootstrap FIELD is what code keys
+// on — never these strings.
+const (
+	BootstrapNoteAdopted   = "Bootstrap key (adopted from config)"
+	BootstrapNoteGenerated = "Bootstrap key (generated at first boot)"
+)
+
+// BootstrapGrants is the authority a bootstrap key carries: everything, on
+// every store. It is the root of trust the rest of the registry descends
+// from — a key can only ISSUE what it already holds (see PermitsGrant), so
+// the first key has to hold it all.
+func BootstrapGrants() []Grant {
+	return []Grant{{
+		Stores: "*",
+		Access: []Access{AccessRead, AccessWrite, AccessManage, AccessAdmin},
+	}}
+}
+
+// BootstrapResult reports what EnsureBootstrap did, so startup can log it
+// and print a generated key exactly once.
+type BootstrapResult struct {
+	// Action is "adopted", "preserved", or "generated".
+	Action string
+	// Plaintext is set ONLY for "generated" — the single moment the key is
+	// available. Never populated for adopt (the caller already has it) or
+	// preserve (the registry holds a hash and cannot recover it).
+	Plaintext string
+	ID        string
+}
+
+// EnsureBootstrap reconciles the server's bootstrap key at startup
+// (issue #176):
+//
+//	configKey set     → adopt it, replacing any previous bootstrap key.
+//	                    This is how an operator rotates.
+//	configKey empty,
+//	  bootstrap exists → preserve it. The steady state once a deployment
+//	                     has dropped TSSTORE_ADMIN_KEY after first boot.
+//	both absent       → generate one and return the plaintext, which the
+//	                    caller must surface once and never again.
+//
+// Replacement is scoped to the entry carrying Bootstrap — operator-minted
+// keys are never touched, which is why that is a dedicated field rather than
+// a magic note string a user could collide with.
+func (m *Manager) EnsureBootstrap(configKey string) (*BootstrapResult, error) {
+	if configKey != "" {
+		if err := ValidateSuppliedKey(configKey); err != nil {
+			return nil, fmt.Errorf("configured admin key is not a valid ts-store key: %w", err)
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	reg, err := m.loadRegistryLocked()
+	if err != nil {
+		return nil, err
+	}
+
+	existingIdx := -1
+	for i := range reg.Keys {
+		if reg.Keys[i].Bootstrap {
+			existingIdx = i
+			break
+		}
+	}
+
+	// No config key: keep what is there, or mint the first one.
+	if configKey == "" {
+		if existingIdx >= 0 {
+			return &BootstrapResult{Action: "preserved", ID: reg.Keys[existingIdx].ID}, nil
+		}
+		configKey = KeyPrefix + uuid.New().String()
+		entry := newBootstrapEntry(configKey, BootstrapNoteGenerated)
+		reg.Keys = append(reg.Keys, entry)
+		if err := m.saveRegistryLocked(reg); err != nil {
+			return nil, err
+		}
+		m.regCache = nil
+		return &BootstrapResult{Action: "generated", Plaintext: configKey, ID: entry.ID}, nil
+	}
+
+	// Config key supplied. If it is already the bootstrap key, this is an
+	// ordinary restart — leave the entry (and its CreatedAt) alone.
+	hash := hashKey(configKey)
+	if existingIdx >= 0 && reg.Keys[existingIdx].Hash == hash {
+		return &BootstrapResult{Action: "preserved", ID: reg.Keys[existingIdx].ID}, nil
+	}
+
+	// Refuse to adopt a key that already exists as an ordinary registry
+	// entry: silently promoting an operator's scoped key to full authority
+	// would be a privilege escalation by configuration accident.
+	for i := range reg.Keys {
+		if reg.Keys[i].Hash == hash && !reg.Keys[i].Bootstrap {
+			return nil, fmt.Errorf("configured admin key is already registered as key %s; revoke it or choose a different key", reg.Keys[i].ID)
+		}
+	}
+
+	entry := newBootstrapEntry(configKey, BootstrapNoteAdopted)
+	if existingIdx >= 0 {
+		reg.Keys[existingIdx] = entry
+	} else {
+		reg.Keys = append(reg.Keys, entry)
+	}
+	if err := m.saveRegistryLocked(reg); err != nil {
+		return nil, err
+	}
+	m.regCache = nil
+	return &BootstrapResult{Action: "adopted", ID: entry.ID}, nil
+}
+
+func newBootstrapEntry(plaintext, note string) RegistryKey {
+	return RegistryKey{
+		ID:        deriveKeyID(plaintext),
+		Hash:      hashKey(plaintext),
+		CreatedAt: time.Now().UTC(),
+		Note:      note,
+		Grants:    BootstrapGrants(),
+		Bootstrap: true,
+	}
 }
 
 // Revoke removes a key by ID.
@@ -384,6 +510,7 @@ func toKeyEntry(k RegistryKey) *KeyEntry {
 		CreatedAt: k.CreatedAt,
 		Note:      k.Note,
 		Grants:    k.Grants,
+		Bootstrap: k.Bootstrap,
 	}
 }
 
