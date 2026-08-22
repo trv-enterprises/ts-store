@@ -37,7 +37,47 @@ Exit codes from `reconcile-scan.py`: `0` clean or all-accepted, `1` actionable f
 
 A check that is permanently red trains everyone to ignore it, so the next real finding lands in a list nobody reads. The registry converts "known red" into "known-accepted, with an expiry date and a reason", leaving the actionable list meaningful. It also keeps the reasoning in the repo and under review, rather than in a dismissal dropdown in the GitHub UI.
 
-CodeQL findings additionally get an **in-code suppression** so the check itself goes green. The registry entry is the justification; the suppression is what stops it re-reporting. Every suppression should name its registry entry, and every `codeql` registry entry records where its suppression lives (`suppression:` field) — so the two can't quietly drift apart.
+### Dismissing an accepted CodeQL alert
+
+An accepted finding still shows a red `CodeQL` check on any PR that touches its
+file, which is corrosive — a check that always fails is a check nobody reads.
+The registry is the decision; **dismissal is how that decision reaches the
+check**. Do it per alert, never by widening `query-filters`:
+
+```bash
+# Find the alert on the PR's merge ref
+gh api "repos/trv-enterprises/ts-store/code-scanning/alerts?ref=refs/pull/<N>/merge&state=open" \
+  --jq '.[] | "\(.number) \(.rule.id) \(.most_recent_instance.location.path):\(.most_recent_instance.location.start_line)"'
+
+# Dismiss it, citing the registry entry (comment max 280 chars)
+gh api -X PATCH repos/trv-enterprises/ts-store/code-scanning/alerts/<ID> \
+  -f state=dismissed -f dismissed_reason="won't fix" \
+  -f dismissed_comment="Accepted: security/accepted-vulns.yaml, <rule-id> (expires <date>). <why it is not reachable>."
+```
+
+Before dismissing, **confirm the finding is genuinely the accepted class** —
+reconcile the PR's real SARIF, don't assume from the rule name:
+
+```bash
+ID=$(gh api "repos/trv-enterprises/ts-store/code-scanning/analyses?ref=refs/pull/<N>/merge" --jq '.[0].id')
+gh api "repos/trv-enterprises/ts-store/code-scanning/analyses/$ID" \
+  -H "Accept: application/sarif+json" > /tmp/pr.sarif
+make security-scan-codeql SARIF=/tmp/pr.sarif   # must report ACTIONABLE (0)
+```
+
+If it reports anything actionable, that is a new finding: triage it, do not
+dismiss it. A dismissal whose comment does not point at a registry entry is a
+process failure — the entry carries the reasoning, the reviewer, and the expiry
+date; the dismissal is only the switch.
+
+Prefer this to a `query-filters` exclusion whenever the rule is one we want to
+keep hearing about elsewhere. `go/path-injection` is the standing example: it is
+accepted at known-guarded sites but left enabled repo-wide, because this store
+builds paths from user-supplied names and a genuinely new traversal bug must
+still surface.
+
+CodeQL findings may additionally get an **in-code suppression** so the check
+itself goes green. The registry entry is the justification; the suppression is what stops it re-reporting. Every suppression should name its registry entry, and every `codeql` registry entry records where its suppression lives (`suppression:` field) — so the two can't quietly drift apart.
 
 ## Fix by default; accept as the exception
 
