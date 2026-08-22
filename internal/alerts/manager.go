@@ -645,6 +645,12 @@ func (m *Manager) UpdateAlert(alertID string, req CreateAlertRequest) (Status, e
 		newWorker *Worker
 		persist   func() error
 		rollback  func()
+		// cooldownChanged drives clearing the persisted cooldown mark
+		// below (issue #179). Compared as the raw strings the operator
+		// supplied: "60s" and "1m" are the same window, but treating a
+		// rewrite as a change only costs one extra fire, while missing a
+		// real change leaves the bug in place.
+		cooldownChanged bool
 	)
 
 	switch existingType {
@@ -665,6 +671,7 @@ func (m *Manager) UpdateAlert(alertID string, req CreateAlertRequest) (Status, e
 		if err != nil {
 			return Status{}, err
 		}
+		cooldownChanged = stored.Cooldown != req.AlertCommon.Cooldown
 		updated := store.WebhookAlert{
 			ID:           alertID,
 			URL:          req.Webhook.URL,
@@ -698,6 +705,7 @@ func (m *Manager) UpdateAlert(alertID string, req CreateAlertRequest) (Status, e
 		if err != nil {
 			return Status{}, err
 		}
+		cooldownChanged = stored.Cooldown != req.AlertCommon.Cooldown
 		updated := store.WSAlert{
 			ID:           alertID,
 			URL:          req.WS.URL,
@@ -730,6 +738,7 @@ func (m *Manager) UpdateAlert(alertID string, req CreateAlertRequest) (Status, e
 		if err != nil {
 			return Status{}, err
 		}
+		cooldownChanged = stored.Cooldown != req.AlertCommon.Cooldown
 		// Password: the marker (or omission) means keep the stored one.
 		password := req.MQTT.Password
 		if password == redactedMarker || password == "" {
@@ -761,11 +770,39 @@ func (m *Manager) UpdateAlert(alertID string, req CreateAlertRequest) (Status, e
 		return Status{}, err
 	}
 
+	// An edit is not a new alert, so the replacement inherits the
+	// predecessor's start time. Without this, Start() re-arms the
+	// staleness grace floor and the rule cannot fire for a full max_age
+	// after every edit — so tuning a quiet store's alert silences it
+	// exactly when the operator is watching for it (issue #179). The
+	// floor's original purpose (#134) is about a NEWLY created alert not
+	// firing on a gap that predates it, which an update is not.
+	old.mu.RLock()
+	inherited := old.startedAt
+	old.mu.RUnlock()
+	newWorker.mu.Lock()
+	newWorker.inheritedStartedAt = inherited
+	newWorker.mu.Unlock()
+
+	// A changed cooldown means the operator is deliberately reconfiguring
+	// the window, so the persisted mark must not gate the new one. The
+	// mark exists to survive process RESTARTS (issue #37), not edits: on a
+	// staleness rule the store is quiet by definition when you are tuning
+	// cooldown, so a recent mark would hold the old window closed and the
+	// change would look like it did nothing (issue #179).
+	//
+	// Only when the value actually changed — an unrelated edit (renaming
+	// the rule, moving the sink URL) should not reopen a legitimately
+	// closed window and fire immediately.
+	if cooldownChanged {
+		removeLastFired(m.store, existingType, alertID)
+	}
+
 	// Swap the running worker. Unregister before stopping so no fan-out
 	// delivery races the teardown, exactly as DeleteAlert does. The
-	// cursor and last-fired files are keyed by alert ID and deliberately
-	// NOT removed, so the replacement resumes where the old one left off
-	// rather than replaying or skipping records.
+	// cursor file is keyed by alert ID and deliberately NOT removed, so
+	// the replacement resumes where the old one left off rather than
+	// replaying or skipping records.
 	m.poller.unregister(alertID)
 	old.Stop()
 	m.workers[alertID] = newWorker
@@ -880,5 +917,13 @@ func lastFiredPathFor(st *store.Store, alertType, alertID string) string {
 // Delete on cleanup quirks.
 func removeCursor(st *store.Store, alertType, alertID string) {
 	_ = os.Remove(cursorPathFor(st, alertType, alertID))
+	_ = os.Remove(lastFiredPathFor(st, alertType, alertID))
+}
+
+// removeLastFired clears only the cooldown mark, leaving the scan cursor
+// intact. Used when an update changes the cooldown: the window is being
+// reconfigured, but the alert should still resume scanning where it left
+// off rather than replaying (issue #179).
+func removeLastFired(st *store.Store, alertType, alertID string) {
 	_ = os.Remove(lastFiredPathFor(st, alertType, alertID))
 }

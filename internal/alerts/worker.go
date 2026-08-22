@@ -105,6 +105,10 @@ type Worker struct {
 	// solely to avoid reporting a store as stale based on a gap that
 	// predates the alert's own existence.
 	startedAt time.Time
+	// inheritedStartedAt is a non-zero startedAt handed over by the worker
+	// this one replaces, so an edit does not re-arm the staleness grace
+	// period (issue #179).
+	inheritedStartedAt time.Time
 	// pollInterval is a hint to the shared poller: the store's loop
 	// ticks at the minimum across its registered workers.
 	pollInterval time.Duration
@@ -151,6 +155,17 @@ type Options struct {
 	// fires are rare). Empty disables persistence.
 	LastFiredPath string
 	CreatedAt     time.Time
+
+	// StartedAt, when non-zero, seeds the staleness grace floor instead of
+	// letting Start() reset it to now. Set by an in-place UPDATE so the
+	// replacement worker inherits its predecessor's clock (issue #179).
+	//
+	// The floor exists so an alert created against a store that went quiet
+	// last week doesn't fire instantly on a gap that predates it (#134).
+	// That reasoning is about a NEW alert; an edited one is the same alert,
+	// and re-arming its grace period means a staleness rule goes silent for
+	// a full max_age every time an operator tunes it.
+	StartedAt time.Time
 }
 
 // NewWorker builds a Worker. The rule is parsed here so creation fails
@@ -242,6 +257,8 @@ func NewWorker(opts Options) (*Worker, error) {
 		ruleType:      ruleType,
 		maxAge:        maxAge,
 		maxAgeRaw:     opts.Rule.MaxAge,
+
+		inheritedStartedAt: opts.StartedAt,
 	}
 
 	w.evaluator = rules.NewEvaluator(opts.StoreName, parsedRule, cooldown, opts.Rule.ExternalRef, w.dispatch)
@@ -262,7 +279,13 @@ func NewWorker(opts Options) (*Worker, error) {
 func (w *Worker) Start() {
 	w.mu.Lock()
 	now := time.Now().UnixNano()
-	w.startedAt = time.Unix(0, now)
+	// A worker rebuilt by an in-place update inherits its predecessor's
+	// start time (issue #179) — see Options.StartedAt.
+	if w.inheritedStartedAt.IsZero() {
+		w.startedAt = time.Unix(0, now)
+	} else {
+		w.startedAt = w.inheritedStartedAt
+	}
 	switch w.restartPolicy {
 	case "resume":
 		ts := readCursor(w.cursorPath)
