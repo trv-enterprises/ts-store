@@ -221,7 +221,12 @@ All endpoints require the store's `X-API-Key` (same as streaming endpoints). The
 
 #### Updating an alert
 
-`PUT /api/stores/{store}/alerts/{id}` edits an alert without destroying it. The alert **id**, its `created_at`, its poll cursor and cooldown mark on disk, and the worker's fired counter all survive — which is exactly what delete-and-recreate loses.
+`PUT /api/stores/{store}/alerts/{id}` edits an alert without destroying it. The alert **id**, its `created_at`, its poll cursor, and the worker's fired counter all survive — which is exactly what delete-and-recreate loses.
+
+Two things are deliberately *not* carried over unchanged, because an edit is a reconfiguration rather than a restart (issue #179):
+
+- **The cooldown mark is cleared when `cooldown` changes.** It persists across process restarts so a still-closed window survives a bounce, but an operator shortening a cooldown is explicitly asking for the old window not to apply. An edit that leaves `cooldown` alone keeps the mark, so renaming a rule or moving its sink URL will not fire it immediately.
+- **The staleness grace period is not re-armed.** A worker's start time floors the age a staleness rule measures, so that a newly created alert does not fire on a gap predating it. A replacement worker inherits its predecessor's start time; otherwise every edit would silence a staleness rule for a full `max_age` — precisely when the operator is tuning it and watching for the next fire.
 
 Semantics are **full replace**, matching create: a field omitted from the body reverts to its default (omit `cooldown` and the alert has no cooldown). The one exception is the credentials reads redact — auth-style header values and the MQTT password. A client that fetched the alert only ever saw `[redacted]`, so it cannot round-trip them; submitting the marker back (or omitting the password) keeps the stored value. Submitting a real value replaces it, so rotation still works.
 

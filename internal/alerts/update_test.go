@@ -6,8 +6,10 @@ package alerts
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tviviano/ts-store/pkg/store"
 )
@@ -406,5 +408,171 @@ func TestLogSafeErrSanitizesEmbeddedPaths(t *testing.T) {
 	}
 	if logSafeErr(nil) != "<nil>" {
 		t.Errorf("logSafeErr(nil) = %q, want <nil>", logSafeErr(nil))
+	}
+}
+
+// writeLastFiredMark plants a cooldown mark as though the alert had fired at
+// the given time, which is the state a staleness rule is in whenever an
+// operator is tuning it — the store is quiet, so it is mid repeat-fire loop.
+func writeLastFiredMark(t *testing.T, mgr *Manager, alertType, alertID string, at time.Time) string {
+	t.Helper()
+	path := lastFiredPathFor(mgr.store, alertType, alertID)
+	if err := os.WriteFile(path, []byte(strconv.FormatInt(at.UnixNano(), 10)+"\n"), 0644); err != nil {
+		t.Fatalf("seed lastfired: %v", err)
+	}
+	return path
+}
+
+// TestUpdateClearsCooldownMarkWhenCooldownChanges pins the first half of
+// issue #179. The mark persists across process restarts by design (#37), but
+// an operator shortening a cooldown is explicitly asking for the old window
+// not to apply — and on a staleness rule the mark is always recent, so
+// keeping it made the edit look like it did nothing.
+func TestUpdateClearsCooldownMarkWhenCooldownChanges(t *testing.T) {
+	mgr := newManagerFixture(t)
+
+	created, err := mgr.CreateAlert(CreateAlertRequest{
+		Type: "webhook",
+		AlertCommon: store.AlertCommon{
+			Name: "quiet", RuleType: "staleness", MaxAge: "1m", Cooldown: "30m",
+		},
+		Webhook: &WebhookOptions{URL: "https://example.com/hook"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+	path := writeLastFiredMark(t, mgr, "webhook", created.ID, time.Now().Add(-90*time.Second))
+
+	if _, err := mgr.UpdateAlert(created.ID, CreateAlertRequest{
+		Type: "webhook",
+		AlertCommon: store.AlertCommon{
+			Name: "quiet", RuleType: "staleness", MaxAge: "1m", Cooldown: "1m",
+		},
+		Webhook: &WebhookOptions{URL: "https://example.com/hook"},
+	}); err != nil {
+		t.Fatalf("UpdateAlert: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("cooldown mark survived a cooldown change; the old window still gates firing")
+	}
+}
+
+// TestUpdateKeepsCooldownMarkWhenCooldownUnchanged is the other side of it:
+// an unrelated edit must NOT reopen a legitimately closed window, or renaming
+// a rule would fire it immediately.
+func TestUpdateKeepsCooldownMarkWhenCooldownUnchanged(t *testing.T) {
+	mgr := newManagerFixture(t)
+
+	created, err := mgr.CreateAlert(CreateAlertRequest{
+		Type: "webhook",
+		AlertCommon: store.AlertCommon{
+			Name: "quiet", RuleType: "staleness", MaxAge: "1m", Cooldown: "30m",
+		},
+		Webhook: &WebhookOptions{URL: "https://example.com/hook"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+	path := writeLastFiredMark(t, mgr, "webhook", created.ID, time.Now().Add(-90*time.Second))
+
+	// Rename and move the sink; cooldown untouched.
+	if _, err := mgr.UpdateAlert(created.ID, CreateAlertRequest{
+		Type: "webhook",
+		AlertCommon: store.AlertCommon{
+			Name: "renamed", RuleType: "staleness", MaxAge: "1m", Cooldown: "30m",
+		},
+		Webhook: &WebhookOptions{URL: "https://example.com/hook2"},
+	}); err != nil {
+		t.Fatalf("UpdateAlert: %v", err)
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("cooldown mark was cleared by an unrelated edit: %v", err)
+	}
+}
+
+// TestUpdatePreservesStalenessGraceFloor pins the second half of #179. Start()
+// resets startedAt, which floors the staleness age — so before this fix every
+// edit bought the store a fresh max_age of silence. The floor's purpose (#134)
+// is that a NEWLY created alert shouldn't fire on a gap predating it; an
+// edited alert is not new.
+func TestUpdatePreservesStalenessGraceFloor(t *testing.T) {
+	mgr := newManagerFixture(t)
+
+	created, err := mgr.CreateAlert(CreateAlertRequest{
+		Type: "webhook",
+		AlertCommon: store.AlertCommon{
+			Name: "quiet", RuleType: "staleness", MaxAge: "5m", Cooldown: "1m",
+		},
+		Webhook: &WebhookOptions{URL: "https://example.com/hook"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+
+	mgr.mu.RLock()
+	original := mgr.workers[created.ID]
+	mgr.mu.RUnlock()
+	original.mu.RLock()
+	originalStart := original.startedAt
+	original.mu.RUnlock()
+	if originalStart.IsZero() {
+		t.Fatal("precondition: worker has no startedAt")
+	}
+
+	time.Sleep(20 * time.Millisecond) // ensure a later Start() would differ
+
+	if _, err := mgr.UpdateAlert(created.ID, CreateAlertRequest{
+		Type: "webhook",
+		AlertCommon: store.AlertCommon{
+			Name: "quiet", RuleType: "staleness", MaxAge: "5m", Cooldown: "2m",
+		},
+		Webhook: &WebhookOptions{URL: "https://example.com/hook"},
+	}); err != nil {
+		t.Fatalf("UpdateAlert: %v", err)
+	}
+
+	mgr.mu.RLock()
+	replacement := mgr.workers[created.ID]
+	mgr.mu.RUnlock()
+	replacement.mu.RLock()
+	newStart := replacement.startedAt
+	replacement.mu.RUnlock()
+
+	if !newStart.Equal(originalStart) {
+		t.Errorf("startedAt moved on update: %s -> %s; the edit re-armed the max_age grace period",
+			originalStart.Format(time.RFC3339Nano), newStart.Format(time.RFC3339Nano))
+	}
+}
+
+// TestCreateStillArmsStalenessGraceFloor: the inheritance must not leak into
+// creation. A brand-new alert still gets its grace period, which is what
+// stops it firing on a gap that predates it (#134).
+func TestCreateStillArmsStalenessGraceFloor(t *testing.T) {
+	mgr := newManagerFixture(t)
+
+	before := time.Now()
+	created, err := mgr.CreateAlert(CreateAlertRequest{
+		Type: "webhook",
+		AlertCommon: store.AlertCommon{
+			Name: "fresh", RuleType: "staleness", MaxAge: "1m", Cooldown: "1m",
+		},
+		Webhook: &WebhookOptions{URL: "https://example.com/hook"},
+	})
+	if err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+
+	mgr.mu.RLock()
+	w := mgr.workers[created.ID]
+	mgr.mu.RUnlock()
+	w.mu.RLock()
+	startedAt := w.startedAt
+	w.mu.RUnlock()
+
+	if startedAt.Before(before) {
+		t.Errorf("a new alert inherited a startedAt from the past (%s); the #134 grace floor is gone",
+			startedAt.Format(time.RFC3339Nano))
 	}
 }
