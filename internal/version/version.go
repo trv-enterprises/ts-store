@@ -14,7 +14,6 @@ package version
 // binary that says so, rather than one claiming to be whatever release the
 // constant was last bumped to (issue #182).
 //
-// `make version-bump` still rewrites this line during a release — the sed
-// there matches this exact declaration — so a source tree at a tag reads
-// correctly too.
+// Nothing rewrites this line any more: `make version-bump` is retired
+// (issue #182), so there is exactly one place the version comes from.
 var Version = "dev"

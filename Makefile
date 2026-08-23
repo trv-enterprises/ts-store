@@ -31,9 +31,9 @@ GO = go
 # server actually prints (cmd/tsstore/main.go). This said `main.Version` for
 # a long time, which cmd/tsstore does not declare; -X against a symbol that
 # does not exist fails SILENTLY, so the flag was a no-op and the reported
-# version came only from whatever `version-bump` had sed-written into the
-# source. rc tags skip that bump, so they reported the previous release
-# (issue #182).
+# version came only from whatever a source-file sed had written. rc tags
+# skipped that step, so they reported the previous release (issue #182).
+# That sed is now retired; -ldflags is the single source of truth.
 #
 # Collectors are separate: they DO declare `var Version` in main, and their
 # build lines below pass -X main.Version accordingly.
@@ -125,14 +125,15 @@ security-scan-codeql: ## Reconcile a CodeQL SARIF file (use with SARIF=path/to/r
 
 ## Release targets
 
-version-bump: ## Update version in internal/version/version.go (use with VERSION=vX.Y.Z)
-	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
-		echo "Error: VERSION must be set (e.g., make version-bump VERSION=v0.3.0)"; \
-		exit 1; \
-	fi
-	@echo "Updating internal/version/version.go to $(VERSION)..."
-	@sed -i '' 's/Version = "v[^"]*"/Version = "$(VERSION)"/' internal/version/version.go
-	@echo "✓ Version updated to $(VERSION)"
+# version-bump is RETIRED (issue #182). The version now reaches the binary
+# through -ldflags (see LDFLAGS above), which is authoritative, so rewriting
+# a source constant to match was duplicate bookkeeping — and the duplication
+# is what hid the broken ldflag for so long. The target remains only so an
+# older runbook invoking it fails loudly instead of silently doing nothing.
+version-bump:
+	@echo "version-bump is retired: the version is injected via -ldflags (issue #182)."
+	@echo "Nothing to do — 'make release VERSION=...' handles this."
+	@exit 1
 
 release-binaries: build ## Create release binaries (server + collectors) in dist/
 	@echo "Creating release binaries for $(VERSION)..."
@@ -150,7 +151,7 @@ release-binaries: build ## Create release binaries (server + collectors) in dist
 	@echo "✓ Release binaries created:"
 	@ls -lh $(DIST_DIR)/*-$(VERSION)-*
 
-release: ## Full release: bump version, build, commit, tag, push (use with VERSION=vX.Y.Z)
+release: ## Full release: build, tag, push (use with VERSION=vX.Y.Z; works for rc tags too)
 	@if [ "$(VERSION)" = "dev" ] || [ -z "$(VERSION)" ]; then \
 		echo "Error: VERSION must be set"; \
 		echo "Usage: make release VERSION=v0.3.0"; \
@@ -168,14 +169,14 @@ release: ## Full release: bump version, build, commit, tag, push (use with VERSI
 	@echo "============================================"
 	@echo "Starting release $(VERSION)"
 	@echo "============================================"
-	@$(MAKE) version-bump VERSION=$(VERSION)
 	@$(MAKE) build VERSION=$(VERSION)
 	@$(MAKE) release-binaries VERSION=$(VERSION)
 	@echo ""
-	@echo "Committing version bump..."
-	git add internal/version/version.go
-	git commit -m "Bump version to $(VERSION)"
-	@echo ""
+	@# No version-bump commit: the version is injected at build time, so the
+	@# tag alone identifies the release. This also means an rc and a final
+	@# release now take the SAME path — previously rc tags were created by
+	@# hand to avoid the bump commit, which is precisely how the broken
+	@# ldflag went unnoticed (issue #182).
 	@echo "Creating tag $(VERSION)..."
 	git tag -a "$(VERSION)" -m "Release $(VERSION)"
 	@echo ""
