@@ -25,8 +25,20 @@ ifeq ($(shell uname -s),Darwin)
 endif
 GO = go
 
-# Build flags
-LDFLAGS = -s -w -X main.Version=$(VERSION)
+# Build flags.
+#
+# The version is injected into internal/version.Version — the variable the
+# server actually prints (cmd/tsstore/main.go). This said `main.Version` for
+# a long time, which cmd/tsstore does not declare; -X against a symbol that
+# does not exist fails SILENTLY, so the flag was a no-op and the reported
+# version came only from whatever `version-bump` had sed-written into the
+# source. rc tags skip that bump, so they reported the previous release
+# (issue #182).
+#
+# Collectors are separate: they DO declare `var Version` in main, and their
+# build lines below pass -X main.Version accordingly.
+VERSION_PKG = github.com/tviviano/ts-store/internal/version
+LDFLAGS = -s -w -X $(VERSION_PKG).Version=$(VERSION)
 
 .PHONY: all build build-arm64 build-amd64 build-local build-collectors clean test test-verbose help
 .PHONY: version-bump release release-binaries release-collectors security-scan security-scan-codeql

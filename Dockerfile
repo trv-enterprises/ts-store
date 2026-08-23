@@ -3,6 +3,11 @@
 
 FROM golang:1.25-alpine AS builder
 
+# Version to stamp into the binary. Defaults to "docker" rather than a
+# version number so an un-argued local build is honestly labelled instead of
+# claiming to be whatever release the source constant last held (issue #182).
+ARG VERSION=docker
+
 WORKDIR /app
 
 # Install git for go mod download (some dependencies may need it)
@@ -16,7 +21,9 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o tsstore ./cmd/tsstore
+RUN CGO_ENABLED=0 GOOS=linux go build \
+      -ldflags="-w -s -X github.com/tviviano/ts-store/internal/version.Version=${VERSION}" \
+      -o tsstore ./cmd/tsstore
 
 # Final stage - minimal image
 FROM alpine:3.19
