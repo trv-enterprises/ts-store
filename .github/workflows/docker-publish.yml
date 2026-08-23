@@ -63,5 +63,13 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamp the real version into the binary. The Dockerfile has no
+          # access to the Makefile's $(VERSION), so without this the image
+          # reports whatever internal/version.Version held in the source —
+          # correct only by luck, and wrong for any build from an unbumped
+          # tree such as an rc (issue #182). For a tag push this is the tag;
+          # for a manual/scheduled run it falls back to the ref name.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version || github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

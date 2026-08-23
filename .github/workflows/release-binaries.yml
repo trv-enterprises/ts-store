@@ -56,6 +56,23 @@ jobs:
           # with the tag name in the filename.
           make release-binaries VERSION=${{ steps.tag.outputs.name }}
 
+      # Guard for issue #182: the ldflag silently targeted a symbol that did
+      # not exist, so the injected version was dropped and every rc binary
+      # reported the previous release. Nothing caught it — the release path
+      # verified nothing about what it produced, and the mismatch only
+      # surfaced on a host during a canary. Assert it here instead.
+      - name: Verify the built binary reports the tag
+        run: |
+          set -euo pipefail
+          tag='${{ steps.tag.outputs.name }}'
+          bin="dist/tsstore-${tag}-linux-amd64"
+          got="$("$bin" version | awk '{print $2}')"
+          if [ "$got" != "$tag" ]; then
+            echo "::error::built binary reports '$got' but the tag is '$tag' — the version ldflag is not reaching internal/version.Version"
+            exit 1
+          fi
+          echo "✓ binary reports $got"
+
       - name: Upload binaries to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
