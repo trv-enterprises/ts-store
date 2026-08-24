@@ -23,7 +23,15 @@ permissions:
   contents: write # to upload assets / create releases
 
 jobs:
+  # Gate: nothing is published past an actionable vulnerability or an
+  # expired registry acceptance (issue #173).
+  security-gate:
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+
   build-and-upload:
+    needs: security-gate
     runs-on: ubuntu-latest
     steps:
       - name: Resolve target tag

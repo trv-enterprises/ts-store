@@ -1,0 +1,80 @@
+# Copyright (c) 2026 TRV Enterprises LLC
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reusable security gate for the RELEASE path (issue #173).
+#
+# PR checks already run govulncheck, but a tag can be cut days after the
+# last PR merged — and a CVE disclosed in that window makes those green
+# checks stale without anything re-running them. That is exactly how
+# v0.20.0 shipped binaries and an image built on a Go toolchain carrying
+# three DoS-class stdlib vulnerabilities: nobody skipped a check, the
+# check simply never ran again between merge and tag.
+#
+# Both publishing workflows call this as a prerequisite job, so neither
+# binaries nor the container image can be published past an actionable
+# finding. Findings you consciously choose to ship with go in
+# security/accepted-vulns.yaml with a justification and an expiry date.
+
+name: Release security gate
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Ref to scan (tag name for a release build)'
+        required: false
+        type: string
+
+jobs:
+  scan:
+    name: Vulnerability scan (release gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Reconciled against security/accepted-vulns.yaml rather than run
+      # bare: reconcile-scan.py exits 0 when clean OR when every finding
+      # is a recorded acceptance, 1 on anything actionable, and 2 when an
+      # acceptance has EXPIRED. That last case is the point of the expiry
+      # dates — an acceptance that outlives its review date stops a
+      # release instead of quietly persisting.
+      - name: govulncheck, reconciled against the accepted-vulns registry
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" -json ./... \
+            | security/reconcile-scan.py --scanner govulncheck
+
+      # Warning-only for now (issue #173). The govulncheck step above
+      # already catches a vulnerable toolchain by its actual CVEs; this
+      # catches the CLASS — a toolchain drifting behind its patch line —
+      # before a CVE is published against it. Promote to a hard failure
+      # once we see how often it fires in practice.
+      - name: Toolchain freshness (advisory)
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          declared="$(awk '/^toolchain /{print $2}' go.mod)"
+          if [ -z "$declared" ]; then
+            echo "::notice::go.mod declares no toolchain directive; skipping freshness check"
+            exit 0
+          fi
+          # go.dev/dl returns releases newest-first; the first stable entry
+          # is the current patch release.
+          latest="$(curl -fsS --max-time 20 'https://go.dev/dl/?mode=json' \
+            | python3 -c 'import json,sys; print(next(r["version"] for r in json.load(sys.stdin) if r.get("stable")))')" || {
+              echo "::notice::could not reach go.dev/dl; skipping freshness check"
+              exit 0
+            }
+          if [ "$declared" != "$latest" ]; then
+            echo "::warning::go.mod pins $declared but $latest is current — a release built on a stale toolchain is how v0.20.0 shipped known stdlib CVEs (issue #173)"
+          else
+            echo "✓ toolchain $declared is current"
+          fi
