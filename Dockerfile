@@ -1,7 +1,12 @@
 # Copyright (c) 2026 TRV Enterprises LLC
 # SPDX-License-Identifier: Apache-2.0
 
-FROM golang:1.25-alpine AS builder
+# Keep this in step with go.mod's `toolchain` directive. The builder image
+# ships GOTOOLCHAIN=local, so it will NOT download a newer toolchain — a
+# stale pin here silently builds the image on the old Go while CI (which
+# resolves from go.mod) uses the new one. That divergence is invisible: the
+# build succeeds and only the binary's stamped version reveals it.
+FROM golang:1.27-alpine AS builder
 
 # Version to stamp into the binary. Defaults to "docker" rather than a
 # version number so an un-argued local build is honestly labelled instead of

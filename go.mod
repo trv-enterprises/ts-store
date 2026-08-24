@@ -2,7 +2,7 @@ module github.com/tviviano/ts-store
 
 go 1.25.5
 
-toolchain go1.26.6
+toolchain go1.27.0
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1

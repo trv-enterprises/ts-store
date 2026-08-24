@@ -28,7 +28,12 @@
 # read access to the Docker socket discloses everything about every container
 # on the host, so treat the container as trusted even though it cannot mutate.
 
-FROM golang:1.25-alpine AS builder
+# Keep this in step with go.mod's `toolchain` directive. The builder image
+# ships GOTOOLCHAIN=local, so it will NOT download a newer toolchain — a
+# stale pin here silently builds the image on the old Go while CI (which
+# resolves from go.mod) uses the new one. That divergence is invisible: the
+# build succeeds and only the binary's stamped version reveals it.
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /app
 
