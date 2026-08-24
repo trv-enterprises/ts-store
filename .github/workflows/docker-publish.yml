@@ -19,7 +19,16 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Same gate as the binary release (issue #173). Gating only one path
+  # would leave the other publishing unscanned, and the image is what
+  # the simulators container actually runs.
+  security-gate:
+    uses: ./.github/workflows/security-scan.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+
   build-and-push:
+    needs: security-gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
