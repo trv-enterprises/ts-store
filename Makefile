@@ -105,7 +105,10 @@ test-verbose: ## Run all tests with verbose output
 
 ## Security targets
 
-security-scan: ## Reconcile scanner output against security/accepted-vulns.yaml
+security-scan-selftest: ## Test the registry reconciler itself (both YAML parser paths)
+	@python3 security/test_reconcile_scan.py
+
+security-scan: security-scan-selftest ## Reconcile scanner output against security/accepted-vulns.yaml
 	@echo "── Security scan ─────────────────────────────────────────────"
 	@if command -v govulncheck >/dev/null 2>&1; then \
 		govulncheck -json ./... 2>/dev/null | security/reconcile-scan.py --scanner govulncheck; \

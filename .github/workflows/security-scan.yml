@@ -1,7 +1,12 @@
 # Copyright (c) 2026 TRV Enterprises LLC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Reusable security gate for the RELEASE path (issue #173).
+# Reusable security gate for the RELEASE path (issues #173, #186).
+#
+# pr-checks.yml runs the same steps inline (it cannot call this without
+# changing the status-check context branch protection requires), so any
+# change here must be mirrored there. The reconciler self-test both jobs
+# run is what keeps them from drifting silently.
 #
 # PR checks already run govulncheck, but a tag can be cut days after the
 # last PR merged — and a CVE disclosed in that window makes those green
@@ -45,6 +50,20 @@ jobs:
       # acceptance has EXPIRED. That last case is the point of the expiry
       # dates — an acceptance that outlives its review date stops a
       # release instead of quietly persisting.
+      # Pinned rather than left to whatever the runner image happens to carry:
+      # the reconciler behaves differently with and without PyYAML (it falls
+      # back to its own parser), and v0.21.2's gate failed precisely because
+      # only the PyYAML path was ever exercised in CI. Install it explicitly so
+      # the tested path and the executed path are the same one.
+      - name: Install registry parser dependency
+        run: python3 -m pip install --quiet pyyaml
+
+      # Runs before the scan: a broken reconciler cannot be allowed to report
+      # "clean" — nor to fail the release for a reason that has nothing to do
+      # with the code being released.
+      - name: Registry reconciler self-test
+        run: python3 security/test_reconcile_scan.py
+
       - name: govulncheck, reconciled against the accepted-vulns registry
         run: |
           set -euo pipefail

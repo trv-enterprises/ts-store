@@ -53,3 +53,7 @@ tmp/
 
 # draw.io autosave/backup files
 .$*.drawio.bkp
+
+# Python bytecode from security/ tooling
+__pycache__/
+*.pyc

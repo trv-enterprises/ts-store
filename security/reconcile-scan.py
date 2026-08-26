@@ -40,6 +40,19 @@ REGISTRY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accepted-vu
 REQUIRED_FIELDS = ("id", "scanner", "module", "accepted_by", "accepted_on", "expires_on", "reason")
 
 
+def _as_text(v):
+    """Coerce a registry value to a trimmed string.
+
+    Dates arrive as datetime.date under PyYAML and as str under the fallback
+    parser; isoformat() renders both identically for date.fromisoformat().
+    """
+    if v is None:
+        return ""
+    if isinstance(v, (datetime.date, datetime.datetime)):
+        return v.isoformat()
+    return str(v).strip()
+
+
 def load_registry(path):
     """Load the accepted-vulns registry. Returns ({id: entry}, [errors]).
     Uses PyYAML when available, else a purpose-built parser for this file's
@@ -58,11 +71,17 @@ def load_registry(path):
     by_id = {}
     errors = []
     for e in entries:
-        eid = (e.get("id") or "").strip()
+        # PyYAML resolves unquoted `expires_on: 2027-02-16` to a datetime.date,
+        # while the fallback parser yields strings for everything. Normalize to
+        # str here so downstream field checks and date parsing behave the same
+        # whichever parser ran — a machine without PyYAML would otherwise never
+        # exercise the path CI takes.
+        e = {k: _as_text(v) for k, v in e.items()}
+        eid = e.get("id", "")
         if not eid:
             errors.append("registry entry missing 'id'")
             continue
-        missing = [k for k in REQUIRED_FIELDS if not (e.get(k) or "").strip()]
+        missing = [k for k in REQUIRED_FIELDS if not e.get(k)]
         if missing:
             errors.append(f"{eid}: missing required field(s): {', '.join(missing)}")
         by_id[eid] = e
@@ -130,7 +149,7 @@ def today():
 
 
 def is_expired(entry):
-    exp = (entry.get("expires_on") or "").strip()
+    exp = _as_text(entry.get("expires_on"))
     if not exp:
         return False  # registry validation reports the missing field separately
     try:
