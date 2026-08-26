@@ -113,6 +113,26 @@ jobs:
       - name: go test -race
         run: go test -race ./...
 
+  # Delegates to the SAME reusable workflow the release path uses, rather
+  # than running its own bare `govulncheck ./...`.
+  #
+  # This job used to duplicate the scan without the registry reconciler,
+  # so reconcile-scan.py ran only when a tag was cut — and #186 (a crash
+  # on PyYAML-parsed dates) reached a tag with every PR check green,
+  # because no PR had ever executed the thing that broke. A gate whose
+  # first run is the release is not a gate.
+  #
+  # govulncheck is reachability-based: it reports a CVE only when this
+  # code actually calls the affected function, which keeps it quiet
+  # enough to run on every PR (~30s) instead of becoming the check
+  # everyone learns to ignore. It also covers the Go toolchain itself, so
+  # a stdlib CVE surfaces here rather than at the next dependency bump.
+  # NOTE: deliberately NOT `uses: ./.github/workflows/security-scan.yml`.
+  # A reusable workflow reports its context as "<caller-job> / <inner-job>",
+  # which would no longer match the literal "Vulnerability scan" context
+  # required by branch protection on main — every PR would then wait
+  # forever on a check that never reports. The steps are duplicated
+  # instead, and the self-test below is what keeps the two honest.
   vulncheck:
     name: Vulnerability scan
     runs-on: ubuntu-latest
@@ -124,18 +144,23 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # govulncheck is reachability-based: it reports a CVE only when
-      # this code actually calls the affected function, rather than
-      # flagging every advisory that touches the dependency graph. That
-      # keeps it quiet enough to gate every PR (~30s) instead of being
-      # the check everyone learns to ignore.
-      #
-      # It also covers the Go toolchain itself, so a stdlib CVE surfaces
-      # here rather than at the next dependency bump.
-      - name: govulncheck
+      - name: Install registry parser dependency
+        run: python3 -m pip install --quiet pyyaml
+
+      # The step that would have caught #186 before it reached a tag.
+      - name: Registry reconciler self-test
+        run: python3 security/test_reconcile_scan.py
+
+      # Reconciled against the registry, exactly as the release gate does
+      # it — previously this ran bare `govulncheck ./...`, so
+      # reconcile-scan.py executed for the first time only when a tag was
+      # cut. That is how #186 shipped with every PR check green.
+      - name: govulncheck, reconciled against the accepted-vulns registry
         run: |
+          set -euo pipefail
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
+          "$(go env GOPATH)/bin/govulncheck" -json ./... \
+            | security/reconcile-scan.py --scanner govulncheck
 
   collectors:
     name: Collector modules

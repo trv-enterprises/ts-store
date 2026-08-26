@@ -1,7 +1,12 @@
 # Copyright (c) 2026 TRV Enterprises LLC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Reusable security gate for the RELEASE path (issue #173).
+# Reusable security gate for the RELEASE path (issues #173, #186).
+#
+# pr-checks.yml runs the same steps inline (it cannot call this without
+# changing the status-check context branch protection requires), so any
+# change here must be mirrored there. The reconciler self-test both jobs
+# run is what keeps them from drifting silently.
 #
 # PR checks already run govulncheck, but a tag can be cut days after the
 # last PR merged — and a CVE disclosed in that window makes those green
