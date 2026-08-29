@@ -21,6 +21,10 @@ type Evaluator struct {
 	cooldown    time.Duration
 	externalRef string
 
+	// messageTmpl is the rule's message template, rendered on each fire
+	// (issue #144). Empty means the alert carries no Message field.
+	messageTmpl string
+
 	// Cooldown tracking. Protected by mu.
 	mu        sync.RWMutex
 	lastFired time.Time
@@ -61,6 +65,31 @@ func NewEvaluator(storeName string, rule *Rule, cooldown time.Duration, external
 		stopCh:      make(chan struct{}),
 		onAlert:     onAlert,
 	}
+}
+
+// SetMessageTemplate sets the template rendered onto each Alert's
+// Message field (issue #144). Empty leaves Message unset.
+//
+// A setter rather than a sixth constructor parameter: it would sit
+// beside externalRef as a second adjacent string that is legitimately
+// empty most of the time, and transposing the two at a call site would
+// compile cleanly and mis-populate both fields.
+//
+// Call before Start; not safe to change on a running evaluator.
+func (e *Evaluator) SetMessageTemplate(tmpl string) {
+	e.messageTmpl = tmpl
+}
+
+// renderMessage renders the rule's template for one fire. Returns ""
+// when no template is set, which leaves Alert.Message omitted from the
+// payload.
+func (e *Evaluator) renderMessage(data map[string]interface{}, condition string, timestamp int64) string {
+	if e.messageTmpl == "" {
+		return ""
+	}
+	return RenderMessage(e.messageTmpl, TemplateVars(
+		data, e.storeName, e.rule.Name, condition, e.externalRef, timestamp,
+	))
 }
 
 // Start starts the evaluator goroutine.
@@ -115,13 +144,15 @@ func (e *Evaluator) evaluateRecord(rec dataRecord) {
 		return
 	}
 
+	condition := e.conditionString()
 	alert := notify.Alert{
 		RuleName:    e.rule.Name,
-		Condition:   e.conditionString(),
+		Condition:   condition,
 		Timestamp:   rec.timestamp,
 		Data:        rec.data,
 		StoreName:   e.storeName,
 		ExternalRef: e.externalRef,
+		Message:     e.renderMessage(rec.data, condition, rec.timestamp),
 	}
 
 	// Stamp lastFired BEFORE the callback: the worker's onAlert persists
@@ -154,21 +185,27 @@ func (e *Evaluator) FireStaleness(newestTs int64, age, maxAge time.Duration) {
 		return
 	}
 
+	// Bound before building the Alert so the message template can render
+	// against the same synthetic data the payload carries.
+	data := map[string]interface{}{
+		"last_timestamp":  newestTs,
+		"age_seconds":     age.Seconds(),
+		"max_age_seconds": maxAge.Seconds(),
+		"store":           e.storeName,
+		"rule_type":       "staleness",
+	}
+	condition := StalenessCondition(maxAge)
+
 	alert := notify.Alert{
 		RuleName:  e.rule.Name,
-		Condition: StalenessCondition(maxAge),
+		Condition: condition,
 		// The alert is about the moment data stopped, so anchor the
 		// payload timestamp there rather than at "now".
-		Timestamp: newestTs,
-		Data: map[string]interface{}{
-			"last_timestamp":  newestTs,
-			"age_seconds":     age.Seconds(),
-			"max_age_seconds": maxAge.Seconds(),
-			"store":           e.storeName,
-			"rule_type":       "staleness",
-		},
+		Timestamp:   newestTs,
+		Data:        data,
 		StoreName:   e.storeName,
 		ExternalRef: e.externalRef,
+		Message:     e.renderMessage(data, condition, newestTs),
 	}
 
 	e.mu.Lock()

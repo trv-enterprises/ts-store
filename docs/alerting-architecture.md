@@ -146,6 +146,7 @@ Every alert — webhook, WS, MQTT — carries the same rule + dispatch policy fi
 | `max_age` | for `staleness` rules | Fire when nothing has arrived for this long (duration string, e.g. `5m`). No default. Rejected for condition rules. |
 | `cooldown` | no | Min time between fires (duration string, e.g. `5m`). |
 | `external_ref` | no | Opaque pass-through string (≤512 bytes, no NUL); echoed verbatim on every alert payload. |
+| `message` | no | Template rendered into the payload's `message` field on each fire (≤512 bytes, no NUL). See [Message templates](#message-templates). |
 | `restart_policy` | no | `"now"` (default — start from wall-clock now, no cursor) or `"resume"` (replay from cursor on restart). |
 | `max_replay` | no | Duration cap on resume replay window. Only valid when `restart_policy="resume"`. Default: unbounded. |
 | `poll_interval` | no | Poll cadence hint (default `1s`). The store's shared loop ticks at the **minimum** across its alerts, so a faster alert speeds up every alert on the store and a slow value only takes effect if it is the minimum. |
@@ -302,7 +303,7 @@ The MQTT client connects on first dispatch and stays connected. `qos` defaults t
 
 ### Validation
 
-The server rejects requests where `type` is missing or unknown, where the nested options block for the chosen `type` is absent, or where any of the *other* transport blocks are also set. `max_replay` without `restart_policy="resume"` is rejected. `external_ref` over 512 bytes or containing NUL bytes is rejected.
+The server rejects requests where `type` is missing or unknown, where the nested options block for the chosen `type` is absent, or where any of the *other* transport blocks are also set. `max_replay` without `restart_policy="resume"` is rejected. `external_ref` over 512 bytes or containing NUL bytes is rejected, as is `message`. Templates are **not** checked for whether the fields they reference exist — see [Message templates](#message-templates).
 
 Rule-type validation: an unknown `rule_type` is rejected. For `rule_type="condition"` (the default), `condition` is required and `max_age` is rejected. For `rule_type="staleness"`, `max_age` is required and must parse to a positive duration, while `condition`, `restart_policy="resume"`, and `max_replay` are all rejected — a staleness rule has no cursor and no record, so accepting those fields would leave the persisted config describing behavior the alert does not have.
 
@@ -321,19 +322,80 @@ The body POSTed to the webhook (and the contents of the `alert` field on a WS fr
   "timestamp": 1747000000000000000,
   "data": { "temperature": 95.0, "humidity": 0.4 },
   "store_name": "sensors",
-  "external_ref": "dashboards/warehouse-sensors#component-42"
+  "external_ref": "dashboards/warehouse-sensors#component-42",
+  "message": "Server Room 5 is at 95.0C (limit 80)"
 }
 ```
 
-`data` is the full record that triggered the match. `external_ref` is omitted when the rule didn't configure one.
+`data` is the full record that triggered the match. `external_ref` and `message` are omitted when the rule didn't configure one.
 
 #### `external_ref` — opaque pass-through
 
 Each alert may carry an `external_ref` string (≤512 bytes, no NUL bytes, otherwise unconstrained). ts-store does not parse or interpret it — receivers can stash whatever they need: a dashboard component id, a Grafana slug, a Slack channel name, or a JSON-encoded compound key like `{"dashboard_id":"…","namespace":"default"}`. When the alert fires, the value is echoed verbatim on the alert payload above. If the alert didn't set one, the field is omitted from the JSON.
 
+### Message templates
+
+Nothing else in the payload is a sentence. Without a template, every receiver — a Slack webhook, a notification service, the dashboard's bell row — assembles its own text from `rule_name` / `condition` / `data`, so the same formatting gets reimplemented per consumer and drifts. A per-rule `message` fixes it once, where someone already knows what the rule means.
+
+```json
+{
+  "name": "high temp",
+  "condition": "temperature > 80",
+  "message": "Server Room 5's temperature {temperature} has exceeded the max"
+}
+```
+
+fires as `"message": "Server Room 5's temperature 95 has exceeded the max"`.
+
+#### Variables
+
+| Variable | Value |
+|---|---|
+| `{store}` | Store name |
+| `{rule_name}` | The rule's name |
+| `{condition}` | Rendered condition (`temperature > 80`, or `no data for 5m0s`) |
+| `{timestamp}` | The alert's timestamp (epoch nanoseconds) |
+| `{external_ref}` | The rule's opaque pass-through, when set |
+| `{<field>}` | Any field of the triggering record, by its own name |
+
+Staleness rules have no triggering record, so their fields come from the synthetic absence data: `{age_seconds}`, `{max_age_seconds}`, `{last_timestamp}`, `{store}`, `{rule_type}`.
+
+```
+"{store} went quiet — no data for {age_seconds:.0f}s (limit {max_age_seconds:.0f}s)"
+  → "nas-syn-002-disks went quiet — no data for 612s (limit 300s)"
+```
+
+The built-ins are **reserved**: a record field named `store` or `timestamp` is shadowed by the built-in. Narrow risk, and the alternative — record fields shadowing built-ins — would let a template silently change meaning when a new field appears in the data.
+
+#### Format specs
+
+`{field:spec}` applies an optional conversion:
+
+| Spec | Effect | Example |
+|---|---|---|
+| `.Nf` | Fixed decimal places (N ≤ 10) | `{temp:.1f}` → `95.0` |
+| `time` | Epoch integer as RFC3339 **UTC** | `{timestamp:time}` → `2025-05-11T21:46:40Z` |
+
+A spec that doesn't apply to the value is **ignored** rather than erroring — `{name:.2f}` on a string renders the string. A receiver reading `temperature nas-01` can tell something is off; one reading `%!d(string=nas-01)` learns nothing and the operator gets a corrupted page.
+
+`{:time}` infers the unit from magnitude (seconds / milliseconds / microseconds / nanoseconds), since a user's own field may hold any of them. The documented cost: a genuine *nanosecond* value from the first ~100 seconds after the epoch is read as seconds. ts-store never produces one.
+
+Output is always UTC. A container without `TZ` set already runs UTC, so "server local" is frequently UTC in disguise, and the same instant would otherwise stamp differently across hosts — painful exactly when correlating one incident across a fleet.
+
+#### Rendering rules
+
+- **Unknown or misspelled field renders empty, and never fails the alert.** `{temprature}` produces `""`, the surrounding text still renders, and the alert still fires. A formatting mistake must not suppress the thing it was describing.
+- **`{{` and `}}`** are literal braces. An unclosed `{` is emitted literally rather than swallowing the rest of the message.
+- **Field existence is not validated at create time.** For JSON stores the field set isn't known until data arrives, so validation would either reject valid templates or give false confidence.
+- **Numbers never render in scientific notation.** A large integer-valued float renders `1747000000000000000`, not `1.747e+18`.
+- **Nested values render as compact JSON.** Braces in that output are literal — rendering is single-pass and never re-scans its own output for placeholders.
+- **Template source is capped at 512 bytes**, matching `external_ref`. The cap is on the source, not the rendered output, since the rendered length varies per fire with the data.
+
+The `message` field is **additive**: it is omitted entirely when a rule sets no template, so existing receivers see a byte-identical payload.
+
 ## CLI
 
-The CLI mirrors the HTTP API. Each transport has its own `add` subcommand, but all share the same rule + dispatch flags (`--name`, `--rule-type`, `--condition`, `--max-age`, `--cooldown`, `--external-ref`, `--restart`, `--max-replay`, `--poll`, `--api-key`).
+The CLI mirrors the HTTP API. Each transport has its own `add` subcommand, but all share the same rule + dispatch flags (`--name`, `--rule-type`, `--condition`, `--max-age`, `--cooldown`, `--external-ref`, `--message`, `--restart`, `--max-replay`, `--poll`, `--api-key`).
 
 ```sh
 # Webhook alert
@@ -341,6 +403,7 @@ tsstore alerts webhook add <store> --url <url> \
   --name high-temp --condition "temperature > 80" --cooldown 5m \
   [--header Authorization:Bearer\ xyz] [--timeout 10s] \
   [--restart now|resume] [--max-replay 1h] [--external-ref <s>] \
+  [--message "<template>"] \
   [--poll 1s] [--api-key $KEY]
 
 # WS alert

@@ -27,6 +27,16 @@ type Alert struct {
 	// ExternalRef is the rule's opaque pass-through identifier, echoed
 	// as-is for the receiver. Set only if the rule had one configured.
 	ExternalRef string `json:"external_ref,omitempty"`
+
+	// Message is the rule's message template rendered against this
+	// alert's data — a human-readable sentence a receiver can forward
+	// as-is, with the value that caused the exception already in it
+	// (issue #144).
+	//
+	// Additive: omitted entirely when the rule sets no template, so
+	// existing receivers are unaffected. It supplements RuleName,
+	// Condition and Data rather than replacing any of them.
+	Message string `json:"message,omitempty"`
 }
 
 // WebhookConfig holds configuration for a webhook endpoint.
