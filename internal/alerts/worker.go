@@ -262,6 +262,7 @@ func NewWorker(opts Options) (*Worker, error) {
 	}
 
 	w.evaluator = rules.NewEvaluator(opts.StoreName, parsedRule, cooldown, opts.Rule.ExternalRef, w.dispatch)
+	w.evaluator.SetMessageTemplate(opts.Rule.Message)
 	return w, nil
 }
 

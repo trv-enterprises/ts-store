@@ -1048,7 +1048,7 @@ paths:
         (`webhook`, `ws`, or `mqtt`) must be provided.
 
         Each alert carries exactly one rule (the `name`, `rule_type`,
-        `condition`, `max_age`, `cooldown`, `external_ref`,
+        `condition`, `max_age`, `cooldown`, `external_ref`, `message`,
         `restart_policy`, `max_replay` fields at the top level of the
         request).
 
@@ -2094,6 +2094,34 @@ components:
             dashboard component id, a Grafana slug, or a JSON-encoded
             compound key.
           example: dashboards/warehouse-sensors#component-42
+        message:
+          type: string
+          maxLength: 512
+          description: |
+            Template rendered into the alert payload's `message` field on
+            each fire, so receivers get one human-readable sentence
+            instead of each assembling its own from
+            rule_name/condition/data.
+
+            `{field}` inserts a value from the triggering record. Built-in
+            variables: `{store}`, `{rule_name}`, `{condition}`,
+            `{timestamp}`, `{external_ref}` — these SHADOW same-named
+            record fields. Staleness rules resolve against their synthetic
+            data: `{age_seconds}`, `{max_age_seconds}`,
+            `{last_timestamp}`.
+
+            Optional format specs: `{temp:.1f}` sets decimal places (max
+            10); `{ts:time}` renders an epoch integer as RFC3339 UTC,
+            inferring seconds/millis/micros/nanos from magnitude. A spec
+            that does not apply to the value is ignored rather than
+            erroring. `{{` is a literal brace.
+
+            An unknown or misspelled field renders EMPTY and never fails
+            the alert — a formatting mistake must not suppress the alert
+            it was describing. Field existence is therefore not validated
+            here. Cap is 512 bytes on the template source; NUL bytes are
+            rejected.
+          example: "Server Room 5 is at {temperature:.1f}C (limit 80)"
         restart_policy:
           type: string
           enum: ["", "now", "resume"]

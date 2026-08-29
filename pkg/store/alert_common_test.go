@@ -44,6 +44,27 @@ func TestAlertCommon_Validate(t *testing.T) {
 			wantErr: "NUL bytes",
 		},
 		{
+			name:    "message too large",
+			c:       AlertCommon{Name: "hot", Condition: "t > 80", Message: strings.Repeat("x", MaxMessageTemplateBytes+1)},
+			wantErr: "message exceeds",
+		},
+		{
+			name:    "message contains NUL",
+			c:       AlertCommon{Name: "hot", Condition: "t > 80", Message: "a\x00b"},
+			wantErr: "NUL bytes",
+		},
+		{
+			name: "message at the cap is accepted",
+			c:    AlertCommon{Name: "hot", Condition: "t > 80", Message: strings.Repeat("x", MaxMessageTemplateBytes)},
+		},
+		{
+			// Field existence is a render-time concern: for JSON stores
+			// the field set is unknown until data arrives, so validating
+			// it here would reject valid templates.
+			name: "message referencing an unknown field is accepted",
+			c:    AlertCommon{Name: "hot", Condition: "t > 80", Message: "temp is {no_such_field}"},
+		},
+		{
 			name: "restart_policy now",
 			c:    AlertCommon{Name: "hot", Condition: "t > 80", RestartPolicy: "now"},
 		},

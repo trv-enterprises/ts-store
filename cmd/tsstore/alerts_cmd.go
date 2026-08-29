@@ -39,6 +39,15 @@ Staleness rules — fire when a store STOPS receiving data:
 Common create options:
   --cooldown <duration>    Min time between alerts (e.g., 5m)
   --external-ref <s>       Opaque tag echoed on every alert payload
+  --message <template>     Human-readable sentence rendered onto each
+                           alert's "message" field. {field} inserts a
+                           value from the triggering record; built-ins
+                           are {store}, {rule_name}, {condition},
+                           {timestamp}, {external_ref}. Formats:
+                           {temp:.1f} sets decimal places, {ts:time}
+                           renders an epoch as RFC3339 UTC. Use {{ for
+                           a literal brace. An unknown field renders
+                           empty and never suppresses the alert.
   --restart now|resume     Restart policy (default now). "resume" reads
                            the cursor on Start and replays records since.
   --max-replay <duration>  When --restart=resume, cap how far back to
@@ -61,6 +70,12 @@ Examples:
     --url https://hooks.slack.com/services/... \
     --name "collector went quiet" \
     --rule-type staleness --max-age 5m --cooldown 30m
+
+  # Send a ready-made sentence rather than making the receiver build one
+  tsstore alerts webhook add my-store \
+    --url https://hooks.slack.com/services/... \
+    --name high-temp --condition "temperature > 80" \
+    --message "Server Room 5 is at {temperature:.1f}C (limit 80)"
 
   tsstore alerts list my-store
   tsstore alerts rm   my-store a1b2c3d4`)
@@ -101,6 +116,7 @@ type commonAlertFlags struct {
 	maxAge        string
 	cooldown      string
 	externalRef   string
+	message       string
 	restartPolicy string
 	maxReplay     string
 	headers       []string
@@ -158,6 +174,9 @@ func applyCommonRuleFields(body map[string]interface{}, c commonAlertFlags) {
 	if c.cooldown != "" {
 		body["cooldown"] = c.cooldown
 	}
+	if c.message != "" {
+		body["message"] = c.message
+	}
 	if c.externalRef != "" {
 		body["external_ref"] = c.externalRef
 	}
@@ -207,6 +226,8 @@ func addCommonRuleFlag(args []string, i int, c *commonAlertFlags, flag string) (
 		return consumeFlag(args, i, &c.cooldown)
 	case "--external-ref":
 		return consumeFlag(args, i, &c.externalRef)
+	case "--message":
+		return consumeFlag(args, i, &c.message)
 	case "--restart":
 		return consumeFlag(args, i, &c.restartPolicy)
 	case "--max-replay":
@@ -233,11 +254,11 @@ func runAlertsWebhook(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--restart now|resume] [--max-replay <d>] [--header K:V] [--poll <d>] [--timeout <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts webhook add <store> --url <url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--message <tmpl>] [--restart now|resume] [--max-replay <d>] [--header K:V] [--poll <d>] [--timeout <d>] [--api-key <k>]")
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
-		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--message", "--restart", "--max-replay", "--poll":
 			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
@@ -305,11 +326,11 @@ func runAlertsWS(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--restart now|resume] [--max-replay <d>] [--header K:V] [--poll <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts ws add <store> --url <ws-url> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--message <tmpl>] [--restart now|resume] [--max-replay <d>] [--header K:V] [--poll <d>] [--api-key <k>]")
 			return
 		case "--url":
 			i, _ = consumeFlag(args, i, &url)
-		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--message", "--restart", "--max-replay", "--poll":
 			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		case "--header":
 			i, _ = consumeAppend(args, i, &c.headers)
@@ -372,7 +393,7 @@ func runAlertsMQTT(args []string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-h", "--help":
-			fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--restart now|resume] [--max-replay <d>] [--qos 0|1|2] [--username U --password P] [--poll <d>] [--api-key <k>]")
+			fmt.Println("Usage: tsstore alerts mqtt add <store> --broker <url> --topic <t> --name <n> --condition <c> [--cooldown <d>] [--external-ref <s>] [--message <tmpl>] [--restart now|resume] [--max-replay <d>] [--qos 0|1|2] [--username U --password P] [--poll <d>] [--api-key <k>]")
 			return
 		case "--broker":
 			i, _ = consumeFlag(args, i, &broker)
@@ -384,7 +405,7 @@ func runAlertsMQTT(args []string) {
 			i, _ = consumeFlag(args, i, &username)
 		case "--password":
 			i, _ = consumeFlag(args, i, &password)
-		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--restart", "--max-replay", "--poll":
+		case "--api-key", "--name", "--rule-type", "--condition", "--max-age", "--cooldown", "--external-ref", "--message", "--restart", "--max-replay", "--poll":
 			i, _ = addCommonRuleFlag(args, i, &c, args[i])
 		default:
 			if c.storeName == "" && !strings.HasPrefix(args[i], "-") {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/tviviano/ts-store/internal/duration"
+	"github.com/tviviano/ts-store/internal/rules"
 )
 
 // MaxExternalRefBytes caps the size of AlertCommon.ExternalRef. Loose
@@ -16,6 +17,12 @@ import (
 // namespace) but tight enough that a rogue config can't bloat the alert
 // payload on every fire.
 const MaxExternalRefBytes = 512
+
+// MaxMessageTemplateBytes caps AlertCommon.Message. Aliased from the
+// package that does the rendering rather than restated, so the limit
+// enforced at write time and the limit the renderer documents cannot
+// drift apart.
+const MaxMessageTemplateBytes = rules.MaxMessageTemplateBytes
 
 // Rule types. RuleTypeCondition is the default and covers every alert
 // that existed before issue #134: a predicate over the fields of a
@@ -58,6 +65,26 @@ type AlertCommon struct {
 
 	Cooldown    string `json:"cooldown,omitempty"`
 	ExternalRef string `json:"external_ref,omitempty"`
+
+	// Message is a template rendered into the alert payload's `message`
+	// field on each fire (issue #144), giving receivers one
+	// human-readable sentence instead of each assembling its own from
+	// rule_name/condition/data.
+	//
+	//   "Server Room 5's temperature {temp} exceeded the max"
+	//
+	// Placeholders are {field} for any field of the triggering record,
+	// plus the built-ins {store}, {rule_name}, {condition},
+	// {timestamp} and {external_ref}, which shadow same-named record
+	// fields. `{{` is a literal brace. Optional format specs:
+	// {field:.2f} for float precision, {field:time} to render an epoch
+	// as RFC3339 UTC.
+	//
+	// An unknown or misspelled field renders empty and never fails the
+	// alert — a formatting mistake must not suppress the thing it was
+	// describing. Field existence is therefore NOT validated here: for
+	// JSON stores the field set is unknown until data arrives.
+	Message string `json:"message,omitempty"`
 
 	// RestartPolicy controls how the worker resumes after a process
 	// restart.
@@ -146,6 +173,16 @@ func (c AlertCommon) Validate() error {
 	}
 	if bytes.IndexByte([]byte(c.ExternalRef), 0) >= 0 {
 		return fmt.Errorf("alert %q: external_ref must not contain NUL bytes", c.Name)
+	}
+	// Cap the template SOURCE, not its rendered output: the source is
+	// what can be bounded cheaply at write time, while the rendered
+	// length varies per fire with the data.
+	if len(c.Message) > MaxMessageTemplateBytes {
+		return fmt.Errorf("alert %q: message exceeds %d bytes (got %d)",
+			c.Name, MaxMessageTemplateBytes, len(c.Message))
+	}
+	if bytes.IndexByte([]byte(c.Message), 0) >= 0 {
+		return fmt.Errorf("alert %q: message must not contain NUL bytes", c.Name)
 	}
 	switch c.RestartPolicy {
 	case "", "now", "resume":

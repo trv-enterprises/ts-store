@@ -269,6 +269,7 @@ Notes on `--max-age`:
 **Common create flags** (any transport):
 - `--cooldown <duration>` — minimum interval between fires (e.g., `5m`)
 - `--external-ref <s>` — opaque pass-through string echoed on every alert payload
+- `--message <template>` — human-readable sentence rendered onto the payload's `message` field. `{field}` inserts a value from the triggering record; built-ins are `{store}`, `{rule_name}`, `{condition}`, `{timestamp}`, `{external_ref}`. Formats: `{temp:.1f}` sets decimal places, `{ts:time}` renders an epoch as RFC3339 UTC. `{{` is a literal brace. An unknown field renders empty and never suppresses the alert. See [Message templates](docs/alerting-architecture.md#message-templates).
 - `--restart now|resume` — restart policy (default `now`). `resume` reads the persisted cursor on Start and replays records since.
 - `--max-replay <duration>` — when `--restart=resume`, cap replay window (e.g., `1h`). Default: unbounded.
 - `--poll <duration>` — poll cadence hint (default `1s`). The store runs one shared poll loop for all its alerts, ticking at the minimum across them.
