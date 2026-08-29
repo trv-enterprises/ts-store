@@ -142,17 +142,27 @@ exceptions:
 
   - id: go/allocation-size-overflow
     scanner: codeql
-    module: internal/alerts/manager.go (AlertDetail JSON assembly)
+    module: >
+      internal/alerts/manager.go (AlertDetail JSON assembly);
+      internal/rules/template.go (TemplateVars map preallocation)
     accepted_by: Tom Viviano
     accepted_on: 2026-08-16
     expires_on: 2027-02-16
     reason: >
-      The flagged expression is a make() capacity hint summing the lengths of
-      two already-marshalled in-memory JSON buffers plus a short key. Both
-      operands are lengths of byte slices that already exist in memory, so
-      reaching an overflowing sum would require the process to already hold
-      ~2^63 bytes. Not reachable; the arithmetic is a preallocation
-      optimisation, not a size taken from input.
+      Both flagged expressions are make() capacity hints summing lengths of
+      values that already exist in memory, not sizes taken from input.
+
+      manager.go sums the lengths of two already-marshalled in-memory JSON
+      buffers plus a short key. template.go (#144) sums len(data) — the
+      triggering record's field count — with the constant 5 built-in
+      template variables.
+
+      In both cases an overflowing sum would require the process to already
+      hold ~2^63 elements or bytes, which is not reachable: each map entry
+      and each buffer byte occupies real memory first. For the map case the
+      value is additionally only a sizing HINT — Go's make() for maps does
+      not allocate a caller-controlled buffer from it, so even a wrong value
+      costs a rehash rather than a bad allocation.
     suppression: none
   - id: go/request-forgery@internal/notify/webhook.go
     scanner: codeql
