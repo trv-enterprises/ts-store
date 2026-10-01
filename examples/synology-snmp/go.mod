@@ -6,4 +6,4 @@ module github.com/tviviano/ts-store/examples/synology-snmp
 
 go 1.25.5
 
-require github.com/gosnmp/gosnmp v1.44.0
+require github.com/gosnmp/gosnmp v1.45.0
